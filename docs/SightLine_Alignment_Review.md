@@ -285,6 +285,99 @@ context_window_compression=types.ContextWindowCompressionConfig(
 
 ---
 
+## 第三轮审查 (2026-02-22) — iOS 迁移后全面对齐
+
+### Issue #15: Final Spec 全文仍基于 React PWA 前端
+
+前端已从 React PWA 迁移到 Swift Native iOS App（详见 `SightLine_iOS_Native_Infra_Design.md`），但 Final Spec 多处残留 PWA 描述。
+
+**修改记录**：
+- [x] §3.2 Context 输入方式：Developer Console 模拟 → iOS 真实硬件 — ✅
+- [x] §5.2 SEP-Telemetry JSON：step_cadence 1.5→72 (steps/min) — ✅
+- [x] §6.1 架构图：React PWA → Swift Native — ✅
+- [x] §7.2 技术实现：navigator.vibrate → UIImpactFeedbackGenerator — ✅
+- [x] §7.2 启动流程：getUserMedia → AVCaptureSession/AVAudioEngine — ✅
+- [x] §8.1 技术栈表：React PWA → Swift Native iOS — ✅
+- [x] §8.2 项目结构：frontend/ → ios/ (Swift) — ✅
+- [x] §12 风险：iOS PWA 风险标注为已解决 — ✅
+
+### Issue #16: step_cadence 单位全文不统一
+
+| 文档 | 原值 | 修正 |
+|------|------|------|
+| Final Spec §5.2 | 1.5 (steps/sec) | 72 (steps/min) |
+| Context Engine §2.1 | 1.5 (steps/sec) | 72 (steps/min) |
+| Context Engine §2.2 | 阈值 1.0, 2.0 (steps/sec) | 60, 120 (steps/min) |
+| Context Engine §5.1 | 阈值 1.0, 2.0 (steps/sec) | 60, 120 (steps/min) |
+| Consolidated Dev Ref §1.2 | 72 ✅ | 已正确 |
+| iOS Infra §3.4 | 72 ✅ | 已正确 |
+
+**修改记录**：
+- [x] Final Spec, Context Engine: 全部统一为 steps/minute — ✅
+
+### Issue #17: Navigation Sub-Agent vs Function Calling Tool
+
+Consolidated Dev Ref §4.2 将 Navigation 列为独立 Sub-Agent，但 Final Spec §6.2 明确 `navigate_location()` 和 `google_search()` 是 Orchestrator 的 Function Calling tools。
+
+**决议**：统一为 Function Calling tool（不经过独立 Agent），与 Final Spec 一致。
+
+**修改记录**：
+- [x] Consolidated Dev Ref §4.2: 层级图更新 — ✅
+
+### Issue #18: 成本估算不统一
+
+Final Spec 写 ~$58，Infra Report 写 ~$37-45。
+
+**决议**：以 Infra Report 为准（更新、逐项更详细）。
+
+**修改记录**：
+- [x] Consolidated Dev Ref §5.2: 更新为 ~$37-45 — ✅
+
+### Issue #19: Session Resumption 有效期混淆
+
+iOS Infra 写"2 小时内可恢复"，Final Spec 写"10min 自动重连"。两个概念不同：WebSocket 连接生命周期 ~10min，Session Resumption handle 缓存有效期可达 ~2hr。
+
+**修改记录**：
+- [x] Consolidated Dev Ref §4.3: 区分两个概念 — ✅
+
+### Issue #20: Infra Report 前端环境变量仍为 React
+
+Infra Report §3.2 包含 `VITE_WS_URL` 等 React 环境变量。
+
+**修改记录**：
+- [x] Infra Report §3.2: 替换为 iOS Config.swift 配置 — ✅
+
+### Issue #21: Context Engine 架构图仍写 Mem0-style
+
+Context Engine §1 架构图标注 "Firestore + Vector Search + Mem0-style Auto-Extract"，但 Memory Bank 已被裁定为首选方案。
+
+**修改记录**：
+- [x] Context Engine §1: 更新为 Vertex AI Memory Bank — ✅
+
+### Issue #22: Subtasks Roadmap 全面过时
+
+整份 Roadmap 基于 React PWA，已标注 DEPRECATED。等待重新撰写。
+
+**修改记录**：
+- [x] Subtasks Roadmap: 添加 DEPRECATED banner — ✅
+
+### 第三轮 Summary
+
+| Priority | Issue | 改什么 | 状态 |
+|----------|-------|--------|------|
+| 🔴 P0 | #15 Final Spec PWA 残留 | Final Spec §3/§5/§6/§7/§8/§12 | ✅ 已修复 |
+| 🔴 P0 | #16 step_cadence 单位 | Final Spec + Context Engine | ✅ 已修复 |
+| 🟡 P1 | #17 Navigation Agent vs Tool | Consolidated §4.2 | ✅ 已修复 |
+| 🟡 P1 | #18 成本估算 | Consolidated §5.2 | ✅ 已修复 |
+| 🟡 P1 | #19 Session Resumption 有效期 | Consolidated §4.3 | ✅ 已修复 |
+| 🟢 P2 | #20 Infra 前端 env | Infra Report §3.2 | ✅ 已修复 |
+| 🟢 P2 | #21 Context Engine 架构图 | Context Engine §1 | ✅ 已修复 |
+| 🟢 P3 | #22 Roadmap 过时 | Subtasks Roadmap | ✅ 标注 DEPRECATED |
+
+***22 个 Issue 全部修复。***
+
+---
+
 ## 推荐的 Best Practice 改进
 
 ### 从 Google ADK 学到的

@@ -284,12 +284,14 @@ FACE_MATCH_THRESHOLD=0.4                       # 余弦相似度匹配阈值
 MAX_FACES_IN_LIBRARY=100                       # 内存加载上限
 ```
 
-### 3.2 前端环境变量 (.env)
+### 3.2 iOS 前端配置
 
-```bash
-VITE_WS_URL=wss://sightline-xxx.run.app/ws     # Cloud Run WebSocket
-VITE_API_BASE=https://sightline-xxx.run.app     # REST API
-VITE_APP_NAME=SightLine
+```swift
+// iOS App 配置 (Config.swift)
+// WebSocket 连接地址在 iOS App 的 Config.swift 中硬编码或通过 Info.plist 配置
+// 无需 .env 文件——iOS 原生 App 通过 Xcode Build Configuration 管理
+static let wsBaseURL = "wss://sightline-xxx.run.app/ws"
+static let apiBaseURL = "https://sightline-xxx.run.app"
 ```
 
 ### 3.3 Secret Manager 存储项

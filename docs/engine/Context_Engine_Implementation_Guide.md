@@ -34,10 +34,10 @@ SightLine 的 Context Engine 是填补这个空白的核心组件。
     │  (ms~s)      │  │  (min~hr)    │  │  (跨会话)    │
     └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
            │                 │                 │
-    SEP-Telemetry      Gemini Context     Firestore +
-    JSON Stream        Window 内维持      Vector Search
-    + 规则引擎           + Session State    + Mem0-style
-      语义化               Manager          Auto-Extract
+    SEP-Telemetry      Gemini Context     Vertex AI
+    JSON Stream        Window 内维持      Memory Bank
+    + 规则引擎           + Session State    (首选, ~30行)
+      语义化               Manager        Firestore fallback
 ```
 
 三层上下文融合后，输入 LOD Decision Engine，决定 LOD 1/2/3，然后构建 Dynamic System Prompt 交给 Orchestrator（Gemini 2.5 Flash Live API）。
@@ -55,7 +55,7 @@ SightLine 的 Context Engine 是填补这个空白的核心组件。
   "timestamp": "2026-02-21T10:30:00Z",
 
   // === Core 字段 (手机自带传感器) ===
-  "step_cadence": 1.5,                // 手机加速度计 (iOS CMPedometer / Android TYPE_STEP_COUNTER)
+  "step_cadence": 72,                 // 手机加速度计 (iOS CMPedometer, steps per minute)
   "motion_state": "walking",          // 手机 Core Motion / Activity Recognition
                                       // "stationary" | "walking" | "running" | "in_vehicle"
   "ambient_noise_db": 65,             // 手机麦克风后台 RMS → dB
@@ -74,7 +74,7 @@ SightLine 的 Context Engine 是填补这个空白的核心组件。
 **不要直接把 JSON 塞进 prompt**。参考 ContextLLM (ACM 2025) 的三层管道：
 
 ```
-Layer 1 (Raw):     motion_state=walking, step_cadence=3.2/s, ambient_noise_db=78, heart_rate=145 (optional)
+Layer 1 (Raw):     motion_state=walking, step_cadence=96/min, ambient_noise_db=78, heart_rate=145 (optional)
 Layer 2 (Sparse):  "快速行走 + 高噪声环境 + 心率偏高"
 Layer 3 (Semantic): "用户处于紧张的快速移动状态，身处嘈杂街道，可能在过马路"
 ```
@@ -89,10 +89,10 @@ def telemetry_to_semantic(t: Telemetry) -> str:
     # 优先使用系统级 motion_state，step_cadence 作为补充
     if t.motion_state == "in_vehicle":
         segments.append("用户在交通工具中")
-    elif t.motion_state == "running" or t.step_cadence > 2.0:
+    elif t.motion_state == "running" or t.step_cadence > 120:
         segments.append("快速移动")
     elif t.motion_state == "walking":
-        if t.step_cadence < 1.0:
+        if t.step_cadence < 60:
             segments.append("缓慢行走，探索状态")
         else:
             segments.append("正常步行")
@@ -486,10 +486,10 @@ def decide_lod(ephemeral: EphemeralContext,
 
     # === Rule 2: 基于运动状态的基线（Core: 手机传感器） ===
     # 优先使用 motion_state（系统级分类，更鲁棒），step_cadence 作为精细化补充
-    if ephemeral.motion_state == "running" or ephemeral.step_cadence > 2.0:
+    if ephemeral.motion_state == "running" or ephemeral.step_cadence > 120:
         base_lod = 1  # 快速移动 → 沉默
     elif ephemeral.motion_state == "walking":
-        if ephemeral.step_cadence < 1.0:
+        if ephemeral.step_cadence < 60:
             base_lod = 2  # 缓慢行走/探索 → 标准描述
         else:
             base_lod = 1  # 正常行走 → 默认沉默
@@ -537,7 +537,7 @@ class SpeechCostManager:
     def should_speak(self, info_value: float, current_lod: int,
                      step_cadence: float, ambient_noise_db: float = 50.0) -> bool:
         # 运动越快，发声阈值越高
-        movement_penalty = step_cadence * 2.0  # 每步/秒增加 2.0 成本
+        movement_penalty = (step_cadence / 60.0) * 2.0  # 归一化为步/秒后乘以权重
 
         # 噪声越高，发声阈值越高（嘈杂环境中只说关键信息）
         noise_penalty = max(0, (ambient_noise_db - 60) * 0.1)  # 60dB 以上开始增加成本

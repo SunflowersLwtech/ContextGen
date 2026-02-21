@@ -46,6 +46,11 @@
 | 9 | **Session Service 选型** | Final Spec §6.1 (`InMemorySessionService`) vs Memory Research §3.2 (`VertexAiSessionService`) | 开发初期 `InMemorySessionService`（零配置），Phase 2 切 `VertexAiSessionService`（持久化）。两者 API 兼容 |
 | 10 | **Long-term Memory 实现路径** | Context Engine §4.1（自建 Mem0 式） vs Memory Research（Memory Bank ~30 行） | **Vertex AI Memory Bank 首选**。Context Engine §4 自建方案降级为 fallback 备选，已更新 |
 | 11 | **RAG Engine Embedding 模型名** | Memory Research §4.2 (`text-embedding-005`) vs 其他所有文档 (`gemini-embedding-001`) | 统一 `gemini-embedding-001`。已修正 Memory Research 中的代码示例 |
+| 12 | **step_cadence 单位**：Final Spec 用 steps/sec (1.5), Consolidated/iOS 用 steps/min (72) | Final Spec §5.2 vs Consolidated §1.2 | **steps/minute**（iOS CMPedometer 原生输出） |
+| 13 | **LOD 3 帧率**：Final Spec 写 1FPS，Consolidated/iOS 写 0.5FPS | Final Spec vs Consolidated §1.3 | **0.5 FPS（LOD 3 静止时）** |
+| 14 | **Navigation Sub-Agent vs Tool**：Consolidated §4.2 列为独立 Sub-Agent，Final Spec §6.2 列为 Orchestrator 的 Function Calling tool | Consolidated §4.2 vs Final Spec §6.2 | **Function Calling tool on Orchestrator**（不经过独立 Agent） |
+| 15 | **成本估算**：Final Spec ~$58 vs Infra Report ~$37-45 | Final Spec vs Infra Report §7.1 | **以 Infra Report 为准（$37-45），更新更详细** |
+| 16 | **Session Resumption 有效期**：iOS Infra 写 "2 小时"，Final Spec 写 "10min" | iOS Infra §2.4 vs Final Spec §6.4 | **两个不同概念：WebSocket 连接生命周期 ~10min，Session Resumption handle 缓存 ~2hr** |
 
 ---
 
@@ -361,9 +366,11 @@ Vision Sub-Agent 不回答"你看到了什么"，而是回答"对视障用户当
 Orchestrator Agent (Gemini 2.5 Flash Native Audio, Live API)
 ├── Vision Sub-Agent (Gemini 3.1 Pro, REST)      — 场景理解/表情识别
 ├── OCR Sub-Agent (Gemini 3 Flash, REST, FREE)    — 文字读取
-├── Navigation Sub-Agent (Gemini 3 Flash, FREE)   — 地理位置/路线/POI
 ├── Memory Sub-Agent (Vertex AI Memory Bank)       — 跨会话记忆
-└── Face ID Sub-Agent (InsightFace ONNX)          — 人脸匹配
+├── Face ID Sub-Agent (InsightFace ONNX)          — 人脸匹配
+├── Tools (Function Calling on Orchestrator):
+│   ├── navigate_location()                        — Google Maps 导航
+│   └── google_search()                            — Grounding 搜索
 ```
 
 **关键设计原则**：
@@ -429,7 +436,7 @@ Apple Watch ──WCSession──→ iPhone    Sub-Agents (Vision/OCR/FaceID/Mem
 2. 预反馈："Let me look at that..."
 3. 客户端帧选择（像素差异跳过重复场景）
 4. Context Compression（无限会话）
-5. Session Resumption（断线 2 小时内可恢复）
+5. Session Resumption（WebSocket 连接 ~10min 生命周期，断线后 resumption handle 缓存有效期 ~2hr）
 7. **断线 LOD 降级**：WebSocket 断开时本地强制 LOD 1 + 本地 TTS "安全模式"提示 + 触觉反馈，重连后恢复正常
 6. Cloud Run 预热（`min_instance_count=1`）
 
@@ -495,7 +502,7 @@ WebRTC 用 UDP 处理"最后一公里"，消除 TCP 队头阻塞（移动 4G 下
 | **Secret Manager** | API Key 存储 | 6 个版本免费 | $0 |
 | **OpenStreetMap Overpass** | 无障碍设施数据（触觉铺装、有声信号灯） | 无限 | $0 |
 
-**Hackathon 总成本估算**：~$58
+**Hackathon 总成本估算**：~$37-45（详见 Infra Report §7.1）
 
 ### 5.3 人脸识别系统
 

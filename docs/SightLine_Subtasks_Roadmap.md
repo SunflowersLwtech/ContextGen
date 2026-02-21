@@ -1,5 +1,7 @@
 # SightLine: Subtasks & Development Roadmap
 
+> ⚠️ **DEPRECATED (2026-02-22)**: 本文档基于 React PWA 前端架构，已全面过时。前端已迁移到 Swift Native iOS App + Apple Watch（详见 `SightLine_iOS_Native_Infra_Design.md`）。以下内容中涉及 PWA/React/Vite/AudioWorklet/getUserMedia/navigator.vibrate 的任务均已失效。**新的 Subtasks & Roadmap 将重新撰写。**
+>
 > **Date**: 2026-02-21
 > **Deadline**: 2026-03-16 5:00 PM PDT (23 days remaining)
 > **Based on**: Final Specification + Technical Research Report
