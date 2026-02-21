@@ -1,0 +1,13 @@
+# ============================================================
+# SightLine Backend - Cloud Run Deployment Dependencies
+# Phase 1: Core Live Loop only (no InsightFace/FaceID)
+# ============================================================
+
+# === Core Agent Framework ===
+google-adk==1.25.1
+
+# === Firestore ===
+google-cloud-firestore==2.23.0
+
+# === Google Maps ===
+googlemaps==4.10.0

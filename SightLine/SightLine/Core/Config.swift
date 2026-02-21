@@ -9,7 +9,7 @@ import Foundation
 
 enum SightLineConfig {
     // Server URL - change for Cloud Run deployment
-    static let serverBaseURL = "wss://localhost:8080"
+    static let serverBaseURL = "wss://sightline-backend-200455604992.us-central1.run.app"
 
     // WebSocket path template
     static func wsURL(userId: String, sessionId: String) -> URL {
