@@ -2,6 +2,13 @@
 
 FastAPI application with WebSocket endpoint for real-time bidirectional
 communication between the iOS client and the Gemini Live API via Google ADK.
+
+Phase 2 additions:
+- LOD engine integration (decide_lod on every telemetry tick)
+- PANIC handler with TTS flush
+- Dynamic system prompt injection via [LOD UPDATE] messages
+- Narrative snapshot save/restore on LOD transitions
+- LOD debug events for iOS DebugOverlay
 """
 
 import asyncio
@@ -22,7 +29,13 @@ from starlette.websockets import WebSocketState
 
 from agents.orchestrator import create_orchestrator_agent
 from live_api.session_manager import SessionManager
-from telemetry.telemetry_parser import parse_telemetry
+from lod import (
+    PanicHandler,
+    build_lod_update_message,
+    decide_lod,
+    on_lod_change,
+)
+from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephemeral
 
 # ---------------------------------------------------------------------------
 # Environment & logging
@@ -43,7 +56,7 @@ logger = logging.getLogger("sightline.server")
 LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
 PORT = int(os.getenv("PORT", "8080"))
 
-app = FastAPI(title="SightLine Backend", version="0.1.0")
+app = FastAPI(title="SightLine Backend", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,7 +85,7 @@ runner = Runner(
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint for Cloud Run readiness probes."""
-    return {"status": "ok", "model": LIVE_MODEL}
+    return {"status": "ok", "model": LIVE_MODEL, "phase": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +100,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     Manages the lifecycle of a Gemini Live API session through the ADK runner,
     forwarding upstream messages from the iOS client and downstream events
     from the model.
+
+    Phase 2: Integrates LOD engine, PANIC handler, and dynamic prompt injection.
     """
     await websocket.accept()
     logger.info("WebSocket connected: user=%s session=%s", user_id, session_id)
 
     stop_downstream = asyncio.Event()
+
+    # -- Per-session LOD state -----------------------------------------------
+    panic_handler = PanicHandler()
+    session_ctx = session_manager.get_session_context(session_id)
+    user_profile = session_manager.get_user_profile(user_id)
 
     def _is_websocket_open() -> bool:
         return (
@@ -107,7 +127,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             await websocket.send_json(payload)
             return True
         except (WebSocketDisconnect, RuntimeError):
-            # The websocket may close between state check and send.
             stop_downstream.set()
             return False
 
@@ -119,7 +138,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             await websocket.send_bytes(payload)
             return True
         except (WebSocketDisconnect, RuntimeError):
-            # The websocket may close between state check and send.
             stop_downstream.set()
             return False
 
@@ -130,7 +148,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         return
 
     live_request_queue = LiveRequestQueue()
-    run_config = session_manager.get_run_config(session_id)
+    run_config = session_manager.get_run_config(session_id, lod=session_ctx.current_lod)
 
     # Start the ADK live session
     live_events = runner.run_live(
@@ -140,11 +158,72 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         run_config=run_config,
     )
 
+    # -- LOD engine helpers --------------------------------------------------
+
+    async def _send_lod_update(
+        new_lod: int,
+        ephemeral_ctx,
+        reason: str,
+    ) -> None:
+        """Build and inject a [LOD UPDATE] message into the Live session."""
+        lod_message = build_lod_update_message(
+            lod=new_lod,
+            ephemeral=ephemeral_ctx,
+            session=session_ctx,
+            profile=user_profile,
+            reason=reason,
+        )
+        content = types.Content(
+            parts=[types.Part(text=lod_message)],
+            role="user",
+        )
+        live_request_queue.send_content(content)
+        logger.info("Injected [LOD UPDATE] → LOD %d (%s)", new_lod, reason)
+
+    async def _notify_ios_lod_change(new_lod: int, reason: str, debug_dict: dict) -> None:
+        """Send LOD change notification to iOS client."""
+        await _safe_send_json({
+            "type": "lodUpdate",
+            "lod": new_lod,
+            "reason": reason,
+        })
+        # Debug overlay event (separate message for optional consumption)
+        await _safe_send_json({
+            "type": "debug_lod",
+            **debug_dict,
+        })
+
+    async def _handle_panic(ephemeral_ctx) -> None:
+        """Handle a new PANIC event: flush TTS, force LOD 1, notify iOS."""
+        # Notify iOS to flush audio queue and enter PANIC mode
+        await _safe_send_json({
+            "type": "panic",
+            "message": "PANIC detected. Entering safety mode.",
+        })
+
+        # Force LOD 1 in session context
+        old_lod = session_ctx.current_lod
+        session_ctx.current_lod = 1
+
+        # Handle narrative snapshot on LOD downgrade
+        on_lod_change(session_ctx, old_lod, 1)
+
+        # Inject PANIC-level LOD update into Live session
+        await _send_lod_update(1, ephemeral_ctx, "PANIC: safety mode activated")
+
+        logger.warning(
+            "PANIC activated for session %s: LOD %d → 1",
+            session_id,
+            old_lod,
+        )
+
+    # -- Upstream handler ----------------------------------------------------
+
     async def _upstream() -> None:
         """Read messages from the iOS client and forward to the Live API.
 
-        Handles 5 upstream message types: audio, image, telemetry,
-        activity_start, activity_end.
+        Handles upstream message types: audio, image, telemetry,
+        activity_start, activity_end, gesture.
         """
         try:
             while True:
@@ -155,7 +234,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     logger.warning("Received non-JSON text message, ignoring")
                     continue
 
-                if message.get("type") == "audio":
+                msg_type = message.get("type")
+
+                if msg_type == "audio":
                     audio_bytes = base64.b64decode(message["data"])
                     blob = types.Blob(
                         data=audio_bytes,
@@ -163,7 +244,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     )
                     live_request_queue.send_realtime(blob)
 
-                elif message.get("type") == "image":
+                elif msg_type == "image":
                     image_bytes = base64.b64decode(message["data"])
                     mime_type = message.get("mimeType", "image/jpeg")
                     blob = types.Blob(
@@ -172,25 +253,31 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     )
                     live_request_queue.send_realtime(blob)
 
-                elif message.get("type") == "telemetry":
+                elif msg_type == "telemetry":
                     telemetry_data = message.get("data", {})
-                    semantic_text = parse_telemetry(telemetry_data)
-                    content = types.Content(
-                        parts=[types.Part(text=semantic_text)],
-                        role="user",
-                    )
-                    live_request_queue.send_content(content)
+                    await _process_telemetry(telemetry_data)
 
-                elif message.get("type") == "activity_start":
+                elif msg_type == "activity_start":
                     # Native audio models use automatic VAD; skip explicit
                     # activity signals to avoid 1007 errors.
                     logger.debug("Ignored activity_start (native audio VAD active)")
 
-                elif message.get("type") == "activity_end":
+                elif msg_type == "activity_end":
                     logger.debug("Ignored activity_end (native audio VAD active)")
 
+                elif msg_type == "gesture":
+                    # Direct LOD gesture from iOS (lod_up / lod_down)
+                    gesture = message.get("gesture")
+                    if gesture in ("lod_up", "lod_down"):
+                        ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
+                        ephemeral_ctx.user_gesture = gesture
+                        await _process_lod_decision(ephemeral_ctx)
+                        # Clear gesture after processing
+                        ephemeral_ctx.user_gesture = None
+                        session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
+
                 else:
-                    logger.warning("Unknown upstream message type: %s", message.get("type"))
+                    logger.warning("Unknown upstream message type: %s", msg_type)
 
         except WebSocketDisconnect:
             stop_downstream.set()
@@ -198,6 +285,86 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         except Exception:
             stop_downstream.set()
             logger.exception("Error in upstream handler: user=%s session=%s", user_id, session_id)
+
+    # -- Telemetry processing ------------------------------------------------
+
+    async def _process_telemetry(telemetry_data: dict) -> None:
+        """Process a telemetry tick: semantic text + LOD decision.
+
+        Dual-path processing:
+        1. Parse into semantic text → inject as [TELEMETRY UPDATE] for Gemini
+        2. Parse into EphemeralContext → run LOD decision engine
+        """
+        # Path 1: Semantic text for Gemini context
+        semantic_text = parse_telemetry(telemetry_data)
+        content = types.Content(
+            parts=[types.Part(text=semantic_text)],
+            role="user",
+        )
+        live_request_queue.send_content(content)
+
+        # Path 2: EphemeralContext for LOD engine
+        ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
+        session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
+
+        # Check PANIC first (takes absolute priority)
+        is_panic = panic_handler.evaluate(
+            heart_rate=ephemeral_ctx.heart_rate,
+            panic_flag=ephemeral_ctx.panic,
+        )
+        if is_panic:
+            await _handle_panic(ephemeral_ctx)
+            return  # PANIC overrides normal LOD processing
+
+        # Run LOD decision
+        await _process_lod_decision(ephemeral_ctx)
+
+    async def _process_lod_decision(ephemeral_ctx) -> None:
+        """Run the LOD decision engine and handle transitions."""
+        new_lod, decision_log = decide_lod(
+            ephemeral=ephemeral_ctx,
+            session=session_ctx,
+            profile=user_profile,
+        )
+
+        old_lod = session_ctx.current_lod
+
+        if new_lod != old_lod:
+            # LOD changed — handle transition
+            logger.info(
+                "LOD transition: %d → %d (%s) session=%s",
+                old_lod,
+                new_lod,
+                decision_log.reason,
+                session_id,
+            )
+
+            # Handle narrative snapshot (save on downgrade, restore on upgrade)
+            resume_prompt = on_lod_change(session_ctx, old_lod, new_lod)
+
+            # Update session state
+            session_ctx.current_lod = new_lod
+
+            # Inject [LOD UPDATE] into Live session
+            await _send_lod_update(new_lod, ephemeral_ctx, decision_log.reason)
+
+            # If there's a resume prompt from narrative snapshot, inject it
+            if resume_prompt:
+                resume_content = types.Content(
+                    parts=[types.Part(text=resume_prompt)],
+                    role="user",
+                )
+                live_request_queue.send_content(resume_content)
+                logger.info("Injected [RESUME] prompt for session %s", session_id)
+
+            # Notify iOS client of LOD change
+            await _notify_ios_lod_change(
+                new_lod,
+                decision_log.reason,
+                decision_log.to_debug_dict(),
+            )
+
+    # -- Downstream handler --------------------------------------------------
 
     async def _downstream() -> None:
         """Read events from the Live API and forward to the iOS client.
@@ -215,8 +382,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     update = event.live_session_resumption_update
                     if update.newHandle:
                         session_manager.update_handle(session_id, update.newHandle)
-                    # Always notify the client; the first event with
-                    # newHandle=None acts as a "connection ready" signal.
                     if not await _safe_send_json({
                         "type": "session_resumption",
                         "handle": update.newHandle,
@@ -279,6 +444,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         logger.exception("Session error: user=%s session=%s", user_id, session_id)
     finally:
         live_request_queue.close()
+        session_manager.remove_session(session_id)
         logger.info("Session cleaned up: user=%s session=%s", user_id, session_id)
 
 

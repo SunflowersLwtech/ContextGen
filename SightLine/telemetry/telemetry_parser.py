@@ -2,10 +2,16 @@
 
 Converts raw sensor JSON from the iOS client into semantic text
 suitable for injection into the Gemini Live context.
+
+Phase 2 additions:
+- ``parse_telemetry_to_ephemeral()`` — converts raw JSON into
+  ``EphemeralContext`` for the LOD decision engine.
 """
 
 import json
 import logging
+
+from lod.models import EphemeralContext, GPSData
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +132,92 @@ def _degrees_to_cardinal(degrees: float) -> str:
     ]
     idx = round(degrees / 22.5) % 16
     return directions[idx]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Raw telemetry → EphemeralContext (for LOD engine)
+# ---------------------------------------------------------------------------
+
+# iOS CMMotionActivity types → normalised motion states
+_MOTION_STATE_MAP: dict[str, str] = {
+    "stationary": "stationary",
+    "walking": "walking",
+    "running": "running",
+    "automotive": "in_vehicle",
+    "cycling": "cycling",
+    "unknown": "stationary",
+}
+
+
+def parse_telemetry_to_ephemeral(data: dict) -> EphemeralContext:
+    """Convert raw telemetry JSON from iOS into an ``EphemeralContext``.
+
+    This is the LOD engine's input — a structured snapshot of the user's
+    physical state, used alongside ``SessionContext`` and ``UserProfile``
+    by ``decide_lod()``.
+
+    Args:
+        data: Raw telemetry dict from iOS TelemetryData.toJSON().
+
+    Returns:
+        Populated EphemeralContext dataclass.
+    """
+    ctx = EphemeralContext()
+
+    # Motion state
+    raw_motion = data.get("motion_state", "stationary")
+    ctx.motion_state = _MOTION_STATE_MAP.get(raw_motion, "stationary")
+
+    # Step cadence
+    try:
+        ctx.step_cadence = float(data.get("step_cadence", 0.0))
+    except (ValueError, TypeError):
+        ctx.step_cadence = 0.0
+
+    # Ambient noise
+    try:
+        ctx.ambient_noise_db = float(data.get("ambient_noise_db", 50.0))
+    except (ValueError, TypeError):
+        ctx.ambient_noise_db = 50.0
+
+    # GPS
+    gps_raw = data.get("gps")
+    if gps_raw and isinstance(gps_raw, dict):
+        try:
+            ctx.gps = GPSData(
+                lat=float(gps_raw.get("latitude", 0.0)),
+                lng=float(gps_raw.get("longitude", 0.0)),
+                accuracy=float(gps_raw.get("accuracy", 0.0)),
+                speed=float(gps_raw.get("speed", 0.0)),
+                altitude=float(gps_raw.get("altitude", 0.0)),
+            )
+        except (ValueError, TypeError):
+            ctx.gps = None
+
+    # Heading
+    try:
+        ctx.heading = float(data.get("heading", 0.0))
+    except (ValueError, TypeError):
+        ctx.heading = 0.0
+
+    # Time context
+    ctx.time_context = data.get("time_context", "unknown")
+
+    # Heart rate (None when watch not connected)
+    hr = data.get("heart_rate")
+    if hr is not None:
+        try:
+            ctx.heart_rate = float(hr)
+        except (ValueError, TypeError):
+            ctx.heart_rate = None
+
+    # User gesture (lod_up, lod_down, tap, shake)
+    ctx.user_gesture = data.get("user_gesture")
+
+    # Panic flag
+    ctx.panic = bool(data.get("panic", False))
+
+    # Device type
+    ctx.device_type = data.get("device_type", "phone_only")
+
+    return ctx

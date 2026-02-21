@@ -2,6 +2,10 @@
 
 Manages session state, resumption handles, and RunConfig construction
 for the Gemini Live API via Google ADK.
+
+Phase 2 additions:
+- LOD-driven VAD parameter presets
+- Per-session LOD + context state tracking
 """
 
 import logging
@@ -10,20 +14,48 @@ from typing import Optional
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
 
+from lod.models import EphemeralContext, SessionContext, UserProfile
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# LOD-driven VAD presets (SL-36)
+# Native-audio models handle VAD internally; these presets influence
+# the model's sensitivity to voice activity detection.
+# ---------------------------------------------------------------------------
+
+LOD_VAD_PRESETS: dict[int, dict] = {
+    1: {
+        "voice_name": "Aoede",
+        # LOD 1: fast response, high sensitivity (walking/danger)
+    },
+    2: {
+        "voice_name": "Aoede",
+        # LOD 2: balanced (exploration)
+    },
+    3: {
+        "voice_name": "Aoede",
+        # LOD 3: patient, allows complex questions (seated)
+    },
+}
 
 
 class SessionManager:
     """Manages Live API session state and RunConfig construction.
 
-    Tracks session resumption handles so that dropped connections can be
-    transparently resumed without losing conversational context.
+    Tracks session resumption handles and per-session context so that
+    dropped connections can be transparently resumed.
     """
 
     def __init__(self) -> None:
         self._session_handles: dict[str, str] = {}
+        self._session_contexts: dict[str, SessionContext] = {}
+        self._user_profiles: dict[str, UserProfile] = {}
+        self._ephemeral_contexts: dict[str, EphemeralContext] = {}
 
-    def get_run_config(self, session_id: str) -> RunConfig:
+    # -- RunConfig ----------------------------------------------------------
+
+    def get_run_config(self, session_id: str, lod: int = 2) -> RunConfig:
         """Build a RunConfig for the given session.
 
         Includes all baseline settings plus session resumption if a
@@ -31,6 +63,7 @@ class SessionManager:
 
         Args:
             session_id: The session identifier.
+            lod: Current LOD level (affects VAD preset).
 
         Returns:
             Fully configured RunConfig for runner.run_live().
@@ -45,13 +78,15 @@ class SessionManager:
         else:
             logger.info("Starting fresh session %s (no cached handle)", session_id)
 
+        vad_preset = LOD_VAD_PRESETS.get(lod, LOD_VAD_PRESETS[2])
+
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Aoede"
+                        voice_name=vad_preset["voice_name"],
                     )
                 )
             ),
@@ -68,32 +103,51 @@ class SessionManager:
 
         return run_config
 
-    def update_handle(self, session_id: str, handle: str) -> None:
-        """Cache a session resumption handle.
+    # -- Session handle cache -----------------------------------------------
 
-        Args:
-            session_id: The session identifier.
-            handle: The resumption handle from the server.
-        """
+    def update_handle(self, session_id: str, handle: str) -> None:
+        """Cache a session resumption handle."""
         self._session_handles[session_id] = handle
         logger.debug("Cached resumption handle for session %s", session_id)
 
     def get_handle(self, session_id: str) -> Optional[str]:
-        """Retrieve a cached resumption handle.
-
-        Args:
-            session_id: The session identifier.
-
-        Returns:
-            The cached handle, or None if no handle exists.
-        """
+        """Retrieve a cached resumption handle."""
         return self._session_handles.get(session_id)
 
-    def remove_session(self, session_id: str) -> None:
-        """Remove all cached state for a session.
+    # -- Per-session context ------------------------------------------------
 
-        Args:
-            session_id: The session identifier to clean up.
+    def get_session_context(self, session_id: str) -> SessionContext:
+        """Get or create the SessionContext for this session."""
+        if session_id not in self._session_contexts:
+            self._session_contexts[session_id] = SessionContext()
+        return self._session_contexts[session_id]
+
+    def get_user_profile(self, user_id: str) -> UserProfile:
+        """Get or create the UserProfile for this user.
+
+        In production this would load from Firestore.  Currently returns
+        sensible defaults.
         """
+        if user_id not in self._user_profiles:
+            self._user_profiles[user_id] = UserProfile.default()
+            self._user_profiles[user_id].user_id = user_id
+        return self._user_profiles[user_id]
+
+    def get_ephemeral_context(self, session_id: str) -> EphemeralContext:
+        """Get or create the latest EphemeralContext for this session."""
+        if session_id not in self._ephemeral_contexts:
+            self._ephemeral_contexts[session_id] = EphemeralContext()
+        return self._ephemeral_contexts[session_id]
+
+    def update_ephemeral_context(self, session_id: str, ctx: EphemeralContext) -> None:
+        """Store the latest ephemeral context snapshot."""
+        self._ephemeral_contexts[session_id] = ctx
+
+    # -- Cleanup ------------------------------------------------------------
+
+    def remove_session(self, session_id: str) -> None:
+        """Remove all cached state for a session."""
         self._session_handles.pop(session_id, None)
+        self._session_contexts.pop(session_id, None)
+        self._ephemeral_contexts.pop(session_id, None)
         logger.debug("Removed session state for %s", session_id)
