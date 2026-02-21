@@ -1,0 +1,604 @@
+# SightLine 统一开发参考方案
+
+> **生成日期**: 2026-02-22
+> **基于**: 35 份文档的交叉验证与整合
+> **定位**: 取代所有分散文档，作为开发阶段的唯一参考
+
+---
+
+## 0. 文档体系评估与裁定
+
+### 0.1 现有文档分层
+
+经过对全部 35 份文档的交叉验证，文档体系形成以下层级：
+
+| 层级 | 文档 | 状态 | 用途 |
+|------|------|------|------|
+| **L0 权威规格** | `SightLine_Final_Specification.md` | **主参考** | 产品定义 + 架构设计 + 竞赛策略 |
+| **L1 执行计划** | `SightLine_Subtasks_Roadmap.md` | **直接使用** | Phase 分解、依赖图、Cut-Line |
+| **L1 深化设计** | `engine/Context_Engine_Implementation_Guide.md` | **补充参考** | LOD Engine、Context 建模、Vision Extraction 实现细节 |
+| **L1 深化设计** | `engine/Memory_System_Research_and_Integration.md` | **补充参考** | Memory 方案选型决议（Vertex AI Memory Bank） |
+| **L2 审计日志** | `SightLine_Alignment_Review.md` | **问题回溯** | 10 个跨文档矛盾的修复记录 |
+| **L2 技术调研** | `SightLine_Technical_Research.md` | **实现细节** | Roadmap 大量引用的技术实现参考 |
+| **L2 技术调研** | `SightLine_Best_Practices_Research.md` | **实现细节** | ADK bidi-demo 模板、Activity Signals 等最佳实践 |
+| **L2 UX 调研** | `SightLine_Voice_Interaction_UX_Research.md` | **UX 细节** | VAD 调优、手势映射、嘈杂环境防御 |
+| **L3 原始研究** | `raw_research/infra/*` (8 份) | **按需查阅** | 各技术栈的详细 API 用法和基准测试 |
+| **L3 原始研究** | `raw_research/engine/*` (3 份) | **按需查阅** | 学术背景、开源框架评估 |
+| **L3 竞赛/竞品** | `raw_research/competition/*` + `raw_research/product/*` | **策略参考** | 竞赛要求、竞品分析、产品定位 |
+| **DEPRECATED** | `SightLine 核心架构_ Agent编排与上下文建模.md` | **已废弃** | 内容已被 Final Spec 吸收 |
+| **DEPRECATED** | `SightLine 硬件形态与极简部署策略.md` | **已废弃** | 内容已被 Final Spec 吸收（SEP 协议细节需从此处补充） |
+
+### 0.2 跨文档矛盾裁定
+
+经交叉验证发现以下关键矛盾，统一裁定如下：
+
+| # | 矛盾点 | 涉及文档 | 裁定 |
+|---|--------|---------|------|
+| 1 | **架构模式**：Direct browser-to-Gemini vs Server-to-Server | Technical Research §753 vs 其他所有文档 | **Server-to-Server**。删除 Technical Research 中的直连方案残留 |
+| 2 | **Memory 存储方案**：自建 Firestore 图谱 vs Mem0 vs Vertex AI Memory Bank | 核心架构 vs Implementation Guide vs Memory Research | **Vertex AI Memory Bank**（首选），Mem0 作为 fallback |
+| 3 | **嵌入维度**：768 vs 2048 vs 3072 | RAG Research vs Gemini 3 Migration vs Final Spec | **2048 维**（gemini-embedding-001 native 3072d → truncated to 2048 for Firestore max） |
+| 4 | **Live API 模型 ID** | 多种写法混用 | **`gemini-2.5-flash-native-audio-preview-12-2025`**（唯一正确 ID） |
+| 5 | **Orchestrator 构建方式** | ADK 示例用 `LlmAgent` vs 实际需要 Live API bidi-streaming | ADK `LlmAgent` 仅为结构参考；实际 Orchestrator 通过 `client.aio.live.connect()` + `LiveRequestQueue` 连接 |
+| 6 | **手势映射** | Final Spec §7.2 vs Voice UX Research §2.2 | 采用 **Voice UX Research 版本**（6 种手势，已在 Alignment Review 中确认） |
+| 7 | **砍功能优先级** | Final Spec §12.1 vs Roadmap §4 Cut-Line | 执行时以 **Roadmap Cut-Line** 为准 |
+
+---
+
+## 1. 硬件与环境感知
+
+### 1.1 硬件形态
+
+**设计哲学**："Hardware-Agnostic Cloud Brain"——不绑定任何特定硬件，通过 SightLine Edge Protocol (SEP) 标准化三大数据通道。
+
+**Hackathon 硬件**：智能手机（PWA）= 唯一硬件
+
+| 通道 | Hackathon 实现 | 生产级目标 |
+|------|---------------|-----------|
+| SEP-Vision | 手机后置摄像头（`getUserMedia`）→ 768x768 JPEG @ 1FPS | 智能眼镜（Meta Ray-Ban 等）、胸前摄像头 |
+| SEP-Audio | 手机麦克风 + AirPods/骨传导耳机 → PCM 16kHz mono | 助听器直连、多麦克风波束成形 |
+| SEP-Telemetry | 手机传感器 + Developer Console 仿真 → JSON | 智能手表心率、盲杖 IMU |
+
+**已知平台限制**：
+
+| 限制 | 影响 | Hackathon 缓解 |
+|------|------|---------------|
+| iOS standalone PWA 下 `getUserMedia` 损坏 | 摄像头不可用 | 检测 iOS 后在 Safari 中打开 |
+| PWA 无法拦截 iOS 音量键 | 无法做 LOD 快捷键 | 使用触屏手势（上滑/下滑） |
+| Gemini Live API 只支持 WebSocket | 无法用 WebRTC 直连 Gemini | Cloud Run 中转 WebSocket |
+| 视频会话 2 分钟硬上限（无压缩时） | 会话中断 | **必须启用** `contextWindowCompression` |
+
+### 1.2 硬件 Context 注入（SEP-Telemetry）
+
+**数据获取方式**：
+
+| 传感器 | 数据源 | 提取方法 | LOD 影响 |
+|--------|-------|---------|---------|
+| 加速度计 | iOS `CMMotionActivityManager` / Android `ActivityRecognitionClient` | → motion_state + step_cadence | walking/running→LOD 1, stationary→LOD 3 |
+| 麦克风 RMS | Web Audio API AudioWorklet | → ambient_noise_db | >80dB 强制精简, <40dB 低语模式 |
+| GPS | `navigator.geolocation` | → lat/lng + 空间转换检测 | 室外→室内 触发 LOD 升级 |
+| 时钟 | `Date` API | → time_context (morning_commute 等) | 通勤时段降 LOD |
+| 罗盘 | `DeviceOrientationEvent` | → heading (方位角) | 时钟位置计算 |
+| 心率（可选） | Apple Watch HealthKit / 手环 BLE | → heart_rate | >120 BPM 触发 PANIC 中断 |
+
+**Telemetry JSON 报文格式**：
+
+```json
+{
+  "motion_state": "walking|stationary|running|in_vehicle",
+  "step_cadence": 72,
+  "ambient_noise_db": 65,
+  "gps": {"lat": 37.7749, "lng": -122.4194},
+  "time_context": "morning_commute",
+  "heart_rate": 75,
+  "user_gesture": "lod_up",
+  "panic": false
+}
+```
+
+**传输路径**：前端 WebSocket → Cloud Run Context Parser → `LiveRequestQueue.send_content()` 以 `[TELEMETRY UPDATE] {...}` 文本消息注入 Gemini Live session context，复用同一条 WebSocket，不另开独立通道。
+
+### 1.3 硬件相关配置
+
+| 配置项 | 值 | 说明 |
+|--------|---|------|
+| 视频分辨率 | 768x768 JPEG | Gemini Live API 推荐 |
+| 视频帧率 | 1 FPS（LOD 1-2）/ 0.3-0.5 FPS（LOD 3 静止） | 通过像素差异跳过重复帧 |
+| 音频输入格式 | PCM 16-bit LE, 16kHz, Mono | Gemini Live API 要求 |
+| 音频输出格式 | PCM 16-bit LE, 24kHz | Gemini Live API 输出 |
+| WebSocket 路由 | `wss://cloud-run-url/ws/{user_id}/{session_id}` | 前端到 Cloud Run |
+| Context Compression | trigger_tokens=100000, target=80000 | 必须启用 |
+| Cloud Run 预热 | `min_instance_count=1`, `cpu_throttling=false`, startup CPU boost | 消除冷启动 |
+| Wake Lock | `navigator.wakeLock.request('screen')` | 防止 PWA 息屏 |
+
+**Developer Console（Hackathon 传感器仿真）**：Web 界面上的滑块/按钮，按 SEP-Telemetry JSON 协议向云端注入心率、步频等模拟数据。评委接受这种仿真方式。
+
+---
+
+## 2. 记忆系统（Memory）
+
+### 2.1 三层 Context 模型
+
+| 层级 | 生命周期 | 存储位置 | 内容 |
+|------|---------|---------|------|
+| **Ephemeral** | ms ~ s | Gemini Context Window（实时注入） | 视频帧、传感器快照、心率突变、运动状态 |
+| **Session** | min ~ hr | ADK Session State（内存/持久化） | trip_purpose, space_type, space_transitions, avg_cadence, conversation_topics, active_task, narrative_snapshot |
+| **Long-term** | 跨会话 | Vertex AI Memory Bank（底层 Firestore） | 用户偏好、人脸库、常去地点、行为模式、压力触发因素 |
+
+### 2.2 长时记忆
+
+**裁定方案：Vertex AI Memory Bank**（首选）
+
+| 维度 | Vertex AI Memory Bank | 自建 Mem0 式 | Mem0 开源 |
+|------|----------------------|-------------|-----------|
+| 代码量 | ~30 行 | 200-500 行 | ~50 行 |
+| ADK 集成 | 原生（`VertexAiMemoryBankService`） | 手动 | 官方集成 |
+| 记忆提取 | Gemini 自动提取 | 自建 extraction prompt | 内置提取 |
+| 冲突处理 | 自动合并（非简单追加） | 手动实现 | 内置 |
+| 检索 | `PreloadMemoryTool` 每轮自动加载 | 手动 embedding + search | 内置 |
+| 底层存储 | Firestore | Firestore | 多种 |
+
+**集成代码骨架**：
+```python
+from google.adk.memory import VertexAiMemoryBankService, PreloadMemoryTool
+
+memory_service = VertexAiMemoryBankService(project="sightline", location="us-central1")
+runner = Runner(
+    agent=orchestrator_agent,
+    session_service=VertexAiSessionService(project="sightline", location="us-central1"),
+    memory_service=memory_service,
+)
+```
+
+**Fallback 策略**：如 Memory Bank 提取逻辑不够灵活（如需要 Graph Memory 做社交关系拓扑），切换到 Mem0（41K stars，ADK 官方集成）。
+
+**记忆分类**：
+
+| 类型 | 来源 | 示例 |
+|------|------|------|
+| **Explicit Profile** | 用户主动填写 | vision_status, blindness_onset, has_guide_dog, tts_speed, verbosity_preference, om_level |
+| **Implicit Episodic** | 系统自动提取 | preference, location, person, behavior, stress_trigger, routine |
+
+**记忆提取时机**：Session 结束时（非实时，避免延迟影响）。Gemini Flash 提取 → 冲突检测（cosine_similarity > 0.85 更新，否则新建）→ confidence < 0.7 不存储。
+
+**检索策略**：
+```
+relevance = 0.5 * query_similarity + 0.3 * recency_score + 0.2 * importance_score
+```
+importance 权重：stress_trigger > routine > preference。衰减机制：`decay_factor=0.95`。
+
+### 2.3 短时记忆（Session Context）
+
+在 Gemini Live API 的 Context Window + ADK Session State 内维持：
+
+```python
+class SessionContext:
+    trip_purpose: str           # "去面试" / "日常通勤"
+    space_type: str             # "indoor" / "outdoor" / "vehicle"
+    space_transitions: list     # ["室外 → 大堂", "大堂 → 电梯"]
+    avg_cadence_30min: float    # 30 分钟步频均值
+    conversation_topics: list   # 近期对话主题
+    active_task: str | None     # "正在读菜单" / None
+    narrative_snapshot: dict | None  # LOD 降级时的断点
+```
+
+**ADK State 前缀**：
+- 无前缀：当前调用内临时
+- `temp:`：每轮清除
+- `user:`：跨会话持久化（该用户）
+- `app:`：跨会话持久化（全局）
+
+**Narrative Snapshot**：LOD 降级时保存当前任务断点（task_type、progress、remaining），LOD 恢复时从断点继续（10 分钟 TTL，超时重新开始）。
+
+---
+
+## 3. 引擎核心（Engine）
+
+### 3.1 Context Engine 架构
+
+Context Engine 不是传统的"场景匹配引擎"，而是**三层上下文融合 → LOD 决策 → Dynamic Prompt 构建**的管线：
+
+```
+Ephemeral Context (传感器)  ─┐
+Session Context (会话状态)   ─┼→ LOD Decision Engine (规则引擎) → LOD 1/2/3
+Long-term Context (记忆检索) ─┘         │
+                                       ↓
+                              Dynamic System Prompt 构建
+                                       │
+                                       ↓
+                              Orchestrator (Gemini 2.5 Flash Live API)
+```
+
+### 3.2 LOD Decision Engine（Load Engine / 场景匹配引擎）
+
+**核心原则**："知趣地闭嘴"——默认偏向静默，发声有认知成本，打断即降级。
+
+**三级 LOD**：
+
+| 等级 | 模式 | 字数 | 触发条件 | 信息内容 |
+|------|------|------|---------|---------|
+| LOD 1 | 静默/低语 | 15-40 词 | 行走中/跑步/高噪声/PANIC | 仅安全关键信息 |
+| LOD 2 | 标准 | 80-150 词 | 缓步探索/新空间进入 | 空间布局 + 关键物体 |
+| LOD 3 | 叙事 | 400-800 词 | 静止/阅读/用户请求 | 完整场景、细节、氛围 |
+
+**决策优先级（从高到低）**：
+
+1. **PANIC 中断**：heart_rate > 120 → 强制 LOD 1，清空 TTS 队列
+2. **运动状态基线**：running/快步 → LOD 1；正常步行 → LOD 1；缓慢探索 → LOD 2；静止/车内 → LOD 3
+3. **环境噪声调整**：> 80dB 强制精简
+4. **空间转换提升**：进入新空间至少 LOD 2
+5. **用户偏好调整**：verbosity_preference 微调
+6. **O&M 水平调整**：高水平日常出行者降一级
+7. **用户显式请求**（最终覆盖）："详细说说" → LOD 3，"停" → LOD 1
+
+**实现方式**：纯规则引擎（非 LLM），因为延迟要求极高（ms 级决策）。
+
+**发声阈值机制**：每次发声分配认知成本分数，运动越快/噪声越高则阈值越高：
+
+| 信息类型 | info_value | 说明 |
+|---------|-----------|------|
+| safety_warning | 10.0 | 始终突破阈值 |
+| navigation | 8.0 | 几乎始终通过 |
+| face_recognition | 7.0 | 大多数情况通过 |
+| spatial_description | 5.0 | LOD 2+ 通过 |
+| object_enumeration | 3.0 | LOD 3 通过 |
+| atmosphere | 1.0 | 仅 LOD 3 静止时通过 |
+
+### 3.3 CoT 策略（Think-Before-Act）
+
+受 ContextAgent（NeurIPS 2025）启发：
+- LOD 1：**不启用 CoT**——延迟不可接受
+- LOD 2/3：注入轻量推理链，让 Gemini 先内部推理再输出
+- PANIC：直接跳过 CoT
+
+### 3.4 Dynamic System Prompt 构建
+
+LOD Decision Engine 输出后，构建包含以下部分的 System Prompt：
+
+1. 用户 Profile（Persona 字段：vision_status、verbosity_preference 等——贡献 ~9% 决策准确率）
+2. 当前 LOD 指令（字数限制、描述策略）
+3. 实时 Ephemeral Context（传感器语义化文本）
+4. Session Context（行程目的、空间状态）
+5. Long-term Memory 检索结果（top-K 相关记忆）
+6. Vision Sub-Agent 输出（LOD-Adaptive 提取结果）
+
+### 3.5 Proactive-Oriented Vision Extraction
+
+Vision Sub-Agent 不回答"你看到了什么"，而是回答"对视障用户当前行动有什么影响"：
+
+| LOD | Vision Prompt 焦点 | Token 消耗（media_resolution） |
+|-----|-------------------|------------------------------|
+| LOD 1 | 仅安全威胁（台阶、车辆、障碍） | `low` → 70 tokens/帧（省 94%） |
+| LOD 2 | 空间导航信息（入口、路径、标识） | `medium` → 560 tokens/帧 |
+| LOD 3 | 全量描述（人物、物品、文字、氛围） | `high` → 1120 tokens/帧 |
+
+---
+
+## 4. 交互与通信
+
+### 4.1 交互体验（Interaction）
+
+**核心设计**：Always-On Companion，无唤醒词，持续感知、适时说话、知趣闭嘴。
+
+**VAD（自动语音检测）**：Gemini Live API 内建，参数随 LOD 动态调整：
+
+| LOD | start_sensitivity | end_sensitivity | silence_duration_ms | 场景 |
+|-----|-------------------|-----------------|--------------------|----|
+| LOD 1 | HIGH | HIGH | 300-500ms | 行走/危险，极速响应 |
+| LOD 2 | MEDIUM | MEDIUM | 700-1000ms | 探索环境 |
+| LOD 3 | MEDIUM | LOW | 1200-1500ms | 静坐/阅读，允许复杂问题 |
+
+**Gemini 独有能力**：
+- **Proactive Audio**：AI 主动决定何时说话（危险/新场景时无需用户提问）
+- **Affective Dialog**：识别用户情绪语调，调整回复语气
+- **语义级 Barge-in**：区分真打断、背景噪音、"嗯/对"反馈
+
+**手势映射（全屏触控区）**：
+
+| 手势 | 动作 | 触觉反馈 |
+|------|------|---------|
+| 单击 | 静音/取消静音麦克风 | 短震一次 |
+| 双击 | 强制中断 Agent 说话 | 短震两次 |
+| 三击 | 重复上一句话 | 短震三次 |
+| 长按 (3s) | 紧急暂停（全系统静音） | 长震一次 |
+| 上滑 | LOD 升级（说更多） | 上升音效 |
+| 下滑 | LOD 降级（说更少） | 下降音效 |
+| 摇晃手机 | SOS 紧急求助 | 连续震动 |
+
+**嘈杂环境防御（分阶段）**：
+
+| 阶段 | 策略 | 效果 |
+|------|------|------|
+| Hackathon | Gemini AAD + 受控 Demo 环境 | 足够 Demo |
+| Production P1 | + Pipecat + Krisp VIVA | 消除 71% 误打断 |
+| Production P2 | + Picovoice Eagle 声纹验证 | 精准识别用户 |
+| Future | + 多麦克风波束成形 | 方向感知 |
+
+**个性化策略**（受 "Describe Now" ASSETS 2024 启发）：
+- 先天盲人不理解颜色 → 用触觉/空间/声音类比替代
+- BLV 用户偏好加速 TTS → LOD 1 采用更快语速
+
+### 4.2 Google ADK Agent 编排
+
+**层级架构**：
+
+```
+Orchestrator Agent (Gemini 2.5 Flash Native Audio, Live API)
+├── Vision Sub-Agent (Gemini 3.1 Pro, REST)      — 场景理解/表情识别
+├── OCR Sub-Agent (Gemini 3 Flash, REST, FREE)    — 文字读取
+├── Navigation Sub-Agent (Gemini 3 Flash, FREE)   — 地理位置/路线/POI
+├── Memory Sub-Agent (Vertex AI Memory Bank)       — 跨会话记忆
+└── Face ID Sub-Agent (InsightFace ONNX)          — 人脸匹配
+```
+
+**关键设计原则**：
+- **Single Voice**：只有 Orchestrator 能对用户"说话"，Sub-Agent 以 JSON/Text 汇报
+- **非阻塞视觉**：先回复"让我看看..."，异步挂载 Vision Sub-Agent，确保音频通道永远有反馈
+- **后台记忆巩固**：对话中产生新偏好时后台异步更新，不阻塞主流程
+
+**ADK 实时流处理**：
+
+```python
+runner = Runner(agent=root_agent, app_name="sightline",
+                session_service=VertexAiSessionService(...),
+                memory_service=VertexAiMemoryBankService(...))
+
+live_request_queue = runner.create_live_request_queue()
+live_events = runner.run_live(session_id=sid, user_id=uid,
+                              live_request_queue=live_request_queue)
+
+# 实时注入音频/视频/遥测
+live_request_queue.send_realtime(audio_chunk)       # PCM 16kHz
+live_request_queue.send_realtime(video_frame)       # JPEG base64
+live_request_queue.send_content("[TELEMETRY UPDATE] {...}")  # 传感器
+```
+
+**必须补充的 RunConfig**：
+- `input_audio_transcription=True`：前端字幕 + LOD 意图分析 + Memory 存储
+- `output_audio_transcription=True`：同上
+- `enable_affective_dialog=True`：放在 `LiveConnectConfig` 顶层
+
+### 4.3 底层网络 Infra
+
+**Hackathon 架构（Server-to-Server）**：
+
+```
+Phone PWA ──WebSocket (WSS)──→ Cloud Run (FastAPI + ADK) ──WebSocket (WSS)──→ Gemini Live API
+                                        ↕
+                              Sub-Agents (Vision/OCR/FaceID/Memory)
+                              Firestore / Maps API / Google Search
+```
+
+**数据流**：
+- 前端通过 `getUserMedia` 获取音视频
+- AudioWorklet 切分 PCM 16kHz 块
+- Canvas 生成 768x768 JPEG 帧
+- 一条 WebSocket 承载 audio + image + telemetry（不另开通道）
+- API Key 在后端 Secret Manager，前端不接触
+
+**延迟分解**：
+
+| 环节 | 延迟 |
+|------|------|
+| 摄像头捕获 | ~16ms |
+| JPEG 编码 | ~5-15ms |
+| Base64 编码 | ~1-2ms |
+| WebSocket 传输 | ~20-80ms |
+| **Gemini 处理** | **500ms-6000ms** ← 主瓶颈 |
+| 流式音频播放 | ~10-50ms |
+| **总感知延迟** | **~600ms - 6500ms** |
+
+**优化策略（Hackathon）**：
+1. 流式播放（音频块到达即播），不等完整响应
+2. 预反馈："Let me look at that..."
+3. 客户端帧选择（像素差异跳过重复场景）
+4. Context Compression（无限会话）
+5. Session Resumption（断线 2 小时内可恢复）
+6. Cloud Run 预热（`min_instance_count=1`）
+
+**Production 升级路径**：
+```
+Phone ──WebRTC (UDP)──→ Pipecat/Daily Edge ──WebSocket──→ Cloud Run ──WSS──→ Gemini
+```
+WebRTC 用 UDP 处理"最后一公里"，消除 TCP 队头阻塞（移动 4G 下 WebSocket 延迟可飙至 10-15s）。
+
+---
+
+## 5. 功能与集成
+
+### 5.1 Function Calling
+
+**两种模式**：
+
+| 模式 | 用于 | 定义方式 |
+|------|------|---------|
+| Gemini Live API Function Calling | Orchestrator 实时流中 | `LiveConnectConfig.tools` → `FunctionDeclaration` |
+| ADK Agent Tools | Sub-Agent REST 调用 | `LlmAgent(tools=[python_function])` |
+
+**三种调度行为**：
+
+| 行为 | 用途 | 示例 |
+|------|------|------|
+| `INTERRUPT` | 安全警报，立即打断 | 检测到危险 |
+| `WHEN_IDLE` | 模型说完后交付 | 导航结果、人脸识别 |
+| `SILENT` | 后台静默存入 context | Telemetry 更新 |
+
+**已定义的 Function 列表**：
+
+| Function | 用途 | 所属 Agent |
+|----------|------|-----------|
+| `navigate_to(destination)` | 步行导航 | Orchestrator |
+| `google_search()` | 实时信息查询（Grounding） | Orchestrator |
+| `identify_person()` | 触发人脸识别（behavior=SILENT） | Orchestrator |
+| `get_location_info(lat, lng)` | 位置信息 | Navigation |
+| `nearby_search(lat, lng, radius, types)` | 附近地点 | Navigation |
+| `reverse_geocode(lat, lng)` | 反向地理编码 | Navigation |
+| `get_walking_directions(origin, dest)` | 步行路线 | Navigation |
+| `register_face(image_path)` | 注册人脸嵌入 | Face ID |
+| `match_face(embedding, known_persons)` | 匹配人脸 | Face ID |
+| `store_user_memory(user_id, text, type)` | 存储记忆 | Memory |
+| `retrieve_memories(user_id, query)` | 检索记忆 | Memory |
+
+**Gemini 3 注意事项**：Thought Signatures（加密签名令牌）必须按原序返回。使用官方 SDK 自动处理。
+
+### 5.2 需要集成的 API
+
+| API | 用途 | 免费额度 | Hackathon 成本 |
+|-----|------|---------|---------------|
+| **Gemini Live API** | 核心实时双向音频+视频流 | Free tier: 3 并发 | ~$22-25/月 |
+| **Gemini 3 Flash (REST)** | OCR/Navigation/Memory sub-agents | **预览期免费** | $0 |
+| **Gemini 3.1 Pro (REST)** | Vision 深度分析 | 付费 | ~$10-15 |
+| **gemini-embedding-001** | 记忆/RAG 向量嵌入 | 包含在 Firestore 额度 | ~$0 |
+| **Google Maps Places** | 附近地点搜索 | 10,000/月 | $0 |
+| **Google Maps Routes** | 步行导航 | 10,000/月 | $0 |
+| **Google Maps Geocoding** | 地址↔坐标 | 10,000/月 | $0 |
+| **Google Search Grounding** | 实时信息查询 | 包含在 Gemini 调用 | ~$0 |
+| **Firestore** | 用户数据 + 人脸向量 + 记忆 | 50K读/20K写/天 | $0 |
+| **Cloud Run** | 后端部署 | 200 万请求/月 | ~$5 |
+| **Secret Manager** | API Key 存储 | 6 个版本免费 | $0 |
+| **OpenStreetMap Overpass** | 无障碍设施数据（触觉铺装、有声信号灯） | 无限 | $0 |
+
+**Hackathon 总成本估算**：~$58
+
+### 5.3 人脸识别系统
+
+**方案：InsightFace buffalo_l (ONNX)**
+
+| 维度 | 值 |
+|------|---|
+| LFW 准确率 | 99.83% |
+| 嵌入维度 | 512-D |
+| CPU 延迟 | 100-250ms |
+| 推理框架 | ONNX Runtime |
+| Docker 镜像 | ~1.2GB (`python:3.11-slim-bookworm`) |
+| 部署 | 独立 Cloud Run 服务 |
+
+**注册流程**：用户拍照 → InsightFace 检测人脸 → 生成 512-D 嵌入 → L2 归一化 → 存入 Firestore `Vector` 字段
+
+**匹配流程**：未知人脸 → 生成嵌入 → L2 归一化 → 与已知人脸计算余弦相似度（点积）→ 阈值 > 0.4 即匹配
+
+**优化**：< 100 人场景，会话开始时加载所有嵌入到内存，内存级余弦相似度计算。
+
+**隐私**：不存储原始图像，仅存储嵌入向量。
+
+**为什么不用 Cloud Vision**：Google Cloud Vision API 仅做人脸检测（位置、表情），**不生成嵌入，不做识别**。
+
+### 5.4 RAG 架构
+
+**向量数据库：Firestore 原生向量搜索**（无需独立向量数据库）
+
+**嵌入模型：`gemini-embedding-001`**
+- Native 3072 维 → `output_dimensionality=2048`（Firestore 上限）
+- Matryoshka Representation Learning，截断后质量保持良好
+- GA 稳定版，MTEB 多语言排名第一，100+ 语言
+
+**索引创建**：
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=memories \
+  --query-scope=COLLECTION \
+  --field-config field-path=embedding,vector-config='{"dimension":"2048","flat":"{}"}'
+```
+
+**检索流程**：
+1. 当前上下文 → `gemini-embedding-001` 生成查询向量
+2. Firestore `find_nearest()` KNN 搜索（COSINE 距离）
+3. 返回 top-K 结果
+4. 三维加权排序：`0.5 * relevance + 0.3 * recency + 0.2 * importance`
+
+**与 Memory 系统的关系**：RAG 是 Memory 系统的底层检索机制。Vertex AI Memory Bank 在内部使用 Firestore 向量搜索做语义检索，开发者无需直接操作 RAG 管线（除非 fallback 到自建方案）。
+
+---
+
+## 6. 技术栈总览
+
+| 层级 | 选型 | 说明 |
+|------|------|------|
+| **Orchestrator 模型** | `gemini-2.5-flash-native-audio-preview-12-2025` | Live API 仅支持 2.5 |
+| **Vision 模型** | `gemini-3.1-pro-preview` | 最佳推理，1M 上下文 |
+| **轻量 Sub-agent** | `gemini-3-flash-preview` | **预览期免费** |
+| **Embedding** | `gemini-embedding-001` (2048d) | GA，MTEB 第一 |
+| **Agent 框架** | Google ADK (Python) | 唯一原生 Live API 支持 |
+| **人脸识别** | InsightFace buffalo_l (ONNX, 512-D) | 99.83% LFW |
+| **后端** | Cloud Run + FastAPI + ADK | 一命令部署 |
+| **数据库** | Firestore（原生向量搜索） | 用户/人脸/记忆 |
+| **记忆服务** | Vertex AI Memory Bank | ADK 原生，~30 行集成 |
+| **前端** | React PWA (Vite) + getUserMedia + WebSocket | 已有骨架代码 |
+| **基础设施** | Terraform + Cloud Build + Secret Manager | +0.2 加分项 |
+
+### 6.1 Gemini 模型版本注意
+
+| 参数 | Gemini 2.5 (Live API) | Gemini 3 (REST Sub-agents) |
+|------|----------------------|---------------------------|
+| thinking | `thinking_budget`（整数） | `thinking_level`（枚举：minimal/low/medium/high） |
+| temperature | 可调 | **强烈建议 1.0** |
+| media_resolution | 不支持 | 支持（low/medium/high/ultra_high） |
+| Thought Signatures | 无 | 加密签名令牌（SDK 自动处理） |
+
+**已弃用模型（立即移除）**：
+- `gemini-2.0-flash-live-001`：已关闭
+- `gemini-live-2.5-flash-preview`：已关闭
+- `text-embedding-004`：计划关闭
+- `embedding-001`：立即迁移
+
+---
+
+## 7. 竞赛策略摘要
+
+### 7.1 评分权重
+
+| 标准 | 权重 | SightLine 匹配度 |
+|------|------|-----------------|
+| Innovation & Multimodal UX | **40%** | 极高（盲人=最彻底的"打破文本框"） |
+| Technical Implementation | **30%** | 极高（6+ Agent + 5+ GCP 服务） |
+| Demo & Presentation | **30%** | 高（最大情感冲击 + Proactive Audio Wow Moment） |
+
+### 7.2 必须展示的能力（P0）
+
+1. Gemini Live API 实时双向音频+视频流
+2. 多代理架构（ADK Orchestrator + Sub-Agents）
+3. Google Search Grounding（防幻觉）
+4. 视觉输入（Camera/Video）
+
+### 7.3 加分项
+
+- Terraform + Cloud Build 自动部署：+0.2
+- Medium/Dev.to 技术博客 + YouTube：+0.6
+- GDG 会员：+0.2
+
+### 7.4 Demo 场景设计
+
+围绕 LOD 层级切换设计 3 个场景（4 分钟内）：
+1. **行走场景**（LOD 1）：快步行走时 SightLine 保持静默，仅在检测到台阶/车辆时主动警告
+2. **探索场景**（LOD 2）：缓步进入咖啡馆，描述空间布局、入口位置、人数
+3. **静坐场景**（LOD 3）：坐下后，详细朗读菜单、描述对面人的表情、回忆该人的名字
+
+核心 Pitch：*"We didn't build a radar; we built a Semantic Interpreter."*
+
+---
+
+## 8. 开发执行建议
+
+### 8.1 推荐的文档阅读顺序
+
+1. **本文档**（统一参考）→ 全局理解
+2. `SightLine_Subtasks_Roadmap.md` → 获取具体 Phase/Task 分解
+3. `engine/Context_Engine_Implementation_Guide.md` → LOD Engine 实现细节
+4. `SightLine_Best_Practices_Research.md` → ADK bidi-demo 模板代码
+5. `raw_research/infra/*` → 按需查阅特定 API 用法
+
+### 8.2 可归档/不再查阅的文档
+
+- `SightLine 核心架构_ Agent编排与上下文建模.md`（DEPRECATED）
+- `SightLine 硬件形态与极简部署策略.md`（DEPRECATED，SEP 细节已在本文档覆盖）
+- `raw_research/competition/*` 和 `raw_research/product/*`（策略已定，不需再看）
+- `Gemini_Live_Agent_Challenge_Deep_Research.md` 和 `Gemini_Live_Agent_Challenge_Strategy.md`（竞赛要求已提取到本文档 §7）
+
+### 8.3 关键风险提醒
+
+| 风险 | 级别 | 缓解 |
+|------|------|------|
+| iOS standalone PWA 摄像头故障 | **高** | 检测 iOS 后引导在 Safari 中打开 |
+| Gemini Live API 高峰期延迟 5-15s | **中** | 预反馈 + 流式播放 + 避开高峰时段 Demo |
+| 09-2025 模型 2026-03-19 弃用 | **中** | 已使用 12-2025 版本，无影响 |
+| Vertex AI Memory Bank 提取逻辑不够灵活 | **低** | Mem0 作为 fallback |
+| Context Compression 未启用导致 2 分钟断会 | **高** | 配置检查清单第一项 |
