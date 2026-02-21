@@ -262,7 +262,13 @@ GOOGLE_GENAI_USE_VERTEXAI=TRUE                 # ADK 通过 Vertex AI 调用
 
 # === Gemini API ===
 GOOGLE_API_KEY=<from-secret-manager>           # Gemini API Key
-GEMINI_LIVE_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+
+# ⚠️ ADK 不会自动映射 Live API 模型名称（见 ADK Part 5: How to Handle Model Names）
+# Gemini Developer API (VERTEXAI=FALSE): gemini-2.5-flash-native-audio-preview-12-2025
+# Vertex AI            (VERTEXAI=TRUE):  gemini-live-2.5-flash-native-audio (GA, 至 2026-12-12)
+# 下面的值必须与 GOOGLE_GENAI_USE_VERTEXAI 设置匹配！
+GEMINI_LIVE_MODEL=gemini-live-2.5-flash-native-audio   # ← Vertex AI GA 稳定版
+
 GEMINI_VISION_MODEL=gemini-3.1-pro-preview
 GEMINI_FLASH_MODEL=gemini-3-flash-preview
 GEMINI_EMBEDDING_MODEL=gemini-embedding-001

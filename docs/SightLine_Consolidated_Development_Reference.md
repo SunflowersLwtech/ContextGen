@@ -38,7 +38,7 @@
 | 1 | **架构模式**：Direct browser-to-Gemini vs Server-to-Server | Technical Research §753 vs 其他所有文档 | **Server-to-Server**。删除 Technical Research 中的直连方案残留 |
 | 2 | **Memory 存储方案**：自建 Firestore 图谱 vs Mem0 vs Vertex AI Memory Bank | 核心架构 vs Implementation Guide vs Memory Research | **Vertex AI Memory Bank**（首选），Mem0 作为 fallback |
 | 3 | **嵌入维度**：768 vs 2048 vs 3072 | RAG Research vs Gemini 3 Migration vs Final Spec | **2048 维**（gemini-embedding-001 native 3072d → truncated to 2048 for Firestore max） |
-| 4 | **Live API 模型 ID** | 多种写法混用 | **`gemini-2.5-flash-native-audio-preview-12-2025`**（唯一正确 ID） |
+| 4 | **Live API 模型 ID** | 多种写法混用 | **Gemini Developer API**: `gemini-2.5-flash-native-audio-preview-12-2025`；**Vertex AI**: `gemini-live-2.5-flash-native-audio` (GA)。ADK **不会**自动映射名称，需根据 `GOOGLE_GENAI_USE_VERTEXAI` 设置对应名称（参见 ADK Part 5: How to Handle Model Names）。推荐通过 `.env` 环境变量 `GEMINI_LIVE_MODEL` 切换 |
 | 5 | **Orchestrator 构建方式** | ADK 示例用 `LlmAgent` vs 实际需要 Live API bidi-streaming | ADK `LlmAgent` 仅为结构参考；实际 Orchestrator 通过 `client.aio.live.connect()` + `LiveRequestQueue` 连接 |
 | 6 | **手势映射** | Final Spec §7.2 vs Voice UX Research §2.2 | 采用 **Voice UX Research 版本**（6 种手势，已在 Alignment Review 中确认） |
 | 7 | **砍功能优先级** | Final Spec §12.1 vs Roadmap §4 Cut-Line | 执行时以 **Roadmap Cut-Line** 为准 |
@@ -385,7 +385,8 @@ runner = Runner(agent=root_agent, app_name="sightline",
                 session_service=VertexAiSessionService(...),
                 memory_service=VertexAiMemoryBankService(...))
 
-live_request_queue = runner.create_live_request_queue()
+# LiveRequestQueue 直接实例化（ADK 官方 API，不通过 runner 创建）
+live_request_queue = LiveRequestQueue()
 live_events = runner.run_live(session_id=sid, user_id=uid,
                               live_request_queue=live_request_queue)
 
@@ -558,9 +559,9 @@ gcloud firestore indexes composite create \
 
 | 层级 | 选型 | 说明 |
 |------|------|------|
-| **Orchestrator 模型** | `gemini-2.5-flash-native-audio-preview-12-2025` | Live API 仅支持 2.5 |
+| **Orchestrator 模型** | Developer API: `gemini-2.5-flash-native-audio-preview-12-2025` / Vertex AI: `gemini-live-2.5-flash-native-audio` (GA) | Live API 仅支持 2.5；**ADK 不自动映射名称**，需通过 `.env` 按平台配置 |
 | **Vision 模型** | `gemini-3.1-pro-preview` | 最佳推理，1M 上下文 |
-| **轻量 Sub-agent** | `gemini-3-flash-preview` | **预览期免费** |
+| **轻量 Sub-agent** | `gemini-3-flash-preview` | **预览期免费**（仅 Gemini Developer API Free Tier；Vertex AI 上正常计费） |
 | **Embedding** | `gemini-embedding-001` (2048d) | GA，MTEB 第一 |
 | **Agent 框架** | Google ADK (Python) | 唯一原生 Live API 支持 |
 | **人脸识别** | InsightFace buffalo_l (ONNX, 512-D) | 99.83% LFW |
@@ -570,6 +571,8 @@ gcloud firestore indexes composite create \
 | **iOS 前端** | Swift Native (AVFoundation + CoreMotion + HealthKit + NWConnection) | 详见 iOS Infra Design |
 | **watchOS 前端** | SwiftUI + HKWorkoutSession + WCSession (~500-680 行) | 实时心率传输 |
 | **基础设施** | Terraform + Cloud Build + Secret Manager | +0.2 加分项 |
+
+> ⚠️ **模型名称映射**：ADK 不会自动在 Gemini Developer API 和 Vertex AI 之间翻译模型名称（见 [ADK Part 5: How to Handle Model Names](https://google.github.io/adk-docs/streaming/dev-guide/part5/#how-to-handle-model-names)）。`.env` 中的 `GEMINI_LIVE_MODEL` 必须与 `GOOGLE_GENAI_USE_VERTEXAI` 设置匹配。Vertex AI 上推荐 GA 稳定版 `gemini-live-2.5-flash-native-audio`（有效期至 2026-12-12），比 preview 版更可靠。
 
 ### 6.1 Gemini 模型版本注意
 

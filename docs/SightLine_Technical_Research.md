@@ -4,6 +4,8 @@
 > **Purpose**: Technology selection and feasibility research for SightLine
 > **Competition**: Gemini Live Agent Challenge (Deadline: 2026-03-16)
 > **Methodology**: 7 parallel research agents covering all technical domains
+>
+> ⚠️ **前端迁移说明 (2026-02-22)**：前端已从 React PWA 迁移到 **Swift Native iOS App**（详见 `SightLine_iOS_Native_Infra_Design.md`）。本文档中 §6 Frontend 章节基于 PWA 已过时，但后端/AI 层技术选型不受影响。
 
 ---
 
@@ -12,11 +14,11 @@
 ### Top-Level Architecture Decision
 
 ```
-Phone (React PWA / Vite)
-  |-- getUserMedia (camera + mic)
-  |-- Canvas: 768x768 JPEG @ 1 FPS
-  |-- AudioWorklet: PCM 16kHz mono
-  |-- WebSocket → Cloud Run (server-to-server)
+iPhone (Swift Native iOS App)                            ← 已从 React PWA 迁移
+  |-- AVCaptureSession (camera) + AVAudioEngine (mic)    ← 替代 getUserMedia/AudioWorklet
+  |-- CIImage → 768x768 JPEG @ 1 FPS
+  |-- AVAudioEngine installTap → PCM 16kHz mono
+  |-- NWConnection WebSocket → Cloud Run (server-to-server)
   |
   v
 Cloud Run (FastAPI + ADK)
@@ -25,7 +27,8 @@ Cloud Run (FastAPI + ADK)
   |
   v
 Gemini Live API (WebSocket, v1alpha)
-  |-- Model: gemini-2.5-flash-native-audio-preview-12-2025 (Live API still 2.5 only)
+  |-- Model: gemini-2.5-flash-native-audio-preview-12-2025 (Dev API)
+  |--    or: gemini-live-2.5-flash-native-audio (Vertex AI GA)   ← ADK 不自动映射
   |-- Proactive Audio + Affective Dialog
   |-- Function Calling (face ID, maps, memory)
   |-- Context Window Compression (unlimited sessions)
@@ -234,7 +237,10 @@ nav_agent = LlmAgent(
 # (Gemini 3 does NOT support Live API as of Feb 2026)
 root_agent = LlmAgent(
     name="SightLine",
-    model="gemini-2.5-flash",        # 2.5 Flash required for Live API
+    model=os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+    # ↑ Native Audio model required for Live API bidi-streaming
+    # Vertex AI uses: gemini-live-2.5-flash-native-audio (GA)
+    # ADK does NOT auto-translate names — set via .env per platform
     instruction="Route based on user intent and safety priority...",
     sub_agents=[vision_agent, ocr_agent, nav_agent],
 )
@@ -253,7 +259,8 @@ runner = Runner(
 )
 
 # Create live request queue for real-time streaming
-live_request_queue = runner.create_live_request_queue()
+# LiveRequestQueue is instantiated directly (not via runner method)
+live_request_queue = LiveRequestQueue()
 
 # Start live agent session
 live_events = runner.run_live(
@@ -750,7 +757,7 @@ A "Live Assistant for Blind People" already won in 2024. SightLine MUST emphasiz
 - **2.5 Flash for Live API, Gemini 3 for sub-agents**: Orchestrator uses 2.5 Flash native audio (only Live API option); sub-agents use Gemini 3 Flash (FREE) / 3.1 Pro (best reasoning) via REST API
 - **Function Calling for tool use**: Face ID, Maps, Memory all integrated via Gemini Function Calling
 - **Non-blocking tools**: Face recognition uses NON_BLOCKING + WHEN_IDLE scheduling
-- **Direct browser-to-Gemini**: No proxy for minimum latency; backend only mints ephemeral tokens
+- **Server-to-Server proxy**: Phone → Cloud Run → Gemini; API Key stays server-side via Secret Manager (matches ADK bidi-demo pattern)
 - **Firestore for everything persistent**: User profiles, face library, long-term memory -- all in one DB with native vector search
 - **LOD-aware media_resolution**: Low (70 tokens) at LOD 1, High (1120 tokens) at LOD 3 -- 94% token savings for quick scans
 

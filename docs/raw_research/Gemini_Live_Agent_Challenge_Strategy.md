@@ -3,6 +3,8 @@
 > 生成日期: 2026-02-21
 > 比赛截止: 2026-03-16 5:00 PM PDT
 > 剩余时间: ~23 天
+>
+> ⚠️ **状态说明 (2026-02-22)**：本文为 L3 层级原始策略文档。关键决策已被 `SightLine_Consolidated_Development_Reference.md` 吸收。以下内容中，产品名已从 "Wanderer" 更名为 **SightLine**；前端已从 React PWA / Flutter 迁移到 **Swift Native iOS App**（详见 `SightLine_iOS_Native_Infra_Design.md`）；技术栈中的模型名称、Agent 架构等以 Consolidated Reference 为准。本文仅作竞赛要求、评审标准和 iMeanPiper 迁移分析的历史参考。
 
 ---
 

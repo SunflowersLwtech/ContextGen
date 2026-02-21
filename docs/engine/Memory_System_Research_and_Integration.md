@@ -67,7 +67,7 @@ async def generate_memories_callback(callback_context: CallbackContext):
 
 # 3. 定义 Agent（挂载记忆工具）
 agent = adk.Agent(
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE during preview on Dev API)
     name="sightline_assistant",
     instruction="""你是 SightLine，为视障用户提供环境语义翻译的 AI 助手。
     使用过去对话中的记忆来个性化响应。
@@ -235,7 +235,7 @@ def save_memory(data: str, user_id: str) -> dict:
 
 agent = Agent(
     name="sightline",
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE during preview on Dev API)
     tools=[search_memory, save_memory]
 )
 ```
@@ -291,7 +291,7 @@ rag_tool = Tool.from_retrieval(
         ),
     )
 )
-model = GenerativeModel("gemini-2.5-flash", tools=[rag_tool])
+model = GenerativeModel("gemini-3-flash-preview", tools=[rag_tool])  # Gemini 3 Flash (FREE)
 ```
 
 ### 5.3 Firestore 向量搜索（已有能力）

@@ -61,7 +61,8 @@ text_reader_agent = LlmAgent(
 # --- Orchestrator ---
 sightline_coordinator = LlmAgent(
     name="SightLineCoordinator",
-    model="gemini-2.5-flash",  # Stays on 2.5 Flash for Live API compatibility
+    model=os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+    # ↑ Native Audio model required for Live API; Vertex AI: gemini-live-2.5-flash-native-audio
     description="Main coordinator that routes user requests to specialized vision agents.",
     instruction="""Route based on intent...""",
     sub_agents=[scene_description_agent, navigation_agent, text_reader_agent],
@@ -232,7 +233,7 @@ async def sightline_stream(websocket: WebSocket):
     await websocket.accept()
     session = await runner.session_service.create_session(app_name="sightline", user_id="user_1")
 
-    live_request_queue = runner.create_live_request_queue()
+    live_request_queue = LiveRequestQueue()  # Direct instantiation (not via runner)
     live_events = runner.run_live(
         session_id=session.id, user_id="user_1",
         live_request_queue=live_request_queue,

@@ -4,6 +4,8 @@
 > **Date**: 2026-02-21
 > **Purpose**: 解决 SightLine 三大交互体验难题：VAD 唤起/结束、手机端交互妥协、嘈杂环境识别
 > **Methodology**: Gemini Live API 官方文档 + Google DeepMind 研究 + 开源框架调研 + 闭源产品思想借鉴
+>
+> ⚠️ **前端迁移说明 (2026-02-22)**：前端已从 React PWA 迁移到 **Swift Native iOS App**（详见 `SightLine_iOS_Native_Infra_Design.md`）。本文档中涉及 PWA 的实现细节（`navigator.vibrate()`、HTML/ARIA 标签、`AudioWorklet` 等）仅作为交互设计参考，实际实现已切换为 iOS 原生 API（`UIImpactFeedbackGenerator`、`UIGestureRecognizer`、`AVAudioEngine` 等）。VAD 策略、Proactive Audio 设计、嘈杂环境防御架构等**后端/AI 层设计不受影响**。
 
 ---
 

@@ -2,6 +2,8 @@
 
 > **Research Date**: 2026-02-21
 > **Source**: Parallel research agent - WebRTC PWA and latency optimization
+>
+> ⚠️ **PARTIALLY DEPRECATED (2026-02-22)**：前端已从 React PWA 迁移到 **Swift Native iOS App**（详见 `SightLine_iOS_Native_Infra_Design.md`）。以下内容中 **§2 Media Capture in React PWA**、**§5 PWA Capabilities** 和 **§6 React PWA Framework** 已完全过时。**§1 Transport Protocol**（WebSocket-only 确认）、**§3-4 延迟优化**、**§7 Latency Benchmarks** 和 **WebRTC 桥接方案** 仍然有效，对 Production 路径仍有参考价值。架构图中的 "Phone (Vite + React PWA)" 应替换为 "iPhone (Swift Native App)"。
 
 ---
 
