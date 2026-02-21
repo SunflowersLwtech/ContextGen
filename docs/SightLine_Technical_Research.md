@@ -16,17 +16,22 @@ Phone (React PWA / Vite)
   |-- getUserMedia (camera + mic)
   |-- Canvas: 768x768 JPEG @ 1 FPS
   |-- AudioWorklet: PCM 16kHz mono
-  |-- WebSocket (direct to Gemini, via ephemeral token)
+  |-- WebSocket → Cloud Run (server-to-server)
   |
   v
-Gemini Live API (WebSocket)
+Cloud Run (FastAPI + ADK)
+  |-- ADK Runner.run_live() + LiveRequestQueue
+  |-- WebSocket (WSS) → Gemini Live API
+  |
+  v
+Gemini Live API (WebSocket, v1alpha)
   |-- Model: gemini-2.5-flash-native-audio-preview-12-2025 (Live API still 2.5 only)
-  |-- Proactive Audio + Affective Dialog (v1alpha)
+  |-- Proactive Audio + Affective Dialog
   |-- Function Calling (face ID, maps, memory)
   |-- Context Window Compression (unlimited sessions)
   |
   v
-Google ADK (Python, Cloud Run)
+ADK Agent Hierarchy (Cloud Run 内)
   |-- Orchestrator Agent (2.5 Flash native audio) -> routes to sub-agents
   |-- Vision Sub-Agent (Gemini 3.1 Pro) -> deep scene analysis
   |-- OCR Sub-Agent (Gemini 3 Flash) -> text reading [FREE]
@@ -100,9 +105,16 @@ config = types.LiveConnectConfig(
     # BUG: must be top-level, NOT inside GenerationConfig
     enable_affective_dialog=True,
 
+    # Audio Transcription: real-time STT/TTS transcripts (ADK bidi-demo standard)
+    # Used for: frontend captions, LOD Engine intent analysis, Memory Agent storage
+    input_audio_transcription=types.AudioTranscriptionConfig(),
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+
     # MUST ENABLE: without this, video sessions cap at 2 minutes
+    # Audio accumulates ~25 tokens/sec (Google Best Practices)
     context_window_compression=types.ContextWindowCompressionConfig(
-        sliding_window=types.SlidingWindow(),
+        trigger_tokens=100000,                       # compress when reaching 100K tokens
+        sliding_window=types.SlidingWindow(target_tokens=80000),  # compress down to 80K
     ),
 
     # Session resumption: reconnect within 2 hours
@@ -519,35 +531,40 @@ Camera frame + GPS coordinates + compass heading are combined in a single Gemini
 - Smallest bundle size for mobile performance
 - CRA is deprecated; Next.js adds unnecessary server complexity
 
-### 6.2 Architecture
+### 6.2 Architecture (Server-to-Server Mode)
+
+> **⚠️ Architecture Decision**: 采用 Server-to-Server 模式 (Final Spec §6.1)。前端通过 WebSocket 连接 Cloud Run 后端，后端通过 ADK `run_live()` 连接 Gemini。不使用客户端直连。
 
 ```
 Phone PWA
   |-- getUserMedia (native API, no WebRTC library needed)
   |-- AudioWorklet (PCM 16kHz chunking)
   |-- Canvas (768x768 JPEG frame grab)
-  |-- WebSocket (direct to Gemini Live API)
+  |-- WebSocket → Cloud Run (FastAPI + ADK)  ← NOT direct to Gemini
   |-- StreamingAudioPlayer (24kHz PCM playback)
+  |-- GestureHandler (tap/double-tap/swipe/shake → WebSocket signals)
   |-- Wake Lock API (keep screen on)
   |-- DeviceOrientationEvent (compass heading)
   |-- Geolocation API (GPS tracking)
 ```
 
-### 6.3 Transport Protocol: WebSocket Only (已确认)
+### 6.3 Transport Protocol
 
 Gemini Live API **只支持 WebSocket (WSS)**。不支持 WebRTC、gRPC、或任何其他传输协议 (Google 官方确认)。
 
-**Hackathon (直连)**:
-1. Gets ephemeral token from backend (one lightweight HTTP call)
-2. Opens WebSocket directly to Gemini
-3. Sends audio (PCM 16kHz) + video (JPEG 1FPS) via `realtimeInput`
-4. Receives audio chunks and plays them via Web Audio API
+**Hackathon (Server-to-Server via Cloud Run)**:
+1. 前端 WebSocket 连接 Cloud Run 后端: `ws://cloud-run-url/ws/{user_id}/{session_id}`
+2. 后端通过 ADK `Runner.run_live()` + `LiveRequestQueue` 管理与 Gemini 的 bidi-streaming
+3. 前端发送: audio (PCM 16kHz), image (JPEG), activity signals, telemetry (JSON)
+4. 后端转发到 Gemini，接收响应后转发回前端
+5. API Key 在后端 Secret Manager 中，前端不接触密钥
+6. 参考实现: [google/adk-samples/bidi-demo](https://github.com/google/adk-samples/tree/main/python/agents/bidi-demo)
 
 **Production (WebRTC 桥接优化)**:
 ```
-Phone ──WebRTC (UDP, 抗弱网)──→ Pipecat/Daily Edge ──WebSocket (骨干网)──→ Gemini
+Phone ──WebRTC (UDP, 抗弱网)──→ Pipecat/Daily Edge ──WebSocket (骨干网)──→ Cloud Run ──WSS──→ Gemini
 ```
-在不稳定移动网络下，WebSocket 的 TCP 队头阻塞会导致延迟飙升至 10-15s。Pipecat + Daily 提供 WebRTC 桥接，用 UDP 处理"最后一公里"，显著降低感知延迟。Hackathon 阶段在受控 WiFi 下直连 WebSocket 即可 (320-800ms)。
+在不稳定移动网络下，WebSocket 的 TCP 队头阻塞会导致延迟飙升至 10-15s。Pipecat + Daily 提供 WebRTC 桥接，用 UDP 处理"最后一公里"，显著降低感知延迟。Hackathon 阶段在受控 WiFi 下经 Cloud Run 中转即可 (320-800ms + ~10ms 一跳)。
 
 ### 6.4 iOS Gotcha
 

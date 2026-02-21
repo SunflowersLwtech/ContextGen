@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED** — 本文档内容已被 `SightLine_Final_Specification.md` 吸收。以 Final Spec 为准。保留仅作历史参考。
+
 # **SightLine: Agent 编排与多维上下文建模架构**
 
 ## **1\. 核心编排策略：Hierarchical Sub-Agent (层级化子智能体)**

@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED** — 本文档内容已被 `SightLine_Final_Specification.md` 吸收。以 Final Spec 为准。保留仅作历史参考。
+
 # **SightLine: 产品形态设计与极简部署战略**
 
 ## **1\. 终极愿景：从“辅助 App”到“无障碍感官操作系统 (OS)”**

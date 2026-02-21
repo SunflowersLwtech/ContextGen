@@ -20,12 +20,20 @@ raw_research/ (竞品分析、竞赛策略、市场调研) ──┘            
                                             SightLine_Technical_Research.md (最新)
                                               (技术选型 + 可行性验证 + 代码示例)
                                               (7 个研究 Agent 的综合产出)
+                                                             │
+                                              ┌──────────────┤
+                                              ▼              ▼
+                      SightLine_Voice_Interaction_UX_Research.md    SightLine_Alignment_Review.md    SightLine_Best_Practices_Research.md
+                        (VAD 调优 + 手势交互 + 嘈杂环境)              (跨文档对齐审查)                (DeepMind/闭源/顶会最佳实践)
 ```
 
 **一句话关系**:
 - **Final Specification** = 产品和架构的"**做什么**" (What & Why)
 - **Technical Research** = 具体技术的"**怎么做**" (How & With What)
-- **核心架构** / **硬件形态** = 被 Final Specification 吸收的两份早期深度设计文档 (已过时，以 Final Spec 为准)
+- **Voice UX Research** = 语音交互体验的"**怎么做对**" (VAD、手势、降噪)
+- **Alignment Review** = 跨文档一致性审查和修正记录
+- **Best Practices Research** = 最新调研: ContextAgent (NeurIPS 2025), Describe Now (ASSETS 2024), Gemini Best Practices
+- **核心架构** / **硬件形态** = 被 Final Specification 吸收的早期文档 (**已过时，已标注 DEPRECATED**)
 
 ---
 
@@ -53,8 +61,8 @@ raw_research/ (竞品分析、竞赛策略、市场调研) ──┘            
 | 1.4 | Enable `contextWindowCompression` + `sessionResumption` | P0 | 1.2 | Tech §1.1 | Sessions > 2 min |
 | 1.5 | Orchestrator Agent (ADK): basic intent routing shell | P0 | 1.1 | Tech §2.2-2.3 | Root agent dispatches to sub-agents |
 | 1.6 | LOD Engine v0: 3-level state machine (hardcoded thresholds) | P0 | 1.5 | Spec §2.1-2.2 | LOD 1/2/3 switching works |
-| 1.7 | Frontend: Vite + React PWA scaffold | P0 | — | Tech §6.1-6.2 | `getUserMedia` captures camera + mic |
-| 1.8 | Frontend: WebSocket to Gemini via ephemeral token | P0 | 1.2, 1.7 | Tech §6.3 | Browser talks to Gemini directly |
+| 1.7 | Frontend: Vite + React PWA scaffold (基于 ADK bidi-demo 模板) | P0 | — | Tech §6.1-6.2 | `getUserMedia` captures camera + mic, WebSocket to Cloud Run |
+| 1.8 | Frontend: WebSocket to Cloud Run (server-to-server, NOT direct) | P0 | 1.2, 1.7 | Tech §6.3 | Browser talks to backend, backend talks to Gemini |
 | 1.9 | Frontend: AudioWorklet (PCM 16kHz) + streaming playback (24kHz) | P0 | 1.8 | Tech §6.2 | Full audio loop in browser |
 | 1.10 | Deploy to Cloud Run (one command via ADK) | P0 | 1.5 | Tech §2.5 | Live on GCP, verified end-to-end |
 | 1.11 | Firestore: init database + user profile schema | P0 | 0.3 | Tech §4.2-4.3 | DB ready for all agents |
@@ -81,6 +89,14 @@ raw_research/ (竞品分析、竞赛策略、市场调研) ──┘            
 | 2.10 | Face ID: Non-blocking function call (`NON_BLOCKING` + `WHEN_IDLE`) | P2 | 2.9 | Tech §1.3 | Face result woven into speech |
 | 2.11 | Face ID: registration flow (web UI for sighted helper) | P2 | 2.9 | Spec §4.2 | 3-5 photos per person |
 | 2.12 | System prompt engineering: personality + LOD-aware instructions | P0 | 1.5 | Spec §7.1, §7.3 | Warm, calm friend persona |
+| 2.13 | Gesture handler: tap/double-tap/swipe/shake → WebSocket signals | P1 | 1.7 | Voice UX §2.2 | 6-gesture fullscreen input |
+| 2.14 | Haptic feedback: navigator.vibrate() per gesture type | P1 | 2.13 | Voice UX §2.2 | Tactile confirmation |
+| 2.15 | LOD-Adaptive VAD: dynamically adjust silence_duration_ms per LOD | P1 | 1.6 | Voice UX §1.2 | LOD 1→400ms, LOD 3→1300ms |
+| 2.16 | User profile: add `vision_status`, `color_description`, `preferred_tts_speed` to Firestore schema | P1 | 1.11 | Best Practices §3.1 | Congenital blind personalization |
+| 2.17 | System Prompt restructure: persona → rules → guardrails (Google recommended order) | P0 | 2.12 | Best Practices §1.2 | Vertex AI Best Practices alignment |
+| 2.18 | Audio transcription: add `input/output_audio_transcription` to RunConfig | P0 | 1.5 | Best Practices §1.2 | Frontend captions + LOD intent analysis |
+| 2.19 | LOD Prompt personalization: congenital blind → no color descriptions, use tactile/spatial | P1 | 2.16, 2.17 | Best Practices §3.1 | "Describe Now" ASSETS 2024 findings |
+| 2.20 | Proactive Audio strategy: multi-dimensional context fusion priority rules | P1 | 2.8, 2.12 | Best Practices §3.1 | ContextAgent NeurIPS 2025 pattern |
 
 **Week 2 Milestone**: 4 demo scenarios partially functional. LOD transitions based on simulated telemetry.
 
@@ -104,6 +120,7 @@ raw_research/ (竞品分析、竞赛策略、市场调研) ──┘            
 | 3.10 | Error handling: camera blocked, network drop, API errors | P1 | 1.* | Spec §12 | Graceful degradation |
 | 3.11 | iOS fallback: detect standalone PWA → redirect to Safari | P1 | 1.7 | Tech §6.4 | Camera works on iOS |
 | 3.12 | Terraform scripts for infra-as-code | P3 | 1.10 | — | +0.2 bonus |
+| 3.13 | Voice A/B test: Aoede vs Zephyr vs Puck | P2 | 1.5 | Best Practices §2.1 | Pick best voice for BLV users |
 
 **Week 3 Milestone**: All 4 demo scenarios rehearsed end-to-end. Developer Console shows live sensor data driving AI behavior.
 
@@ -235,12 +252,12 @@ If behind schedule, cut from bottom up:
 |----------|--------|-----|
 | Orchestrator model | Gemini 2.5 Flash native audio | Only option for Live API bidi-streaming |
 | Sub-agent models | Gemini 3 Flash / 3.1 Pro | FREE (Flash) / best reasoning (Pro), via REST API |
-| Embedding model | `gemini-embedding-001` (2048 dims for Firestore) | GA, replaces deprecated `text-embedding-004` |
+| Embedding model | `gemini-embedding-001` (native 3072d → 2048d for Firestore) | GA, replaces deprecated `text-embedding-004` |
 | Agent framework | Google ADK (Python) | Native bidi-streaming, one-command Cloud Run deploy |
 | Face recognition | InsightFace (ONNX, buffalo_l) | 99.83% accuracy, ~150ms CPU, 512-dim embeddings |
 | Database | Firestore (with native vector search) | One DB for profiles, faces, memory; no extra vector DB |
 | Frontend | Vite + React PWA | SPA, fastest dev, zero-config PWA via `vite-plugin-pwa` |
-| Media transport | WebSocket (NOT WebRTC) to Gemini | Gemini Live API is WebSocket-based |
+| Media transport | WebSocket to Cloud Run (server-to-server, ADK bidi-demo pattern) | API key secured server-side; ADK handles Function Calling + agent transfer |
 | API version | `v1alpha` | Required for Proactive Audio + Affective Dialog |
 
 ---
