@@ -196,16 +196,7 @@ service cloud.firestore {
 
 ## 2. MCP 插件评估
 
-### 2.1 当前环境已有的 MCP
-
-| 插件 | 能力 | 与 SightLine 的关系 | 可直接用？ |
-|------|------|-------------------|----------|
-| **Supabase MCP** | SQL 建表、执行查询、管理迁移、Edge Function 部署 | 备选方案：如果将 UserProfile 放 Supabase，AI 可直接建表操作数据 | 是，但架构不匹配 |
-| **Vercel MCP** | 前端部署、查看日志、域名管理 | 可部署 React PWA 前端 | 是 |
-| **Notion MCP** | 创建页面、数据库管理 | 项目管理、文档协作 | 是 |
-| **Mermaid Chart MCP** | 渲染 Mermaid 图表 | 架构图可视化 | 是 |
-
-### 2.2 推荐安装的 MCP
+### 2.1 需要安装的 MCP
 
 #### Firebase MCP（官方，强烈推荐）
 
@@ -248,28 +239,14 @@ service cloud.firestore {
 | **能力** | Firestore + Auth + Storage 完整操作 |
 | **适用场景** | Firebase MCP 官方版不足时的备选 |
 
-### 2.3 MCP 选型决策
+### 2.2 MCP 选型决策
 
 ```
 推荐路径:
   Firebase MCP (官方)     ← 首选，覆盖 Firestore + Auth
     ↓ 如果不足
   firebase-mcp (社区)     ← 更完整的 Firebase 操作
-    ↓ 如果需要关系型
-  Supabase MCP (已有)     ← 仅用于快速原型验证
 ```
-
-**为什么不直接用 Supabase 替代 Firestore**：
-
-| 维度 | Firestore (保持) | Supabase (替换) |
-|------|-----------------|----------------|
-| Memory Bank 兼容 | 原生 | 不兼容 |
-| ADK Session 兼容 | 原生 | 不兼容 |
-| Hackathon 评分 | Google Cloud 加分 | 不加分 |
-| 向量搜索 | 原生（max 2048-D） | pgvector（无限制） |
-| MCP 可用性 | 需安装 Firebase MCP | 已有 |
-
-**结论**：保持 Firestore。安装 Firebase MCP 后 AI 操作能力等同于 Supabase MCP。
 
 ---
 
@@ -460,8 +437,6 @@ CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
 | **Python 后端代码** | Claude Code 直接写 | 100% | — |
 | **React 前端代码** | Claude Code 直接写 | 100% | — |
 | **Dockerfile / cloudbuild** | Claude Code 直接写 | 100% | — |
-| **前端部署到 Vercel** | Vercel MCP | 100% | — |
-| **架构图** | Mermaid Chart MCP | 100% | — |
 | GCP 项目创建 + Billing | Console 手动 | **0%** | 信用卡 |
 | Gemini API Key 生成 | AI Studio 手动 | **0%** | GCP 项目 |
 | Maps API Key 生成 | Console 手动 | **0%** | GCP 项目 |
@@ -502,7 +477,7 @@ Phase C: AI 执行 — MCP + Vibe Coding (1-2 hr)
 claude mcp add firebase -- npx -y firebase-tools@latest experimental:mcp
 
 # 方式 2: 项目级 .mcp.json
-# 在项目根目录创建 .mcp.json（见 §2.2 配置示例）
+# 在项目根目录创建 .mcp.json（见 §2.1 配置示例）
 ```
 
 安装后可用的操作：
