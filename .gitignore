@@ -52,6 +52,20 @@ __pycache__/
 .venv/
 venv/
 
+# === Xcode ===
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xccheckout
+*.moved-aside
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.hmap
+*.ipa
+
 # === Misc ===
 *.tgz
 *.tar.gz
