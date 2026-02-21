@@ -9,6 +9,7 @@
 
 import UIKit
 import AVFoundation
+import os
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
@@ -19,7 +20,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         do {
             try AudioSessionManager.shared.configure()
         } catch {
-            print("[SightLine] Audio session configuration failed: \(error)")
+            Logger(subsystem: "com.sightline.app", category: "AppDelegate")
+                .error("Audio session configuration failed: \(error)")
         }
 
         // Keep screen on - critical for blind users who rely on continuous camera feed

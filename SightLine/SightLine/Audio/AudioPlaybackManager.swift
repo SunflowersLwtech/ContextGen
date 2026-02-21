@@ -8,9 +8,12 @@
 
 import AVFoundation
 import Combine
+import os
 
 class AudioPlaybackManager: ObservableObject {
     @Published var isPlaying = false
+
+    private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioPlayback")
 
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -27,7 +30,7 @@ class AudioPlaybackManager: ObservableObject {
             channels: 1,
             interleaved: true
         ) else {
-            print("[SightLine] Failed to create playback audio format")
+            Self.logger.error("Failed to create playback audio format")
             return
         }
 
@@ -43,9 +46,9 @@ class AudioPlaybackManager: ObservableObject {
             playerNode = player
             playbackFormat = format
             DispatchQueue.main.async { self.isPlaying = true }
-            print("[SightLine] Audio playback engine started")
+            Self.logger.info("Audio playback engine started")
         } catch {
-            print("[SightLine] Audio playback engine start failed: \(error)")
+            Self.logger.error("Audio playback engine start failed: \(error)")
         }
     }
 
@@ -83,6 +86,6 @@ class AudioPlaybackManager: ObservableObject {
         playerNode = nil
         playbackFormat = nil
         DispatchQueue.main.async { self.isPlaying = false }
-        print("[SightLine] Audio playback engine stopped")
+        Self.logger.info("Audio playback engine stopped")
     }
 }

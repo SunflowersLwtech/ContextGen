@@ -18,6 +18,7 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from starlette.websockets import WebSocketState
 
 from agents.orchestrator import create_orchestrator_agent
 from live_api.session_manager import SessionManager
@@ -60,6 +61,7 @@ runner = Runner(
     agent=agent,
     app_name="sightline",
     session_service=session_service,
+    auto_create_session=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,44 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     """
     await websocket.accept()
     logger.info("WebSocket connected: user=%s session=%s", user_id, session_id)
+
+    stop_downstream = asyncio.Event()
+
+    def _is_websocket_open() -> bool:
+        return (
+            websocket.client_state == WebSocketState.CONNECTED
+            and websocket.application_state == WebSocketState.CONNECTED
+        )
+
+    async def _safe_send_json(payload: dict) -> bool:
+        if not _is_websocket_open():
+            stop_downstream.set()
+            return False
+        try:
+            await websocket.send_json(payload)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            # The websocket may close between state check and send.
+            stop_downstream.set()
+            return False
+
+    async def _safe_send_bytes(payload: bytes) -> bool:
+        if not _is_websocket_open():
+            stop_downstream.set()
+            return False
+        try:
+            await websocket.send_bytes(payload)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            # The websocket may close between state check and send.
+            stop_downstream.set()
+            return False
+
+    # Notify client immediately so the iOS layer knows the
+    # WebSocket is live before the Gemini connection is ready.
+    if not await _safe_send_json({"type": "session_ready"}):
+        logger.info("WebSocket closed before session_ready: user=%s session=%s", user_id, session_id)
+        return
 
     live_request_queue = LiveRequestQueue()
     run_config = session_manager.get_run_config(session_id)
@@ -142,17 +182,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     live_request_queue.send_content(content)
 
                 elif message.get("type") == "activity_start":
-                    live_request_queue.send_activity_start()
+                    # Native audio models use automatic VAD; skip explicit
+                    # activity signals to avoid 1007 errors.
+                    logger.debug("Ignored activity_start (native audio VAD active)")
 
                 elif message.get("type") == "activity_end":
-                    live_request_queue.send_activity_end()
+                    logger.debug("Ignored activity_end (native audio VAD active)")
 
                 else:
                     logger.warning("Unknown upstream message type: %s", message.get("type"))
 
         except WebSocketDisconnect:
+            stop_downstream.set()
             logger.info("Client disconnected (upstream): user=%s session=%s", user_id, session_id)
         except Exception:
+            stop_downstream.set()
             logger.exception("Error in upstream handler: user=%s session=%s", user_id, session_id)
 
     async def _downstream() -> None:
@@ -163,50 +207,67 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         """
         try:
             async for event in live_events:
+                if stop_downstream.is_set():
+                    break
+
                 # --- Session resumption update (cache handle for reconnection) ---
                 if event.live_session_resumption_update:
                     update = event.live_session_resumption_update
                     if update.newHandle:
                         session_manager.update_handle(session_id, update.newHandle)
-                        await websocket.send_json({
-                            "type": "session_resumption",
-                            "handle": update.newHandle,
-                        })
+                    # Always notify the client; the first event with
+                    # newHandle=None acts as a "connection ready" signal.
+                    if not await _safe_send_json({
+                        "type": "session_resumption",
+                        "handle": update.newHandle,
+                    }):
+                        break
 
                 # --- Input transcription (user speech-to-text) ---
                 if event.input_transcription and event.input_transcription.text:
-                    await websocket.send_json({
+                    if not await _safe_send_json({
                         "type": "transcript",
                         "text": event.input_transcription.text,
                         "role": "user",
-                    })
+                    }):
+                        break
 
                 # --- Output transcription (agent speech-to-text) ---
                 if event.output_transcription and event.output_transcription.text:
-                    await websocket.send_json({
+                    if not await _safe_send_json({
                         "type": "transcript",
                         "text": event.output_transcription.text,
                         "role": "agent",
-                    })
+                    }):
+                        break
 
                 # --- Content parts (audio / text) ---
                 if event.content and event.content.parts:
                     for part in event.content.parts:
+                        if stop_downstream.is_set():
+                            break
+
                         if part.inline_data and part.inline_data.data:
                             # Audio data - send as binary bytes to iOS
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
-                            await websocket.send_bytes(audio_data)
+                            if not await _safe_send_bytes(audio_data):
+                                break
 
                         elif part.text:
-                            await websocket.send_json({
+                            if not await _safe_send_json({
                                 "type": "transcript",
                                 "text": part.text,
                                 "role": "agent",
-                            })
+                            }):
+                                break
+
+                    if stop_downstream.is_set():
+                        break
 
         except WebSocketDisconnect:
+            stop_downstream.set()
             logger.info("Client disconnected (downstream): user=%s session=%s", user_id, session_id)
         except Exception:
             logger.exception("Error in downstream handler: user=%s session=%s", user_id, session_id)

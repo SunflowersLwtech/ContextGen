@@ -8,9 +8,12 @@
 
 import AVFoundation
 import Combine
+import os
 
 class AudioCaptureManager: ObservableObject {
     @Published var isCapturing = false
+
+    private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioCapture")
 
     private var audioEngine: AVAudioEngine?
     var onAudioCaptured: ((Data) -> Void)?
@@ -27,12 +30,12 @@ class AudioCaptureManager: ObservableObject {
             channels: 1,
             interleaved: true
         ) else {
-            print("[SightLine] Failed to create target audio format")
+            Self.logger.error("Failed to create target audio format")
             return
         }
 
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            print("[SightLine] Failed to create audio converter")
+            Self.logger.error("Failed to create audio converter")
             return
         }
 
@@ -52,7 +55,7 @@ class AudioCaptureManager: ObservableObject {
             }
 
             if let error = error {
-                print("[SightLine] Audio conversion error: \(error)")
+                Self.logger.error("Audio conversion error: \(error)")
                 return
             }
 
@@ -68,9 +71,9 @@ class AudioCaptureManager: ObservableObject {
             try engine.start()
             audioEngine = engine
             DispatchQueue.main.async { self.isCapturing = true }
-            print("[SightLine] Audio capture started")
+            Self.logger.info("Audio capture started")
         } catch {
-            print("[SightLine] Audio engine start failed: \(error)")
+            Self.logger.error("Audio engine start failed: \(error)")
         }
     }
 
@@ -79,6 +82,6 @@ class AudioCaptureManager: ObservableObject {
         audioEngine?.stop()
         audioEngine = nil
         DispatchQueue.main.async { self.isCapturing = false }
-        print("[SightLine] Audio capture stopped")
+        Self.logger.info("Audio capture stopped")
     }
 }

@@ -11,9 +11,12 @@ import Network
 import Foundation
 import Combine
 import UIKit
+import os
 
 class WebSocketManager: ObservableObject {
     @Published var isConnected = false
+
+    private static let logger = Logger(subsystem: "com.sightline.app", category: "WebSocket")
 
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "com.sightline.websocket", qos: .userInitiated)
@@ -22,6 +25,11 @@ class WebSocketManager: ObservableObject {
     private var serverURL: URL?
     private var intentionalDisconnect = false
     private var pathMonitor: NWPathMonitor?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var pingTimer: DispatchSourceTimer?
+    private let pingInterval: TimeInterval = 15.0
+    private var isConnectionReady = false
+    private var isConnectionInProgress = false
 
     // Callbacks
     var onAudioReceived: ((Data) -> Void)?
@@ -32,40 +40,58 @@ class WebSocketManager: ObservableObject {
         serverURL = url
         intentionalDisconnect = false
         reconnectDelay = 1.0
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        stopPingTimer()
+        connection?.cancel()
+        connection = nil
+        isConnectionReady = false
+        isConnectionInProgress = false
         startConnection(url: url)
-        startPathMonitor()
+        // PathMonitor is started in .ready handler to avoid race condition:
+        // NWPathMonitor fires immediately on start(), which can cancel
+        // a connection still in TLS handshake (.preparing state).
     }
 
     func disconnect() {
         intentionalDisconnect = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         pathMonitor?.cancel()
         pathMonitor = nil
+        stopPingTimer()
         connection?.cancel()
         connection = nil
+        isConnectionReady = false
+        isConnectionInProgress = false
         updateConnectionState(false)
     }
 
     func sendText(_ text: String) {
+        guard isConnectionReady, let activeConnection = connection else { return }
         guard let data = text.data(using: .utf8) else { return }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "textMessage",
                                                   metadata: [metadata])
-        connection?.send(content: data, contentContext: context, isComplete: true,
-                        completion: .contentProcessed { error in
+        activeConnection.send(content: data, contentContext: context, isComplete: true,
+                        completion: .contentProcessed { [weak self] error in
             if let error = error {
-                print("[SightLine] WebSocket send text error: \(error)")
+                Self.logger.error("WebSocket send text error: \(error)")
+                self?.handleDisconnect(sourceConnection: activeConnection)
             }
         })
     }
 
     func sendBinary(_ data: Data) {
+        guard isConnectionReady, let activeConnection = connection else { return }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
         let context = NWConnection.ContentContext(identifier: "binaryMessage",
                                                   metadata: [metadata])
-        connection?.send(content: data, contentContext: context, isComplete: true,
-                        completion: .contentProcessed { error in
+        activeConnection.send(content: data, contentContext: context, isComplete: true,
+                        completion: .contentProcessed { [weak self] error in
             if let error = error {
-                print("[SightLine] WebSocket send binary error: \(error)")
+                Self.logger.error("WebSocket send binary error: \(error)")
+                self?.handleDisconnect(sourceConnection: activeConnection)
             }
         })
     }
@@ -73,50 +99,80 @@ class WebSocketManager: ObservableObject {
     // MARK: - Private
 
     private func startConnection(url: URL) {
+        guard !intentionalDisconnect else { return }
+
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        stopPingTimer()
+
         let parameters = NWParameters.tls
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
         parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
 
-        let connection = NWConnection(to: .url(url), using: parameters)
-        self.connection = connection
+        let newConnection = NWConnection(to: .url(url), using: parameters)
+        self.connection = newConnection
+        isConnectionInProgress = true
+        isConnectionReady = false
 
-        connection.stateUpdateHandler = { [weak self] state in
+        newConnection.stateUpdateHandler = { [weak self, weak newConnection] state in
             guard let self = self else { return }
+            guard let activeConnection = newConnection else { return }
+            guard self.connection === activeConnection else { return }
+
             switch state {
+            case .preparing:
+                self.isConnectionInProgress = true
+                self.isConnectionReady = false
+
             case .ready:
-                print("[SightLine] WebSocket connected")
+                Self.logger.info("WebSocket connected")
+                self.isConnectionInProgress = false
+                self.isConnectionReady = true
                 self.reconnectDelay = 1.0
                 self.updateConnectionState(true)
-                self.receiveLoop()
+                self.startPathMonitor()
+                self.startPingTimer(for: activeConnection)
+                self.receiveLoop(connection: activeConnection)
 
             case .failed(let error):
-                print("[SightLine] WebSocket failed: \(error)")
+                Self.logger.error("WebSocket failed: \(error)")
+                self.isConnectionInProgress = false
+                self.isConnectionReady = false
                 self.updateConnectionState(false)
-                self.handleDisconnect()
+                self.stopPingTimer()
+                self.handleDisconnect(sourceConnection: activeConnection)
 
             case .cancelled:
-                print("[SightLine] WebSocket cancelled")
+                Self.logger.info("WebSocket cancelled")
+                self.isConnectionInProgress = false
+                self.isConnectionReady = false
+                self.stopPingTimer()
                 self.updateConnectionState(false)
 
             case .waiting(let error):
-                print("[SightLine] WebSocket waiting: \(error)")
+                Self.logger.warning("WebSocket waiting: \(error)")
+                self.isConnectionInProgress = true
+                self.isConnectionReady = false
+                self.updateConnectionState(false)
 
             default:
                 break
             }
         }
 
-        connection.start(queue: queue)
+        newConnection.start(queue: queue)
     }
 
-    private func receiveLoop() {
-        connection?.receiveMessage { [weak self] content, context, isComplete, error in
+    private func receiveLoop(connection: NWConnection) {
+        connection.receiveMessage { [weak self, weak connection] content, context, isComplete, error in
             guard let self = self else { return }
+            guard let activeConnection = connection else { return }
+            guard self.connection === activeConnection else { return }
 
             if let error = error {
-                print("[SightLine] WebSocket receive error: \(error)")
-                self.handleDisconnect()
+                Self.logger.error("WebSocket receive error: \(error)")
+                self.handleDisconnect(sourceConnection: activeConnection)
                 return
             }
 
@@ -133,22 +189,34 @@ class WebSocketManager: ObservableObject {
                         self.onTextReceived?(text)
                     }
                 case .close:
-                    self.handleDisconnect()
+                    self.handleDisconnect(sourceConnection: activeConnection)
                     return
                 default:
                     break
                 }
             }
 
+            if isComplete, context == nil, (content == nil || content?.isEmpty == true) {
+                self.handleDisconnect(sourceConnection: activeConnection)
+                return
+            }
+
             // Continue receiving
-            self.receiveLoop()
+            self.receiveLoop(connection: activeConnection)
         }
     }
 
-    private func handleDisconnect() {
+    private func handleDisconnect(sourceConnection: NWConnection? = nil) {
         guard !intentionalDisconnect else { return }
+        if let sourceConnection, let currentConnection = connection, sourceConnection !== currentConnection {
+            return
+        }
+        guard reconnectWorkItem == nil else { return }
 
+        isConnectionInProgress = false
+        isConnectionReady = false
         updateConnectionState(false)
+        stopPingTimer()
 
         // Haptic feedback to alert user of disconnection
         DispatchQueue.main.async {
@@ -160,13 +228,16 @@ class WebSocketManager: ObservableObject {
         let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
 
-        print("[SightLine] Reconnecting in \(delay)s...")
-        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Self.logger.info("Reconnecting in \(delay)s...")
+        let workItem = DispatchWorkItem { [weak self] in
             guard let self = self, !self.intentionalDisconnect,
                   let url = self.serverURL else { return }
+            self.reconnectWorkItem = nil
             self.connection?.cancel()
             self.startConnection(url: url)
         }
+        reconnectWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func updateConnectionState(_ connected: Bool) {
@@ -178,24 +249,59 @@ class WebSocketManager: ObservableObject {
 
     /// Monitor network path changes (WiFi <-> Cellular) for seamless transitions
     private func startPathMonitor() {
+        pathMonitor?.cancel()
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self, !self.intentionalDisconnect else { return }
 
             if path.status == .satisfied {
                 // Network available - reconnect if not already connected
-                if self.connection?.state != .ready, let url = self.serverURL {
-                    print("[SightLine] Network path changed, reconnecting...")
+                if !self.isConnectionReady && !self.isConnectionInProgress,
+                   self.reconnectWorkItem == nil,
+                   let url = self.serverURL {
+                    Self.logger.info("Network path changed, reconnecting...")
                     self.reconnectDelay = 1.0
                     self.connection?.cancel()
                     self.startConnection(url: url)
                 }
             } else {
-                print("[SightLine] Network path unsatisfied")
+                Self.logger.warning("Network path unsatisfied")
+                self.isConnectionReady = false
+                self.isConnectionInProgress = false
+                self.stopPingTimer()
                 self.updateConnectionState(false)
             }
         }
         monitor.start(queue: queue)
         pathMonitor = monitor
+    }
+
+    private func startPingTimer(for connection: NWConnection) {
+        stopPingTimer()
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + pingInterval, repeating: pingInterval)
+        timer.setEventHandler { [weak self, weak connection] in
+            guard let self = self else { return }
+            guard let activeConnection = connection else { return }
+            guard self.connection === activeConnection, self.isConnectionReady else { return }
+
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
+            let context = NWConnection.ContentContext(identifier: "ping", metadata: [metadata])
+            activeConnection.send(content: nil, contentContext: context, isComplete: true,
+                                  completion: .contentProcessed { [weak self] error in
+                if let error = error {
+                    Self.logger.error("WebSocket ping error: \(error)")
+                    self?.handleDisconnect(sourceConnection: activeConnection)
+                }
+            })
+        }
+        pingTimer = timer
+        timer.resume()
+    }
+
+    private func stopPingTimer() {
+        pingTimer?.cancel()
+        pingTimer = nil
     }
 }

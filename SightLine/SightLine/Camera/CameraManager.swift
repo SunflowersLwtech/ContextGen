@@ -11,9 +11,12 @@ import AVFoundation
 import Combine
 import UIKit
 import CoreImage
+import os
 
 class CameraManager: NSObject, ObservableObject {
     @Published var isRunning = false
+
+    private static let logger = Logger(subsystem: "com.sightline.app", category: "Camera")
 
     private var captureSession: AVCaptureSession?
     private let sessionQueue = DispatchQueue(label: "com.sightline.camera")
@@ -37,12 +40,12 @@ class CameraManager: NSObject, ObservableObject {
             for: .video,
             position: .back
         ) else {
-            print("[SightLine] Back camera not available")
+            Self.logger.error("Back camera not available")
             return
         }
 
         guard let input = try? AVCaptureDeviceInput(device: camera) else {
-            print("[SightLine] Failed to create camera input")
+            Self.logger.error("Failed to create camera input")
             return
         }
 
@@ -65,7 +68,7 @@ class CameraManager: NSObject, ObservableObject {
         captureSession = session
 
         DispatchQueue.main.async { self.isRunning = true }
-        print("[SightLine] Camera capture started")
+        Self.logger.info("Camera capture started")
     }
 
     func stopCapture() {
@@ -73,7 +76,7 @@ class CameraManager: NSObject, ObservableObject {
             self?.captureSession?.stopRunning()
             self?.captureSession = nil
             DispatchQueue.main.async { self?.isRunning = false }
-            print("[SightLine] Camera capture stopped")
+            Self.logger.info("Camera capture stopped")
         }
     }
 }

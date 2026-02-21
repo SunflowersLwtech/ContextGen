@@ -8,6 +8,9 @@
 //
 
 import SwiftUI
+import os
+
+private let logger = Logger(subsystem: "com.sightline.app", category: "MainView")
 
 struct MainView: View {
     @StateObject private var webSocketManager = WebSocketManager()
@@ -111,8 +114,9 @@ struct MainView: View {
         webSocketManager.onConnectionStateChanged = { connected in
             DispatchQueue.main.async {
                 isActive = connected
-                if connected {
-                    startMediaCapture()
+                if !connected {
+                    audioCapture.stopCapture()
+                    cameraManager.stopCapture()
                 }
             }
         }
@@ -140,6 +144,11 @@ struct MainView: View {
 
     private func handleDownstreamMessage(_ msg: DownstreamMessage) {
         switch msg {
+        case .sessionReady:
+            logger.info("Session ready, starting media capture")
+            DispatchQueue.main.async {
+                startMediaCapture()
+            }
         case .transcript(let text, _):
             DispatchQueue.main.async {
                 transcript = text
@@ -150,9 +159,9 @@ struct MainView: View {
                 frameSelector.updateLOD(lod)
             }
         case .goAway(let retryMs):
-            print("[SightLine] GoAway received, reconnecting in \(retryMs)ms")
+            logger.info("GoAway received, reconnecting in \(retryMs)ms")
         case .sessionResumption(let handle):
-            print("[SightLine] Session resumption handle: \(handle.prefix(20))...")
+            logger.info("Session resumption handle: \(handle.prefix(20))...")
         default:
             break
         }

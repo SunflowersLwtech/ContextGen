@@ -43,6 +43,7 @@ enum DownstreamMessage {
     case lodUpdate(lod: Int)
     case goAway(retryMs: Int)
     case sessionResumption(handle: String)
+    case sessionReady                               // Gemini Live API ready
     case unknown(raw: String)
 
     static func parse(text: String) -> DownstreamMessage? {
@@ -66,6 +67,8 @@ enum DownstreamMessage {
         case "session_resumption":
             let handle = json["handle"] as? String ?? ""
             return .sessionResumption(handle: handle)
+        case "session_ready":
+            return .sessionReady
         default:
             return .unknown(raw: text)
         }
