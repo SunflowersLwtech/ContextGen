@@ -222,7 +222,7 @@ def on_lod_upgrade():
 | **+ Mem0 式自动提取逻辑** | 自动从对话中提取结构化记忆 | 需要额外 LLM 调用 | 采用其设计模式，自行实现 |
 | **+ Graphiti 式时序查询**（可选） | "用户上周 vs 现在的偏好" | 增加复杂度 | Phase 2 考虑 |
 
-**推荐方案**: 在 Firestore 之上自建 Mem0 式的自动提取层，不引入外部依赖。
+**推荐方案**: **Vertex AI Memory Bank**（首选，~30 行集成，ADK 原生）。详见 `Memory_System_Research_and_Integration.md` §3。以下自建方案仅作为 **fallback 备选**（当 Memory Bank 提取逻辑不够灵活时再启用）。
 
 ### 4.2 记忆分类与存储
 

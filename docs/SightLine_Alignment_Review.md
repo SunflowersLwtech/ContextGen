@@ -218,6 +218,73 @@ context_window_compression=types.ContextWindowCompressionConfig(
 
 ---
 
+## 第二轮审查 (2026-02-22) — 新增 4 个 Issue
+
+### Issue #11: vision_status 枚举值不统一
+
+| 文档 | 定义 |
+|------|------|
+| Final Spec §2.4 | `congenital_blind \| acquired_blind \| low_vision`（合并字段） |
+| Context Engine §4.2 | `vision_status: totally_blind \| low_vision` + `blindness_onset: congenital \| acquired`（分离字段） |
+
+**决议**：采用 **Context Engine 的分离设计**。`totally_blind + congenital` 和 `totally_blind + acquired` 的描述策略完全不同。
+
+**修改记录**：
+- [x] Final Spec §2.4: 更新枚举值和代码示例为分离字段 — ✅
+- [x] Consolidated Doc §0.2: 追加矛盾 #8 裁定记录 — ✅
+
+### Issue #12: Session Service 选型矛盾
+
+| 文档 | 说法 |
+|------|------|
+| Final Spec §6.1 | `InMemorySessionService`（Hackathon 足够） |
+| Memory Research §3.2 | `VertexAiSessionService` |
+
+**决议**：开发初期 `InMemorySessionService`（零配置），Phase 2 切 `VertexAiSessionService`（持久化）。两者 API 兼容。
+
+**修改记录**：
+- [x] Final Spec §6.1 拓扑图: 标注渐进迁移路径 — ✅
+- [x] Consolidated Doc §0.2: 追加矛盾 #9 裁定记录 — ✅
+
+### Issue #13: Context Engine §4.1 推荐方案与 Memory Research 矛盾
+
+| 文档 | 推荐方案 |
+|------|---------|
+| Context Engine §4.1 | "在 Firestore 之上自建 Mem0 式的自动提取层" |
+| Memory Research §3 | "Vertex AI Memory Bank（~30 行集成）" |
+
+**决议**：Memory Bank 为首选。Context Engine §4 自建方案降级为 fallback 备选。
+
+**修改记录**：
+- [x] Context Engine §4.1: 更新推荐方案表述，标注为 fallback — ✅
+- [x] Consolidated Doc §0.2: 追加矛盾 #10 裁定记录 — ✅
+
+### Issue #14: RAG Engine 示例中使用 text-embedding-005
+
+| 文档 | Embedding 模型 |
+|------|---------------|
+| Memory Research §4.2 | `text-embedding-005`（2 处） |
+| 所有其他文档 | `gemini-embedding-001` |
+
+**决议**：统一 `gemini-embedding-001`。
+
+**修改记录**：
+- [x] Memory Research §4.2 + §5.2: 代码示例中的模型名已更正 — ✅
+- [x] Consolidated Doc §0.2: 追加矛盾 #11 裁定记录 — ✅
+
+### 第二轮 Summary
+
+| Priority | Issue | 改什么 | 状态 |
+|----------|-------|--------|------|
+| 🟡 P1 | #11 vision_status 枚举 | Final Spec §2.4 | ✅ 已修复 |
+| 🟢 P3 | #12 Session Service | Final Spec §6.1 | ✅ 已修复 |
+| 🟡 P1 | #13 Memory 方案路径 | Context Engine §4.1 | ✅ 已修复 |
+| 🟢 P3 | #14 Embedding 模型名 | Memory Research §4.2, §5.2 | ✅ 已修复 |
+
+***14 个 Issue 全部修复。***
+
+---
+
 ## 推荐的 Best Practice 改进
 
 ### 从 Google ADK 学到的

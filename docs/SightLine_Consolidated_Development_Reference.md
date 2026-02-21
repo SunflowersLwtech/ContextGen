@@ -41,6 +41,10 @@
 | 5 | **Orchestrator 构建方式** | ADK 示例用 `LlmAgent` vs 实际需要 Live API bidi-streaming | ADK `LlmAgent` 仅为结构参考；实际 Orchestrator 通过 `client.aio.live.connect()` + `LiveRequestQueue` 连接 |
 | 6 | **手势映射** | Final Spec §7.2 vs Voice UX Research §2.2 | 采用 **Voice UX Research 版本**（6 种手势，已在 Alignment Review 中确认） |
 | 7 | **砍功能优先级** | Final Spec §12.1 vs Roadmap §4 Cut-Line | 执行时以 **Roadmap Cut-Line** 为准 |
+| 8 | **vision_status 枚举值**：合并字段 vs 分离字段 | Final Spec §2.4 (`congenital_blind`) vs Context Engine §4.2 (`totally_blind` + `blindness_onset`) | **分离设计**：`vision_status: totally_blind \| low_vision` + `blindness_onset: congenital \| acquired`。合并会丢失信息，已更新 Final Spec |
+| 9 | **Session Service 选型** | Final Spec §6.1 (`InMemorySessionService`) vs Memory Research §3.2 (`VertexAiSessionService`) | 开发初期 `InMemorySessionService`（零配置），Phase 2 切 `VertexAiSessionService`（持久化）。两者 API 兼容 |
+| 10 | **Long-term Memory 实现路径** | Context Engine §4.1（自建 Mem0 式） vs Memory Research（Memory Bank ~30 行） | **Vertex AI Memory Bank 首选**。Context Engine §4 自建方案降级为 fallback 备选，已更新 |
+| 11 | **RAG Engine Embedding 模型名** | Memory Research §4.2 (`text-embedding-005`) vs 其他所有文档 (`gemini-embedding-001`) | 统一 `gemini-embedding-001`。已修正 Memory Research 中的代码示例 |
 
 ---
 

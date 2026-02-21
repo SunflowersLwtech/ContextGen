@@ -142,7 +142,7 @@ from vertexai import rag
 # 创建 Memory Corpus
 embedding_config = rag.RagEmbeddingModelConfig(
     vertex_prediction_endpoint=rag.VertexPredictionEndpoint(
-        publisher_model="publishers/google/models/text-embedding-005"
+        publisher_model="publishers/google/models/gemini-embedding-001"  # 统一使用 gemini-embedding-001
     )
 )
 memory_corpus = rag.create_corpus(
@@ -267,7 +267,7 @@ rag_corpus = rag.create_corpus(
     backend_config=rag.RagVectorDbConfig(
         rag_embedding_model_config=rag.RagEmbeddingModelConfig(
             vertex_prediction_endpoint=rag.VertexPredictionEndpoint(
-                publisher_model="publishers/google/models/text-embedding-005"
+                publisher_model="publishers/google/models/gemini-embedding-001"  # 统一使用 gemini-embedding-001
             )
         )
     ),
