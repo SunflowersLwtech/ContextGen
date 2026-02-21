@@ -23,30 +23,41 @@
 
 #### **③ 上下文与生理流设备无关 (SEP-Telemetry)**
 
-* **入口载体**：Apple Watch, Oura Ring, 智能鞋垫，带有 IMU 的耳机。  
-* **解耦标准**：所有非音视频的传感器数据，统一抽象为 JSON 格式的 Telemetry (遥测) 数据报文。厂商只需按照规范发送 heart\_rate, step\_cadence, head\_yaw 等键值对，我们的 Orchestrator Agent 会自动将其转化为大模型的 Context（上下文）。
+* **入口载体**：手机内置传感器（加速度计、麦克风、GPS、时钟）为 Core 数据源；Apple Watch 等智能手表为 Optional 增强数据源。
+* **解耦标准**：所有非音视频的传感器数据，统一抽象为 JSON 格式的 Telemetry (遥测) 数据报文。Core 字段（step\_cadence, motion\_state, ambient\_noise\_db, gps, time\_context）全部来自手机，无需额外设备；Optional 字段（heart\_rate）在有手表时自动启用。我们的 Orchestrator Agent 会自动将其转化为大模型的 Context（上下文）。
 
 ## **2\. 侧端 Context 分析：我们需要什么？能获取什么？**
 
-为了让云端大模型真正理解视障用户的“心情”与“物理状态”，我们通过 SEP-Telemetry 通道获取以下三类极具价值的 Context（在 Hackathon 中通过模拟器注入）：
+为了让云端大模型真正理解视障用户的”心情”与”物理状态”，我们通过 SEP-Telemetry 通道获取以下 Context。**核心设计原则：手机即主传感器，零额外设备即可驱动完整 LOD 系统。**
 
-### **① 心理/压力状态感知 (Stress & Cognitive Load)**
+### **Core 层：手机自带传感器（零额外硬件）**
 
-* **来源**：智能手表、运动手环。  
-* **核心指标**：实时心率 (BPM) 与心率变异性 (HRV)。  
-* **LOD 响应**：心率突升（如 75 \-\> 115）表示用户可能感到恐慌或迷失。Orchestrator 瞬间打断当前冗长描述，强制切入 LOD 1（安全模式），提供最简短的安抚与关键方向指令。
+#### **① 物理移动感知 (Locomotion State)**
 
-### **② 物理移动感知 (Locomotion State)**
+* **来源**：手机加速度计 — iOS `CMMotionActivityManager` + `CMPedometer` / Android `ActivityRecognitionClient` + `TYPE_STEP_COUNTER`。
+* **核心指标**：运动状态 (`motion_state`: stationary/walking/running/in\_vehicle) + 步频 (`step_cadence`)。
+* **LOD 响应**：walking/running → LOD 1 静默；stationary → LOD 2/3 描述展开；in\_vehicle → 允许高 LOD（用户不需要听路况，可以详细描述窗外）。步频为 0（驻足）时系统升级 LOD，展开详尽的环境描述。
 
-* **来源**：鞋部传感器、手表计步器。  
-* **核心指标**：步频 (Step Cadence)。  
-* **LOD 响应**：步频升高（快步走），系统自动降级 LOD 减少细节干扰；步频为 0（驻足），系统升级 LOD，展开详尽的货架/环境描述。
+#### **② 环境噪声感知 (Ambient Noise Awareness)**
 
-### **③ 空间注意力感知 (Spatial Attention)**
+* **来源**：手机麦克风后台 RMS 分析（与语音输入并行，不冲突）。
+* **核心指标**：环境噪声分贝值 (`ambient_noise_db`)。
+* **LOD 响应**：高噪声 (>80dB，如地铁站) → 增加”发声成本”，仅高价值信息突破阈值，TTS 输出更简短；安静环境 (<40dB，如图书馆) → AI 采用低语模式，避免打扰周围人；中等环境 (50-65dB) → 正常输出。
 
-* **来源**：带 IMU 的 TWS 耳机。  
-* **核心指标**：头部偏航角与转动频率 (Head Turn Rate)。  
-* **LOD 响应**：短时间内频繁左右转头（寻找状态），触发 AI 主动发声 (Proactive Audio) 给予方向引导。
+#### **③ 时空定位 (Spatiotemporal Context)**
+
+* **来源**：手机 GPS + 手机时钟。
+* **核心指标**：地理坐标 (`gps`) + 时间上下文 (`time_context`: 时段推断)。
+* **LOD 响应**：空间转换（GPS 跳变，如室外→室内）自动触发 LOD 升级（用户进入新空间需要更多信息）；时间段推断辅助预判行为模式（早高峰通勤 vs 晚间休闲）。
+
+### **Optional 层：智能手表增强（有则更好）**
+
+#### **④ 心理/压力状态感知 (Stress Detection) — 可选**
+
+* **来源**：智能手表（Apple Watch、运动手环）。
+* **核心指标**：实时心率 (`heart_rate`)。
+* **LOD 响应**：心率突升（如 75→115）表示用户可能感到恐慌或迷失。Orchestrator 瞬间打断当前冗长描述，强制切入 LOD 1（安全模式），提供最简短的安抚与关键方向指令。
+* **无手表时的降级策略**：系统仍可通过步频突变（突然加速/停下）+ 语音语调变化间接推断紧张状态，LOD 系统正常运行。
 
 ## **3\. Hackathon 极简部署：透明的“硬件仿真模式”**
 
