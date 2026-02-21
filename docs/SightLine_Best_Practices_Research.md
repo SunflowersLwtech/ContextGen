@@ -43,6 +43,48 @@
 2. **Persona-aware Proactivity** — 主动行为应该考虑用户画像，而非千人一面
 3. **Unobtrusive Assistance** — 主动帮助必须不打扰用户，论文强调 "assist users unobtrusively"
 
+**深入分析（基于论文全文 + 代码仓库审查）**：
+
+#### 1.1.1 Proactive-Oriented Context Extraction（最高价值）
+
+论文最核心的方法论发现：标准 VLM 场景描述（"用户在系鞋带"）远不如 proactive-oriented extraction（"用户在健身房，旁边有器械，正在准备锻炼"）。后者引导 VLM 提取"与主动服务相关的线索"。
+
+消融实验数据：
+| 提取方式 | Acc-P 变化 | Tool F1 变化 | Acc-Args 变化 |
+|---------|-----------|-------------|-------------|
+| Proactive-Oriented (ICL) | 基线 | 基线 | 基线 |
+| Zero-shot VLM 泛描述 | **-3.0%** | **-3.3%** | **-1.9%** |
+
+**SightLine 落地方案**：Vision Sub-Agent 的 prompt 按 LOD 分级——LOD 1 只提取安全威胁（输出可以是 "CLEAR"），LOD 2 提取空间导航信息，LOD 3 才做全量描述。每级都有明确的 Focus 和 Ignore 列表。详见 `engine/Context_Engine_Implementation_Guide.md §6`。
+
+#### 1.1.2 Persona 消融实验（量化证据）
+
+| 缺失维度 | Acc-P 变化 | Tool F1 变化 |
+|---------|-----------|-------------|
+| 缺失视觉 | **-17.9%** | **-23.3%** |
+| 缺失音频 | 较小但显著 | 较小但显著 |
+| 缺失 Persona | **-9.0%** | **-12.3%** |
+
+关键结论：Persona 贡献近 9% 的决策准确率，与模态数据同等重要。SightLine 的 `vision_status`、`verbosity_preference`、`om_level` 等字段必须在 MVP 中实现，而非 Phase 2。
+
+#### 1.1.3 Think-Before-Act (CoT)
+
+在 ICL 设置下，加入 Chain-of-Thought 推理可提升 **20.1%** 的 Acc-P。但在 SFT 模型中收益递减（推理能力被内化）。
+
+SightLine 应用：在 LOD 2/3 时注入轻量 `<think>` 推理链，让 Orchestrator 先推理 LOD 决策再输出。LOD 1 不启用（延迟优先）。
+
+#### 1.1.4 代码仓库评估（可复用性）
+
+| 组件 | 评估 | 对 SightLine 的价值 |
+|------|------|-------------------|
+| `tool_registry.py` 插件自动发现 | 干净的 `pkgutil.iter_modules()` 模式 | 设计可参考，但 ADK 已有自己的 tool 注册机制 |
+| `execute_tools_with_memory` 两阶段执行器 | Phase 1 无参数工具 → Phase 2 用占位符 `$RESULT(tool.field)` | 思路有价值，ADK 的 agent 间通信已覆盖 |
+| Sandbox/Live 双模式 | 每个工具有 mock 模式 | 验证了 SightLine Developer Console 思路的正确性 |
+| `calculate_scores.py` 评估框架 | 离线 Benchmark 指标 | 不适用（SightLine 是实时产品） |
+| SFT/ICL 推理管线 | LLaMA-Factory + batch 推理 | 不适用（技术栈不同） |
+
+**总结**：ContextAgent 的代码因技术栈差异（离线 Benchmark vs. 实时 Gemini Live API）无法直接复用，但其 Proactive-Oriented Extraction 和 Persona-aware 决策的思想已融入 SightLine 设计。
+
 ---
 
 ### 1.2 Gemini Live API 官方 Best Practices
@@ -280,6 +322,9 @@ Include colors briefly. Use spatial and visual terms they may remember.
 | 6 | Subtasks Roadmap 添加 Voice A/B test 任务 | Subtasks Roadmap | P3 | Gemini Live App |
 | 7 | 添加语言指令 `"RESPOND IN ENGLISH UNMISTAKABLY"` | System Prompt | P2 | Vertex AI Best Practices |
 | 8 | 音频分块建议: 20-40ms | Technical Research §6.2 | P3 | Vertex AI Best Practices |
+| **9** | **Vision Agent 实现 Proactive-Oriented Extraction — 按 LOD 分级 prompt** | **Context Engine §6, Final Spec §6.2** | **P1** | **ContextAgent §4.1 消融实验** |
+| **10** | **LOD 2/3 时注入轻量 CoT 推理链 (`<think>` 标签)** | **Context Engine §5.3** | **P2** | **ContextAgent §5.4 (CoT +20.1% Acc-P)** |
+| **11** | **Persona 字段 (`vision_status`, `om_level`) 提升至 MVP 必需** | **Context Engine §4, Final Spec §3** | **P1** | **ContextAgent 消融: Persona -9% Acc-P** |
 
 ---
 

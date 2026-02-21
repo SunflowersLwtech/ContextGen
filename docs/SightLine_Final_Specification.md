@@ -125,6 +125,13 @@ if user_profile.vision_status == "congenital_blind":
 | **Session** | 分钟~小时 | 出行目的、空间类型、步频均值、对话历史 | 维持系统平稳运行；例如知道用户"正在喝咖啡"→ LOD 稳定在 3 |
 | **Long-term** | 跨会话 | Firestore 存储：用户偏好、人脸库、常去地点、压力触发器 | 个性化；让 AI 越来越"懂"用户 |
 
+> **Persona 重要性的量化证据** (ContextAgent, NeurIPS 2025 消融实验)：
+> - 去掉 Persona 后，主动决策准确率 (Acc-P) 下降 **9.0%**，工具选择 F1 下降 **12.3%**
+> - 去掉视觉模态后，Acc-P 下降 **17.9%**，F1 下降 **23.3%**（视觉是最关键模态）
+> - 去掉音频模态后，影响较小但仍显著
+>
+> **结论**：`vision_status`、`verbosity_preference`、`om_level` 等 Persona 字段不是锦上添花——它们对 LOD 决策质量的贡献接近 10%。Long-term Context 层的实现优先级应与 Ephemeral 层同等重要。
+
 ### 3.2 Hackathon 中的 Context 输入方式
 
 | 数据类型 | 来源 | Hackathon 实现 | 生产级实现 |
@@ -380,6 +387,8 @@ Google Live API 仅支持 WebSocket (WSS)，不支持 WebRTC/gRPC。前端通过
    - `INTERRUPT`：立即响应（用于安全警报，如 `identify_person` 发现未知人接近）
    - `WHEN_IDLE`：等模型说完话再响应（用于 `navigate_location` 结果）
    - `SILENT`：静默存入上下文（用于 Telemetry 更新、Face ID 背景匹配）
+8. **Proactive-Oriented Vision Extraction**（来源：ContextAgent, NeurIPS 2025）：Vision Sub-Agent 的 prompt 必须是 **面向目的的提取**，而非泛泛的场景描述。根据当前 LOD 级别使用不同的 Vision prompt：LOD 1 只提取安全威胁，LOD 2 提取空间导航信息，LOD 3 才做全量描述。论文消融实验证明，proactive-oriented extraction 比 zero-shot 描述在工具选择 F1 上高 3.3%。详见 `Context_Engine_Implementation_Guide.md §6`。
+9. **Think-Before-Act LOD 推理**（来源：ContextAgent, NeurIPS 2025）：在 LOD 2/3 场景下，Orchestrator System Prompt 注入轻量 CoT 推理链（`<think>` 标签），让模型先内部推理 LOD 决策再输出。LOD 1 不启用（延迟优先）。论文证明 CoT 在 few-shot 下提升 20.1% 的主动决策准确率。详见 `Context_Engine_Implementation_Guide.md §5.3`。
 
 ### 6.3 核心编排伪代码（ADK Bidi-Streaming）
 

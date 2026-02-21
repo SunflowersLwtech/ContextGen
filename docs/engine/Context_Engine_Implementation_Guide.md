@@ -377,7 +377,12 @@ async def retrieve_relevant_memories(user_id, current_context: str, top_k=5):
 
 ### 5.1 Decision Algorithm
 
-参考 ContextAgent (NeurIPS 2025) 的主动必要性评分，但扩展为连续 LOD 值：
+参考 ContextAgent (NeurIPS 2025) 的主动必要性评分，但扩展为连续 LOD 值。
+
+> **Think-Before-Act 策略** (来源: ContextAgent §5.4)
+> ContextAgent 实验表明，在 few-shot 场景下加入 Chain-of-Thought 推理可提升 20.1% 的 Proactive Accuracy。
+> SightLine 应用：LOD 决策在规则引擎之外，可以在 Orchestrator 的 System Prompt 中加入轻量 CoT 引导，
+> 让 Gemini 在非紧急场景下先内部推理再输出。详见 §5.3 LOD CoT Prompt。
 
 ```python
 def decide_lod(ephemeral: EphemeralContext,
@@ -464,11 +469,118 @@ class SpeechCostManager:
         return VALUES.get(info_type, 1.0)
 ```
 
+### 5.3 LOD CoT Prompt — 轻量推理链
+
+> **来源**: ContextAgent (NeurIPS 2025) — Think-Before-Act 策略在 few-shot 下提升 20.1% Acc-P
+
+在非紧急场景下（排除 PANIC 规则引擎直接接管的情况），让 Orchestrator 在内部先推理 LOD 决策再输出语音。通过 System Prompt 注入轻量 CoT：
+
+```python
+LOD_COT_PROMPT = """
+Before responding, internally reason about the appropriate response level:
+<think>
+1. User physical state: [moving/stationary/in_vehicle] at [cadence] steps/sec
+2. Environment: [noise_level]dB, [space_type]
+3. Current task: [active_task or "none"]
+4. Persona factors: [vision_status], [verbosity_preference], [om_level]
+→ Therefore LOD should be: [1/2/3] because [one-sentence reason]
+</think>
+Then respond according to the determined LOD level.
+Do NOT output the <think> block to the user — it is for internal reasoning only.
+"""
+```
+
+**使用限制**:
+- LOD 1 (行走中) 时**不启用 CoT**——延迟不可接受，安全信息必须即时传达
+- LOD 2/3 (探索/静止) 时启用——用户处于放松状态，50-100ms 的推理延迟可接受
+- PANIC 规则引擎触发时，直接跳过 CoT，硬编码响应
+
+```python
+def get_system_prompt_with_cot(base_prompt: str, current_lod: int) -> str:
+    """仅在 LOD 2/3 时注入 CoT 推理链"""
+    if current_lod >= 2:
+        return base_prompt + "\n\n" + LOD_COT_PROMPT
+    return base_prompt  # LOD 1: 不加 CoT，极速响应
+```
+
 ---
 
-## 6. Dynamic System Prompt Construction
+## 6. Proactive-Oriented Context Extraction (Vision Agent)
 
-### 6.1 Prompt 结构
+> **来源**: ContextAgent (NeurIPS 2025) §4.1 — Proactive-Oriented Context Extraction
+> **核心发现**: 面向目的的上下文提取显著优于泛泛的场景描述
+
+### 6.1 问题
+
+标准 VLM 描述（"用户坐在椅子上系鞋带"）包含大量与主动服务无关的信息，同时遗漏关键线索。ContextAgent 的消融实验证明：
+
+| 提取方式 | Acc-P | Tool F1 | Acc-Args |
+|---------|-------|---------|----------|
+| Proactive-Oriented (ICL) | 基线 | 基线 | 基线 |
+| Zero-shot VLM 提取 | -3.0% | -3.3% | -1.9% |
+
+差距虽然看似不大，但在实时辅助场景中，3% 的工具选择错误意味着用户收到不相关的信息或错过关键提示。
+
+### 6.2 对 SightLine Vision Agent 的具体优化
+
+**原则**: 不让 Vision Agent 回答"你看到了什么"，而是回答"对视障用户当前行动有什么影响"。
+
+**Vision Agent System Prompt 注入（LOD-Adaptive）**:
+
+```python
+VISION_EXTRACTION_PROMPTS = {
+    1: """Analyze this frame for SAFETY-CRITICAL information only.
+Focus on: obstacles, moving vehicles, approaching people, stairs, uneven ground.
+Ignore: decorations, colors, distant objects, brand names.
+Output format: [SAFETY] <threat_type>: <brief description + direction + distance>
+If nothing safety-critical: output "CLEAR".""",
+
+    2: """Analyze this frame for NAVIGATION and SPATIAL information.
+Focus on:
+- Spatial layout (entrances, exits, paths, barriers)
+- Key landmarks for orientation (counters, doors, large furniture)
+- People and their relative positions
+- Signs or text that affect navigation
+Ignore: fine visual details, colors (unless high-contrast wayfinding), decorative elements.
+Output: structured spatial description, start with overall layout, then key objects with clock-position directions.""",
+
+    3: """Analyze this frame COMPREHENSIVELY for full scene narration.
+Include:
+- Complete spatial layout with dimensions
+- All readable text (signs, menus, labels, screens)
+- People: count, positions, expressions, activities
+- Objects: type, position, notable features
+- Atmosphere: lighting, crowding level, noise indicators
+Output: rich narrative description suitable for someone who cannot see.""",
+}
+```
+
+**关键差异**（vs. 之前的通用描述 prompt）:
+- LOD 1 只提取安全威胁，输出可以是单词"CLEAR"——极大减少无用信息
+- LOD 2 用"clock-position"方向系统，直接可用于空间导航描述
+- LOD 3 才做全量描述，且强调"suitable for someone who cannot see"引导 VLM 输出盲人友好的描述
+- 每个级别都有明确的 Ignore 列表，避免信息过载
+
+### 6.3 多模态消融数据支撑
+
+ContextAgent 消融实验量化了各模态的重要性：
+
+| 缺失模态 | Acc-P 变化 | Tool F1 变化 |
+|---------|-----------|-------------|
+| 缺失视觉 | **-17.9%** | **-23.3%** |
+| 缺失音频 | 较小但显著 | 较小但显著 |
+| 缺失 Persona | **-9.0%** | **-12.3%** |
+
+**对 SightLine 的设计验证**:
+- 视觉是最关键模态，确认 1FPS JPEG 输入是正确的核心设计
+- Persona 贡献 9% 准确率——不是锦上添花，是必需品（见 §4 UserProfile 设计）
+- 在嘈杂环境中应降低对音频上下文的依赖权重，更多依赖视觉+传感器
+
+---
+
+## 7. Dynamic System Prompt Construction
+
+### 7.1 Prompt 结构
 
 所有上下文层汇总为一个 System Prompt，交给 Orchestrator：
 
@@ -524,7 +636,7 @@ def build_dynamic_prompt(lod: int,
     return prompt
 ```
 
-### 6.2 LOD 指令模板
+### 7.2 LOD 指令模板
 
 ```python
 LOD_INSTRUCTIONS = {
@@ -551,7 +663,7 @@ LOD_INSTRUCTIONS = {
 
 ---
 
-## 7. Token Optimization via LOD
+## 8. Token Optimization via LOD
 
 利用 Gemini 3 的 `media_resolution` 参数实现 LOD 与 token 成本联动：
 
@@ -573,9 +685,9 @@ def get_vision_config(lod: int) -> dict:
 
 ---
 
-## 8. Competitive Landscape — Why This Matters
+## 9. Competitive Landscape — Why This Matters
 
-### 8.1 辅助产品的上下文鸿沟
+### 9.1 辅助产品的上下文鸿沟
 
 | 产品 | 用户记忆 | 实时感知 | 自适应密度 | Context 融合 |
 |------|---------|---------|-----------|-------------|
@@ -588,7 +700,7 @@ def get_vision_config(lod: int) -> dict:
 | Sullivan+ | 无 | 连续 | 无 | 最小 |
 | **SightLine** | **三层记忆** | **连续+多传感器** | **自动 LOD 1/2/3** | **三层自动融合** |
 
-### 8.2 学术验证
+### 9.2 学术验证
 
 | 研究 | 发现 | 对 SightLine 的意义 |
 |------|------|-------------------|
@@ -601,7 +713,7 @@ def get_vision_config(lod: int) -> dict:
 | BLV LVLM Preferences (2025) | 一刀切描述失败 | 个性化是必需的 |
 | Augmented Cane (Science Robotics, 2021) | 认知减负提升行走速度 18% | LOD 降级有可量化的物理效益 |
 
-### 8.3 核心壁垒
+### 9.3 核心壁垒
 
 > LOD Engine 不是一个 feature，而是一个 architectural decision。一旦竞品想要跟进，需要重构整个信息传递管线。
 
@@ -615,7 +727,7 @@ def get_vision_config(lod: int) -> dict:
 
 ---
 
-## 9. Implementation Risks & Mitigations
+## 10. Implementation Risks & Mitigations
 
 | 风险 | 严重程度 | 缓解策略 |
 |------|---------|---------|
@@ -628,7 +740,7 @@ def get_vision_config(lod: int) -> dict:
 
 ---
 
-## 10. Recommended Implementation Phases
+## 11. Recommended Implementation Phases
 
 ### Phase 1: MVP Core Loop（Hackathon Target）
 - [ ] Ephemeral → LOD Decision（规则引擎）

@@ -97,6 +97,8 @@ raw_research/ (竞品分析、竞赛策略、市场调研) ──┘            
 | 2.18 | Audio transcription: add `input/output_audio_transcription` to RunConfig | P0 | 1.5 | Best Practices §1.2 | Frontend captions + LOD intent analysis |
 | 2.19 | LOD Prompt personalization: congenital blind → no color descriptions, use tactile/spatial | P1 | 2.16, 2.17 | Best Practices §3.1 | "Describe Now" ASSETS 2024 findings |
 | 2.20 | Proactive Audio strategy: multi-dimensional context fusion priority rules | P1 | 2.8, 2.12 | Best Practices §3.1 | ContextAgent NeurIPS 2025 pattern |
+| **2.21** | **Vision Agent: Proactive-Oriented Extraction prompts (LOD-分级 Focus/Ignore)** | **P1** | 2.1 | **Context Engine §6** | **LOD 1=安全威胁, LOD 2=空间导航, LOD 3=全量描述** |
+| **2.22** | **LOD CoT: 在 LOD 2/3 System Prompt 注入 `<think>` 推理链** | **P2** | 2.12, 2.8 | **Context Engine §5.3** | **Orchestrator 先推理 LOD 决策再输出** |
 
 **Week 2 Milestone**: 4 demo scenarios partially functional. LOD transitions based on simulated telemetry.
 
