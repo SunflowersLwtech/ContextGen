@@ -26,6 +26,7 @@
 | **L3 原始研究** | `raw_research/engine/*` (3 份) | **按需查阅** | 学术背景、开源框架评估 |
 | **L3 竞赛/竞品** | `raw_research/competition/*` + `raw_research/product/*` | **策略参考** | 竞赛要求、竞品分析、产品定位 |
 | **DEPRECATED** | `SightLine 核心架构_ Agent编排与上下文建模.md` | **已废弃** | 内容已被 Final Spec 吸收 |
+| **L1 前端设计** | `SightLine_iOS_Native_Infra_Design.md` | **前端参考** | iOS/watchOS 前端架构、数据管线、WebSocket 协议、Apple Watch 心率 |
 | **DEPRECATED** | `SightLine 硬件形态与极简部署策略.md` | **已废弃** | 内容已被 Final Spec 吸收（SEP 协议细节需从此处补充） |
 
 ### 0.2 跨文档矛盾裁定
@@ -54,22 +55,34 @@
 
 **设计哲学**："Hardware-Agnostic Cloud Brain"——不绑定任何特定硬件，通过 SightLine Edge Protocol (SEP) 标准化三大数据通道。
 
-**Hackathon 硬件**：智能手机（PWA）= 唯一硬件
+**Hackathon 硬件**：iPhone（Swift Native App）+ Apple Watch（极简心率 App）
+
+> **前端已从 React PWA 迁移到 Swift Native iOS App**，详见 `SightLine_iOS_Native_Infra_Design.md`
 
 | 通道 | Hackathon 实现 | 生产级目标 |
 |------|---------------|-----------|
-| SEP-Vision | 手机后置摄像头（`getUserMedia`）→ 768x768 JPEG @ 1FPS | 智能眼镜（Meta Ray-Ban 等）、胸前摄像头 |
-| SEP-Audio | 手机麦克风 + AirPods/骨传导耳机 → PCM 16kHz mono | 助听器直连、多麦克风波束成形 |
-| SEP-Telemetry | 手机传感器 + Developer Console 仿真 → JSON | 智能手表心率、盲杖 IMU |
+| SEP-Vision | iPhone 后置摄像头（`AVCaptureSession`）→ 768x768 JPEG @ 1FPS | 智能眼镜（Meta Ray-Ban 等）、胸前摄像头 |
+| SEP-Audio | iPhone 麦克风 + AirPods（`AVAudioEngine`）→ PCM 16kHz mono | 助听器直连、多麦克风波束成形 |
+| SEP-Telemetry | iPhone 原生传感器（CoreMotion + CoreLocation + HealthKit）+ Apple Watch 实时心率（WCSession）→ JSON | 盲杖 IMU、更多可穿戴设备 |
 
-**已知平台限制**：
+**iOS Native 解决的 PWA 致命缺陷**：
 
-| 限制 | 影响 | Hackathon 缓解 |
-|------|------|---------------|
-| iOS standalone PWA 下 `getUserMedia` 损坏 | 摄像头不可用 | 检测 iOS 后在 Safari 中打开 |
-| PWA 无法拦截 iOS 音量键 | 无法做 LOD 快捷键 | 使用触屏手势（上滑/下滑） |
+| PWA 缺陷 | iOS Native 方案 |
+|---------|----------------|
+| `navigator.vibrate()` iOS 不支持 — 盲人无操作确认 | `UIImpactFeedbackGenerator` 触觉反馈 |
+| Standalone PWA `getUserMedia` 不可靠 | `AVCaptureSession` 原生稳定 |
+| 后台音频被 iOS 随时杀掉 — Always-On 不可能 | Background Mode: Audio（`voip` category） |
+| 传感器数据需 Developer Console 模拟 | **全部来自真实硬件**（CoreMotion + GPS + HealthKit + Apple Watch） |
+| Demo 体验是"网页标签页" | 全屏沉浸 App，评委看到"产品" |
+
+**剩余平台限制**：
+
+| 限制 | 影响 | 缓解 |
+|------|------|------|
 | Gemini Live API 只支持 WebSocket | 无法用 WebRTC 直连 Gemini | Cloud Run 中转 WebSocket |
 | 视频会话 2 分钟硬上限（无压缩时） | 会话中断 | **必须启用** `contextWindowCompression` |
+| AirPods 在 playAndRecord 下降级为 HFP 单声道 | 音质下降为电话通话级 | 语音聊天场景可接受 |
+| 免费 Apple ID 签名 7 天过期 | 需重新构建 | Hackathon 周期内无影响 |
 
 ### 1.2 硬件 Context 注入（SEP-Telemetry）
 
@@ -77,12 +90,13 @@
 
 | 传感器 | 数据源 | 提取方法 | LOD 影响 |
 |--------|-------|---------|---------|
-| 加速度计 | iOS `CMMotionActivityManager` / Android `ActivityRecognitionClient` | → motion_state + step_cadence | walking/running→LOD 1, stationary→LOD 3 |
-| 麦克风 RMS | Web Audio API AudioWorklet | → ambient_noise_db | >80dB 强制精简, <40dB 低语模式 |
-| GPS | `navigator.geolocation` | → lat/lng + 空间转换检测 | 室外→室内 触发 LOD 升级 |
+| 加速度计 | `CMMotionActivityManager` + `CMPedometer` | → motion_state + step_cadence | walking/running→LOD 1, stationary→LOD 3 |
+| 麦克风 RMS | `AVAudioEngine` installTap RMS 计算 | → ambient_noise_db | >80dB 强制精简, <40dB 低语模式 |
+| GPS | `CLLocationManager` | → lat/lng + 空间转换检测 | 室外→室内 触发 LOD 升级 |
+| 罗盘 | `CLLocationManager` heading | → heading (方位角) | 时钟位置计算 |
 | 时钟 | `Date` API | → time_context (morning_commute 等) | 通勤时段降 LOD |
-| 罗盘 | `DeviceOrientationEvent` | → heading (方位角) | 时钟位置计算 |
-| 心率（可选） | Apple Watch HealthKit / 手环 BLE | → heart_rate | >120 BPM 触发 PANIC 中断 |
+| 心率 | Apple Watch → watchOS App `HKWorkoutSession` → `WCSession.sendMessage` (<1s) | → heart_rate | >120 BPM 触发 PANIC 中断 |
+| 心率（备份） | Apple Watch → HealthKit 系统同步（延迟 10-20 分钟） | → 长期趋势分析 | 不用于实时 PANIC |
 
 **Telemetry JSON 报文格式**：
 
@@ -101,6 +115,8 @@
 
 **传输路径**：前端 WebSocket → Cloud Run Context Parser → `LiveRequestQueue.send_content()` 以 `[TELEMETRY UPDATE] {...}` 文本消息注入 Gemini Live session context，复用同一条 WebSocket，不另开独立通道。
 
+**发送频率（LOD-Aware 节流）**：LOD 1: 3-4s / LOD 2: 2-3s / LOD 3: 5-10s。`ImmediateTrigger`（PANIC、motion_state 切换、heart_rate_spike 等）不受节流限制，始终立即发送。
+
 ### 1.3 硬件相关配置
 
 | 配置项 | 值 | 说明 |
@@ -112,9 +128,10 @@
 | WebSocket 路由 | `wss://cloud-run-url/ws/{user_id}/{session_id}` | 前端到 Cloud Run |
 | Context Compression | trigger_tokens=100000, target=80000 | 必须启用 |
 | Cloud Run 预热 | `min_instance_count=1`, `cpu_throttling=false`, startup CPU boost | 消除冷启动 |
-| Wake Lock | `navigator.wakeLock.request('screen')` | 防止 PWA 息屏 |
+| 屏幕常亮 | `UIApplication.shared.isIdleTimerDisabled = true` | 防止息屏 |
+| 后台音频 | Background Mode: Audio（Info.plist） | App 后台/锁屏时音频管线持续运行 |
 
-**Developer Console（Hackathon 传感器仿真）**：Web 界面上的滑块/按钮，按 SEP-Telemetry JSON 协议向云端注入心率、步频等模拟数据。评委接受这种仿真方式。
+**Developer Console（Hackathon 传感器仿真）**：现在大部分传感器数据来自真实硬件（CoreMotion、GPS、Apple Watch 心率），仍可保留 Web Developer Console 用于调试和演示特殊场景（如模拟极端心率、特定 GPS 坐标）。
 
 ---
 
@@ -162,7 +179,7 @@ runner = Runner(
 | **Explicit Profile** | 用户主动填写 | vision_status, blindness_onset, has_guide_dog, tts_speed, verbosity_preference, om_level |
 | **Implicit Episodic** | 系统自动提取 | preference, location, person, behavior, stress_trigger, routine |
 
-**记忆提取时机**：Session 结束时（非实时，避免延迟影响）。Gemini Flash 提取 → 冲突检测（cosine_similarity > 0.85 更新，否则新建）→ confidence < 0.7 不存储。
+**记忆提取时机**：Session 结束时（非实时，避免延迟影响）。Gemini Flash 提取 → 冲突检测（cosine_similarity > 0.85 更新，否则新建）→ confidence < 0.7 不存储。**写入预算**：`MAX_NEW_MEMORIES_PER_SESSION = 5`（按 confidence 排序，超额截断），防止长会话记忆膨胀。
 
 **检索策略**：
 ```
@@ -265,7 +282,22 @@ LOD Decision Engine 输出后，构建包含以下部分的 System Prompt：
 5. Long-term Memory 检索结果（top-K 相关记忆）
 6. Vision Sub-Agent 输出（LOD-Adaptive 提取结果）
 
-### 3.5 Proactive-Oriented Vision Extraction
+### 3.5 Engineering Hardening（6 项工程加固）
+
+经交叉验证补充的工程加固措施（详见各 L1 文档）：
+
+| # | 加固点 | 优先级 | 所在文档 | 要点 |
+|---|--------|-------|---------|------|
+| 1 | **Telemetry LOD-Aware 节流** | P0 | Context Engine §2.4 + iOS Infra §3.6 | LOD 1: 3-4s / LOD 2: 2-3s / LOD 3: 5-10s；ImmediateTrigger 不受限 |
+| 2 | **LOD Decision Log 可解释日志** | P0 | Context Engine §5.4 | `LODDecisionLog` dataclass：记录每次 LOD 决策的输入+触发规则+输出 |
+| 3 | **断线 → 本地 LOD 1 降级** | P1 | iOS Infra §2.4 | WebSocket 断开时 `forceLocalLOD(1)`，本地 TTS 提示"安全模式"，重连后释放 |
+| 4 | **Memory 写入预算** | P1 | Context Engine §4.3 | `MAX_NEW_MEMORIES_PER_SESSION = 5`，按 confidence 排序截断 |
+| 5 | **DebugOverlay 内容规格** | P1 | iOS Infra §6.3 | LOD+触发原因、Telemetry 实时值、HR Sparkline、Memory top-3、WS 延迟 |
+| 6 | **"忘掉刚才的"记忆删除** | P2 | Context Engine §4.5 | `forget_recent_memory()` Function Calling 预留接口 |
+
+**执行顺序建议**：P0（LOD 日志 + Telemetry 节流） → P1（断线降级 + Memory 预算 + DebugOverlay） → P2（忘记接口）。P0 是 MVP 必需，P1 是 Demo 质量保障，P2 是 Phase 2 预留。
+
+### 3.6 Proactive-Oriented Vision Extraction
 
 Vision Sub-Agent 不回答"你看到了什么"，而是回答"对视障用户当前行动有什么影响"：
 
@@ -366,30 +398,31 @@ live_request_queue.send_content("[TELEMETRY UPDATE] {...}")  # 传感器
 **Hackathon 架构（Server-to-Server）**：
 
 ```
-Phone PWA ──WebSocket (WSS)──→ Cloud Run (FastAPI + ADK) ──WebSocket (WSS)──→ Gemini Live API
-                                        ↕
-                              Sub-Agents (Vision/OCR/FaceID/Memory)
-                              Firestore / Maps API / Google Search
+iPhone App ──NWConnection WSS──→ Cloud Run (FastAPI + ADK) ──WebSocket (WSS)──→ Gemini Live API
+    ↑                                      ↕
+Apple Watch ──WCSession──→ iPhone    Sub-Agents (Vision/OCR/FaceID/Memory)
+  (实时心率)                           Firestore / Maps API / Google Search
 ```
 
 **数据流**：
-- 前端通过 `getUserMedia` 获取音视频
-- AudioWorklet 切分 PCM 16kHz 块
-- Canvas 生成 768x768 JPEG 帧
-- 一条 WebSocket 承载 audio + image + telemetry（不另开通道）
+- 前端通过 `AVCaptureSession` 获取视频，`AVAudioEngine` 获取音频
+- `AVAudioEngine` installTap 切分 PCM 16kHz 块（每 100ms 一个 chunk）
+- `CIImage` → resize 768x768 → JPEG 编码（硬件加速）
+- 一条 NWConnection WebSocket 承载 audio + image + telemetry（不另开通道）
+- Apple Watch 心率通过 WCSession 实时送达 iPhone，注入 Telemetry
 - API Key 在后端 Secret Manager，前端不接触
 
-**延迟分解**：
+**延迟分解（Swift Native）**：
 
 | 环节 | 延迟 |
 |------|------|
-| 摄像头捕获 | ~16ms |
-| JPEG 编码 | ~5-15ms |
+| 摄像头捕获 | ~8ms |
+| JPEG 编码 | ~3-8ms |
 | Base64 编码 | ~1-2ms |
 | WebSocket 传输 | ~20-80ms |
 | **Gemini 处理** | **500ms-6000ms** ← 主瓶颈 |
-| 流式音频播放 | ~10-50ms |
-| **总感知延迟** | **~600ms - 6500ms** |
+| 流式音频播放 | ~10-20ms |
+| **总感知延迟** | **~550ms - 6100ms** |
 
 **优化策略（Hackathon）**：
 1. 流式播放（音频块到达即播），不等完整响应
@@ -397,6 +430,7 @@ Phone PWA ──WebSocket (WSS)──→ Cloud Run (FastAPI + ADK) ──WebSock
 3. 客户端帧选择（像素差异跳过重复场景）
 4. Context Compression（无限会话）
 5. Session Resumption（断线 2 小时内可恢复）
+7. **断线 LOD 降级**：WebSocket 断开时本地强制 LOD 1 + 本地 TTS "安全模式"提示 + 触觉反馈，重连后恢复正常
 6. Cloud Run 预热（`min_instance_count=1`）
 
 **Production 升级路径**：
@@ -526,7 +560,8 @@ gcloud firestore indexes composite create \
 | **后端** | Cloud Run + FastAPI + ADK | 一命令部署 |
 | **数据库** | Firestore（原生向量搜索） | 用户/人脸/记忆 |
 | **记忆服务** | Vertex AI Memory Bank | ADK 原生，~30 行集成 |
-| **前端** | React PWA (Vite) + getUserMedia + WebSocket | 已有骨架代码 |
+| **iOS 前端** | Swift Native (AVFoundation + CoreMotion + HealthKit + NWConnection) | 详见 iOS Infra Design |
+| **watchOS 前端** | SwiftUI + HKWorkoutSession + WCSession (~500-680 行) | 实时心率传输 |
 | **基础设施** | Terraform + Cloud Build + Secret Manager | +0.2 加分项 |
 
 ### 6.1 Gemini 模型版本注意
@@ -585,10 +620,11 @@ gcloud firestore indexes composite create \
 ### 8.1 推荐的文档阅读顺序
 
 1. **本文档**（统一参考）→ 全局理解
-2. `SightLine_Subtasks_Roadmap.md` → 获取具体 Phase/Task 分解
-3. `engine/Context_Engine_Implementation_Guide.md` → LOD Engine 实现细节
-4. `SightLine_Best_Practices_Research.md` → ADK bidi-demo 模板代码
-5. `raw_research/infra/*` → 按需查阅特定 API 用法
+2. `SightLine_iOS_Native_Infra_Design.md` → iOS/watchOS 前端完整设计
+3. `SightLine_Subtasks_Roadmap.md` → 获取具体 Phase/Task 分解
+4. `engine/Context_Engine_Implementation_Guide.md` → LOD Engine 实现细节
+5. `SightLine_Best_Practices_Research.md` → ADK bidi-demo 模板代码
+6. `raw_research/infra/*` → 按需查阅特定 API 用法
 
 ### 8.2 可归档/不再查阅的文档
 
@@ -601,7 +637,7 @@ gcloud firestore indexes composite create \
 
 | 风险 | 级别 | 缓解 |
 |------|------|------|
-| iOS standalone PWA 摄像头故障 | **高** | 检测 iOS 后引导在 Safari 中打开 |
+| ~~iOS standalone PWA 摄像头故障~~ | ~~高~~ | ~~已通过迁移到 Swift Native 解决~~ |
 | Gemini Live API 高峰期延迟 5-15s | **中** | 预反馈 + 流式播放 + 避开高峰时段 Demo |
 | 09-2025 模型 2026-03-19 弃用 | **中** | 已使用 12-2025 版本，无影响 |
 | Vertex AI Memory Bank 提取逻辑不够灵活 | **低** | Mem0 作为 fallback |

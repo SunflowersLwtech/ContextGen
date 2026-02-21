@@ -143,6 +143,42 @@ if t.heart_rate is not None and t.heart_rate > 120:
     return safety_response("周围安全，深呼吸。需要我帮你做什么吗？")
 ```
 
+### 2.4 Telemetry LOD-Aware 节流（P0）
+
+> **工程加固点**：Telemetry 发送频率必须与 LOD 联动——LOD 1 行走时需要更频繁的传感器更新（安全优先），LOD 3 静止时可大幅降低（节省带宽+token）。
+
+```python
+# TelemetryAggregator: LOD-Aware 发送间隔
+LOD_TELEMETRY_INTERVAL: dict[int, tuple[float, float]] = {
+    1: (3.0, 4.0),   # 行走中：3-4 秒，安全优先但避免淹没
+    2: (2.0, 3.0),   # 探索中：2-3 秒，需要较频繁更新以检测空间变化
+    3: (5.0, 10.0),  # 静止中：5-10 秒，用户状态稳定，无需高频更新
+}
+
+class TelemetryAggregator:
+    def __init__(self):
+        self._current_lod: int = 2
+        self._last_send_time: float = 0
+
+    def update_lod(self, lod: int):
+        """LOD 变化时由 LOD Engine 回调"""
+        self._current_lod = lod
+
+    @property
+    def send_interval(self) -> float:
+        lo, hi = LOD_TELEMETRY_INTERVAL[self._current_lod]
+        return lo  # 使用区间下限；生产环境可加抖动
+
+    def should_send(self, now: float) -> bool:
+        """定时发送检查（ImmediateTrigger 不受此限制）"""
+        return (now - self._last_send_time) >= self.send_interval
+
+    def mark_sent(self, now: float):
+        self._last_send_time = now
+```
+
+**与 ImmediateTrigger 的关系**：PANIC、motion_state 切换、heart_rate_spike 等 `ImmediateTrigger` 事件**不受节流限制**，始终立即发送。LOD-Aware 节流仅控制定时轮询频率。
+
 ---
 
 ## 3. Layer 2: Session Context — 当前行程状态
@@ -309,6 +345,8 @@ class EpisodicMemory:
 参考 Mem0 的设计模式，在 Session 结束时执行：
 
 ```python
+MAX_NEW_MEMORIES_PER_SESSION = 5  # P1: 写入预算，防止单次会话记忆膨胀
+
 async def consolidate_session_memories(conversation_history, user_id):
     """Session 结束时的记忆巩固"""
 
@@ -318,11 +356,17 @@ async def consolidate_session_memories(conversation_history, user_id):
     分类: preference, location, person, behavior, stress_trigger, routine
     只提取高置信度的事实，不要推测。
     如果对话中没有值得记住的信息，返回空列表。
+    最多提取 {MAX_NEW_MEMORIES_PER_SESSION} 条（按重要性排序）。
 
     对话:
     {conversation_history}
     """
     new_memories = await gemini_flash.generate(extraction_prompt)
+
+    # P1: 写入预算截断——防止长会话产生过多记忆写入
+    if len(new_memories) > MAX_NEW_MEMORIES_PER_SESSION:
+        new_memories = sorted(new_memories, key=lambda m: m.confidence, reverse=True)
+        new_memories = new_memories[:MAX_NEW_MEMORIES_PER_SESSION]
 
     # 2. 检查冲突——新记忆是否与已有记忆矛盾
     for memory in new_memories:
@@ -369,6 +413,52 @@ async def retrieve_relevant_memories(user_id, current_context: str, top_k=5):
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return [r for r, _ in scored[:top_k]]
+```
+
+### 4.5 记忆删除接口 —"忘掉刚才的"（P2 预留）
+
+> **工程预留**：用户应能口头请求删除记忆（"忘掉刚才我说的"）。Phase 2 实现，Hackathon 阶段仅预留接口。
+
+```python
+async def forget_recent_memory(user_id: str, hint: str | None = None):
+    """P2: 用户请求删除最近写入的记忆
+
+    触发方式：用户说 "忘掉刚才的" / "delete that" / "别记住这个"
+    Orchestrator 通过 Function Calling 调用此接口。
+
+    Args:
+        user_id: 用户 ID
+        hint: 可选，用户描述要删除的内容（用于语义匹配）
+    """
+    if hint:
+        # 语义匹配删除
+        candidates = await firestore.vector_search(
+            collection="memories",
+            query_embedding=embed(hint),
+            top_k=3,
+            filters={"user_id": user_id}
+        )
+        if candidates and candidates[0].similarity_score > 0.75:
+            await delete_memory(candidates[0].id)
+            return f"已删除记忆: {candidates[0].content[:50]}..."
+    else:
+        # 删除最近一条写入的记忆
+        latest = await get_latest_memory(user_id)
+        if latest:
+            await delete_memory(latest.id)
+            return f"已删除最近记忆: {latest.content[:50]}..."
+
+    return "没有找到匹配的记忆"
+```
+
+**Function Declaration（预留）**：
+```python
+forget_memory_func = FunctionDeclaration(
+    name="forget_recent_memory",
+    description="用户请求删除最近的记忆。当用户说'忘掉'、'别记住'、'delete that'时调用。",
+    parameters={"hint": {"type": "string", "description": "用户描述要删除的内容（可选）"}},
+    behavior=FunctionCallingBehavior.WHEN_IDLE,
+)
 ```
 
 ---
@@ -502,6 +592,87 @@ def get_system_prompt_with_cot(base_prompt: str, current_lod: int) -> str:
         return base_prompt + "\n\n" + LOD_COT_PROMPT
     return base_prompt  # LOD 1: 不加 CoT，极速响应
 ```
+
+### 5.4 LOD Decision Log — 可解释日志（P0）
+
+> **工程加固点**：LOD 决策是一个纯规则引擎的黑盒。必须记录每次决策的输入、触发的规则和输出，用于调试、Demo 展示和后期阈值调优。
+
+```python
+from dataclasses import dataclass, field
+from datetime import datetime
+
+@dataclass
+class LODDecisionLog:
+    """每次 LOD 决策的完整可解释日志"""
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+    # 输入快照
+    motion_state: str = ""
+    step_cadence: float = 0.0
+    ambient_noise_db: float = 50.0
+    heart_rate: float | None = None
+    space_transition: bool = False
+    verbosity_preference: str = "standard"
+    om_level: str = "intermediate"
+    user_override: str | None = None  # "详细说说" / "停" / None
+
+    # 决策过程
+    triggered_rules: list[str] = field(default_factory=list)  # ["Rule2:walking→LOD1", "Rule4:space_transition→LOD2"]
+    base_lod_before_adjustments: int = 2
+
+    # 输出
+    final_lod: int = 2
+    reason: str = ""  # 一句话总结，如 "walking + space_transition → LOD 2"
+
+    def to_debug_dict(self) -> dict:
+        """供 DebugOverlay 显示的精简版"""
+        return {
+            "lod": self.final_lod,
+            "reason": self.reason,
+            "rules": self.triggered_rules,
+            "hr": self.heart_rate,
+            "motion": self.motion_state,
+            "noise_db": self.ambient_noise_db,
+        }
+```
+
+**集成到 `decide_lod()`**：
+
+```python
+def decide_lod(ephemeral: EphemeralContext,
+               session: SessionContext,
+               profile: UserProfile) -> tuple[int, LODDecisionLog]:
+    """融合三层 Context 决定 LOD 等级，同时返回可解释日志"""
+
+    log = LODDecisionLog(
+        motion_state=ephemeral.motion_state,
+        step_cadence=ephemeral.step_cadence,
+        ambient_noise_db=ephemeral.ambient_noise_db,
+        heart_rate=ephemeral.heart_rate,
+        space_transition=session.recent_space_transition,
+        verbosity_preference=profile.verbosity_preference,
+        om_level=profile.om_level,
+    )
+
+    # Rule 1: PANIC
+    if ephemeral.heart_rate is not None and ephemeral.heart_rate > 120:
+        log.triggered_rules.append("Rule1:PANIC→LOD1")
+        log.final_lod = 1
+        log.reason = f"PANIC: heart_rate={ephemeral.heart_rate}>120"
+        return 1, log
+
+    # Rule 2: 运动状态基线 ... (existing logic)
+    # 每条规则触发时：log.triggered_rules.append("Rule2:walking→LOD1")
+
+    # ... 最终
+    log.final_lod = base_lod
+    log.reason = " + ".join(log.triggered_rules) + f" → LOD {base_lod}"
+    return base_lod, log
+```
+
+**日志输出位置**：
+- **开发阶段**：通过 WebSocket 发送 `{"type":"debug_lod","data":{...}}` 到 iOS DebugOverlay
+- **生产阶段**：写入 Cloud Logging（structured JSON），可用 BigQuery 做阈值回归分析
 
 ---
 
