@@ -20,26 +20,26 @@ Phone (React PWA / Vite)
   |
   v
 Gemini Live API (WebSocket)
-  |-- Model: gemini-2.5-flash-native-audio-preview-12-2025
+  |-- Model: gemini-2.5-flash-native-audio-preview-12-2025 (Live API still 2.5 only)
   |-- Proactive Audio + Affective Dialog (v1alpha)
   |-- Function Calling (face ID, maps, memory)
   |-- Context Window Compression (unlimited sessions)
   |
   v
 Google ADK (Python, Cloud Run)
-  |-- Orchestrator Agent (Flash) -> routes to sub-agents
-  |-- Vision Sub-Agent (Pro) -> deep scene analysis
-  |-- OCR Sub-Agent (Flash) -> text reading
-  |-- Navigation Sub-Agent (Flash) -> Maps + Geocoding
+  |-- Orchestrator Agent (2.5 Flash native audio) -> routes to sub-agents
+  |-- Vision Sub-Agent (Gemini 3.1 Pro) -> deep scene analysis
+  |-- OCR Sub-Agent (Gemini 3 Flash) -> text reading [FREE]
+  |-- Navigation Sub-Agent (Gemini 3 Flash) -> Maps + Geocoding [FREE]
   |-- Face ID Sub-Agent -> InsightFace (ONNX) + Firestore
-  |-- Memory Sub-Agent -> Firestore vector search
-  |-- Grounding Sub-Agent -> Google Search
+  |-- Memory Sub-Agent -> Firestore vector search + gemini-embedding-001
+  |-- Grounding Sub-Agent (Gemini 3 Flash) -> Google Search [FREE]
   |
   v
 Firestore
   |-- User profiles & preferences
   |-- Face embeddings (512-dim vectors, native vector search)
-  |-- Long-term memory (text embeddings, native vector search)
+  |-- Long-term memory (text embeddings via gemini-embedding-001, native vector search)
   |-- Conversation summaries
 ```
 
@@ -54,6 +54,10 @@ Firestore
 | **InsightFace** (ONNX) beats all other face recognition options | 99.83% accuracy, ~150ms/frame CPU, 512-dim fits Firestore |
 | Google has **NO** face recognition API (only detection) | Must use open-source (InsightFace) for face matching |
 | Gemini native OCR is **competitive** with Cloud Vision | No need for separate OCR pipeline for book reading |
+| **Gemini 3 Flash is FREE** during preview and outperforms 2.5 Pro | Near-zero cost for all sub-agents |
+| **Gemini 3 models do NOT support Live API** | Orchestrator must stay on 2.5 Flash native audio |
+| **`media_resolution` parameter** (Gemini 3) | LOD-aware token optimization: 70 tokens (LOD 1) vs 1120 (LOD 3) |
+| **`gemini-embedding-001`** is GA with 3072 dims | Replaces deprecated `text-embedding-004`, better retrieval quality |
 | Gemini has **native Google Maps grounding** | `google_maps` tool for exploratory queries |
 | Video sessions hard-cap at **2 minutes** without compression | MUST enable `contextWindowCompression` |
 | iOS standalone PWA has **broken camera access** | Need Safari fallback or Capacitor wrapper |
@@ -188,10 +192,10 @@ types.FunctionDeclaration(
 ```python
 from google.adk.agents import LlmAgent
 
-# Sub-agents with different models
+# Sub-agents use Gemini 3 models (via REST API, not Live API)
 vision_agent = LlmAgent(
     name="VisionAnalyzer",
-    model="gemini-2.5-pro",          # Pro for deep vision
+    model="gemini-3.1-pro-preview",  # 3.1 Pro for deep vision (best reasoning)
     description="Detailed scene analysis for blind users",
     instruction="...",
     output_key="scene_description",
@@ -199,7 +203,7 @@ vision_agent = LlmAgent(
 
 ocr_agent = LlmAgent(
     name="TextReader",
-    model="gemini-2.5-flash",        # Flash for speed
+    model="gemini-3-flash-preview",  # 3 Flash: FREE, outperforms 2.5 Pro
     description="OCR and text reading from images",
     instruction="...",
     output_key="text_content",
@@ -207,17 +211,18 @@ ocr_agent = LlmAgent(
 
 nav_agent = LlmAgent(
     name="Navigator",
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # 3 Flash: FREE, better tool calling
     description="Location awareness and navigation",
     instruction="...",
     tools=[get_location_info, search_nearby, get_directions],
     output_key="navigation_guidance",
 )
 
-# Orchestrator routes automatically via transfer_to_agent
+# Orchestrator: stays on 2.5 Flash for Live API bidi-streaming
+# (Gemini 3 does NOT support Live API as of Feb 2026)
 root_agent = LlmAgent(
     name="SightLine",
-    model="gemini-2.5-flash",        # Flash for fast routing
+    model="gemini-2.5-flash",        # 2.5 Flash required for Live API
     instruction="Route based on user intent and safety priority...",
     sub_agents=[vision_agent, ocr_agent, nav_agent],
 )
@@ -399,8 +404,9 @@ TIER 3: Long-term (permanent) -> Firestore with vector embeddings
 # Store memory with embedding
 def store_memory(user_id, text, memory_type):
     embedding = genai.embed_content(
-        model="models/text-embedding-004",
+        model="gemini-embedding-001",  # GA, 3072 dims (truncated to 2048 for Firestore)
         content=text,
+        config={"output_dimensionality": 2048},
     )['embedding']
 
     db.collection("users").document(user_id)\
@@ -414,7 +420,9 @@ def store_memory(user_id, text, memory_type):
 # Retrieve relevant memories
 def retrieve_memories(user_id, query, limit=5):
     query_vec = genai.embed_content(
-        model="models/text-embedding-004", content=query
+        model="gemini-embedding-001",
+        content=query,
+        config={"output_dimensionality": 2048},
     )['embedding']
 
     return db.collection("users").document(user_id)\
@@ -439,15 +447,16 @@ Use Gemini Flash to extract important facts from conversation history:
 
 ```python
 # Cache system prompt + user profile (reused across turns)
+# Note: Gemini 3 has automatic implicit caching — explicit caching optional
 cache = client.caches.create(
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # or gemini-3.1-pro-preview
     config=CreateCachedContentConfig(
         display_name="sightline-context",
         system_instruction=system_prompt + user_profile,
         ttl="3600s",
     )
 )
-# Cached input: 87.5% cost savings (Flash), 90% savings (Pro)
+# Gemini 3 Flash is FREE during preview; caching provides additional savings on Pro
 ```
 
 ### 4.6 Google Search Grounding
@@ -524,13 +533,21 @@ Phone PWA
   |-- Geolocation API (GPS tracking)
 ```
 
-### 6.3 Critical: No WebRTC Library Needed
+### 6.3 Transport Protocol: WebSocket Only (已确认)
 
-Gemini Live API uses **WebSocket**, not WebRTC. The frontend:
+Gemini Live API **只支持 WebSocket (WSS)**。不支持 WebRTC、gRPC、或任何其他传输协议 (Google 官方确认)。
+
+**Hackathon (直连)**:
 1. Gets ephemeral token from backend (one lightweight HTTP call)
 2. Opens WebSocket directly to Gemini
 3. Sends audio (PCM 16kHz) + video (JPEG 1FPS) via `realtimeInput`
 4. Receives audio chunks and plays them via Web Audio API
+
+**Production (WebRTC 桥接优化)**:
+```
+Phone ──WebRTC (UDP, 抗弱网)──→ Pipecat/Daily Edge ──WebSocket (骨干网)──→ Gemini
+```
+在不稳定移动网络下，WebSocket 的 TCP 队头阻塞会导致延迟飙升至 10-15s。Pipecat + Daily 提供 WebRTC 桥接，用 UDP 处理"最后一公里"，显著降低感知延迟。Hackathon 阶段在受控 WiFi 下直连 WebSocket 即可 (320-800ms)。
 
 ### 6.4 iOS Gotcha
 
@@ -572,15 +589,16 @@ Gemini Live API uses **WebSocket**, not WebRTC. The frontend:
 
 ### 7.4 Latency Optimization
 
-| Strategy | Implementation |
-|----------|---------------|
-| Streaming playback | Play audio chunks as they arrive (don't wait for complete response) |
-| Pre-emptive feedback | "Let me look at that..." while Gemini processes |
-| Frame selection | Client-side change detection; skip duplicate scenes |
-| Context compression | `contextWindowCompression` for unlimited sessions |
-| Session resumption | Reconnect within 2 hours with saved handle |
-| Cloud Run warm | `min_instance_count=1`, `cpu_throttling=false` |
-| Region matching | Deploy Cloud Run in same region as target users |
+| Strategy | Implementation | Phase |
+|----------|---------------|-------|
+| Streaming playback | Play audio chunks as they arrive (don't wait for complete response) | Hackathon |
+| Pre-emptive feedback | "Let me look at that..." while Gemini processes | Hackathon |
+| Frame selection | Client-side change detection; skip duplicate scenes | Hackathon |
+| Context compression | `contextWindowCompression` for unlimited sessions | Hackathon |
+| Session resumption | Reconnect within 2 hours with saved handle | Hackathon |
+| Cloud Run warm | `min_instance_count=1`, `cpu_throttling=false` | Hackathon |
+| Region matching | Deploy Cloud Run in same region as target users | Hackathon |
+| **WebRTC 桥接** | **Pipecat + Daily: Phone←WebRTC→Edge←WebSocket→Gemini, 抗弱网** | **Production** |
 
 ---
 
@@ -588,35 +606,40 @@ Gemini Live API uses **WebSocket**, not WebRTC. The frontend:
 
 ### 8.1 Per-Session (10 minutes)
 
-| Component | Tokens | Cost (Flash) |
-|-----------|--------|-------------|
-| Audio input (10 min) | 15,000 | $0.005 |
-| Audio output (5 min) | 7,500 | $0.019 |
-| Video input (1 FPS) | 154,800 | $0.046 |
-| System prompt | ~2,000 | $0.001 |
-| **Total per session** | **~179K** | **~$0.07** |
+| Component | Tokens | Cost |
+|-----------|--------|------|
+| Live API audio input (10 min, 2.5 Flash) | 15,000 | $0.045 |
+| Live API audio output (5 min, 2.5 Flash) | 7,500 | $0.090 |
+| Live API video input (1 FPS, 2.5 Flash) | 154,800 | $0.464 |
+| Sub-agent calls (3 Flash) | ~10,000 | **$0.00 (FREE)** |
+| Vision deep calls (3.1 Pro, 2 calls) | ~5,000 | $0.07 |
+| **Total per session** | **~192K** | **~$0.67** |
+
+*Note: Live API native audio pricing is higher than standard API ($3.00/1M audio input, $12.00/1M audio output)*
 
 ### 8.2 Monthly (1 active user, 2hr/day)
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| Gemini Flash (audio + video) | ~$1.00 |
-| Gemini Pro (10 deep calls/day) | ~$3.00 |
+| Live API (2.5 Flash native audio) | ~$8.00 |
+| Vision deep calls (3.1 Pro, 10/day) | ~$4.00 |
+| Sub-agent calls (3 Flash) | **$0.00 (FREE)** |
 | Maps APIs | $0 (free tier) |
 | Cloud Run (1 min instance) | ~$17.00 |
 | Firestore | $0 (free tier) |
-| **Total** | **~$21/month** |
+| **Total** | **~$29/month** |
 
 ### 8.3 Hackathon Total (23 days dev + demo)
 
 | Component | Estimated Cost |
 |-----------|---------------|
-| Gemini API (development) | ~$20 |
-| Gemini API (demo) | ~$5 |
+| Live API (development + testing) | ~$25 |
+| Sub-agent calls (Gemini 3 Flash) | **$0 (FREE)** |
+| Vision deep calls (3.1 Pro) | ~$8 |
 | Cloud Run | ~$20 |
 | Maps APIs | ~$5 |
 | Firestore | $0 |
-| **Total hackathon cost** | **~$50** |
+| **Total hackathon cost** | **~$58** |
 
 ---
 
@@ -659,8 +682,10 @@ A "Live Assistant for Blind People" already won in 2024. SightLine MUST emphasiz
 
 | Layer | Technology | Priority |
 |-------|-----------|----------|
-| **AI Model (Orchestrator)** | Gemini 2.5 Flash (native audio) | P0 |
-| **AI Model (Vision)** | Gemini 2.5 Pro | P1 |
+| **AI Model (Orchestrator/Live)** | Gemini 2.5 Flash native audio (Live API only supports 2.5) | P0 |
+| **AI Model (Vision)** | Gemini 3.1 Pro (`gemini-3.1-pro-preview`) | P1 |
+| **AI Model (Sub-agents)** | Gemini 3 Flash (`gemini-3-flash-preview`) — **FREE** | P0 |
+| **Embeddings** | `gemini-embedding-001` (GA, 3072 dims) | P0 |
 | **Agent Framework** | Google ADK (Python) | P0 |
 | **Live Streaming** | Gemini Live API (WebSocket, v1alpha) | P0 |
 | **Face Recognition** | InsightFace (buffalo_l, ONNX) | P2 |
@@ -690,25 +715,39 @@ A "Live Assistant for Blind People" already won in 2024. SightLine MUST emphasiz
 1. **`api_version="v1alpha"`** -- required for Proactive Audio + Affective Dialog
 2. **`enable_affective_dialog=True`** -- must be top-level in LiveConnectConfig (known Pydantic bug)
 3. **`context_window_compression`** -- without it, video sessions cap at 2 minutes
-4. **Model name**: `gemini-2.5-flash-native-audio-preview-12-2025` (09-2025 deprecated March 19)
-5. **Video at 1 FPS max** -- Gemini processes 1 frame/sec, sending more wastes bandwidth
-6. **Audio format**: PCM 16kHz input, 24kHz output
-7. **InsightFace models**: Pre-download in Dockerfile (avoids cold-start model download)
-8. **Firestore vector index**: Must create before first vector query (gcloud CLI command)
-9. **iOS PWA**: Don't use standalone mode; fall back to Safari for camera access
-10. **Free tier limit**: Only 3 concurrent Gemini Live sessions -- use Tier 1 for demo
+4. **Live API model**: `gemini-2.5-flash-native-audio-preview-12-2025` (09-2025 deprecated March 19) — **Gemini 3 does NOT support Live API**
+5. **Sub-agent models**: Use `gemini-3-flash-preview` (FREE) and `gemini-3.1-pro-preview` for REST API calls
+6. **Embedding model**: Use `gemini-embedding-001` with `output_dimensionality=2048` (text-embedding-004 is deprecated)
+7. **`thinking_level`** (not `thinking_budget`) for Gemini 3 sub-agents; Live API still uses `thinking_budget`
+8. **`media_resolution`** parameter: Use for LOD-aware token optimization in Vision Sub-Agent
+9. **`temperature=1.0`** for Gemini 3 models (lower values cause looping)
+10. **Video at 1 FPS max** -- Gemini processes 1 frame/sec, sending more wastes bandwidth
+11. **Audio format**: PCM 16kHz input, 24kHz output
+12. **InsightFace models**: Pre-download in Dockerfile (avoids cold-start model download)
+13. **Firestore vector index**: Must create before first vector query (gcloud CLI command)
+14. **iOS PWA**: Don't use standalone mode; fall back to Safari for camera access
+15. **Free tier limit**: Only 3 concurrent Gemini Live sessions -- use Tier 1 for demo
 
 ### Architecture Principles
 
-- **Flash for speed, Pro for depth**: Orchestrator/routing uses Flash; deep vision analysis uses Pro via REST API call
+- **2.5 Flash for Live API, Gemini 3 for sub-agents**: Orchestrator uses 2.5 Flash native audio (only Live API option); sub-agents use Gemini 3 Flash (FREE) / 3.1 Pro (best reasoning) via REST API
 - **Function Calling for tool use**: Face ID, Maps, Memory all integrated via Gemini Function Calling
 - **Non-blocking tools**: Face recognition uses NON_BLOCKING + WHEN_IDLE scheduling
 - **Direct browser-to-Gemini**: No proxy for minimum latency; backend only mints ephemeral tokens
 - **Firestore for everything persistent**: User profiles, face library, long-term memory -- all in one DB with native vector search
+- **LOD-aware media_resolution**: Low (70 tokens) at LOD 1, High (1120 tokens) at LOD 3 -- 94% token savings for quick scans
 
 ---
 
 ## Sources (Organized by Topic)
+
+### Gemini 3 Model Migration
+- [Gemini 3 Developer Guide](https://ai.google.dev/gemini-api/docs/gemini-3)
+- [Gemini 3.1 Pro Announcement](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-1-pro/)
+- [Gemini 3 Flash Announcement](https://blog.google/products/gemini/gemini-3-flash/)
+- [Models Reference](https://ai.google.dev/gemini-api/docs/models)
+- [Gemini Embedding GA](https://developers.googleblog.com/gemini-embedding-available-gemini-api/)
+- [Embeddings Docs](https://ai.google.dev/gemini-api/docs/embeddings)
 
 ### Gemini Live API
 - [Get Started](https://ai.google.dev/gemini-api/docs/live)
@@ -753,6 +792,12 @@ A "Live Assistant for Blind People" already won in 2024. SightLine MUST emphasiz
 - [Live API Web Console (React)](https://github.com/google-gemini/live-api-web-console)
 - [PWA Camera on iOS](https://bugs.webkit.org/show_bug.cgi?id=185448)
 
+### Transport Protocol & WebRTC Bridge
+- [Google AI Forum — No Native WebRTC](https://discuss.ai.google.dev/t/is-there-any-near-future-plans-to-have-native-webrtc-support-in-the-gemini-2-0-flash-live-multimodal-api-servers/57746)
+- [Partner Integrations](https://ai.google.dev/gemini-api/docs/partner-integration)
+- [Pipecat + Gemini WebRTC Demo](https://github.com/pipecat-ai/gemini-webrtc-web-simple)
+- [Daily + Gemini Multimodal Live](https://www.daily.co/products/gemini/multimodal-live-api/)
+
 ### Competition
 - [Gemini Live Agent Challenge](https://algo-mania.com/en/blog/hackathons-coding/gemini-live-agent-challenge-create-immersive-ai-agents-with-google-gemini-live/)
 - [2024 Winners](https://ai.google.dev/competition)
@@ -761,3 +806,5 @@ A "Live Assistant for Blind People" already won in 2024. SightLine MUST emphasiz
 ---
 
 *This research report synthesizes findings from 7 parallel research agents covering all technical domains required for SightLine implementation. All recommendations are optimized for a 23-day hackathon timeline with the Google Gemini ecosystem.*
+
+*Updated 2026-02-21: Model references updated to Gemini 3 (Flash/Pro) for sub-agents. Live API remains on Gemini 2.5 Flash native audio (no Gemini 3 Live API support yet). Embedding model updated to gemini-embedding-001. See `raw_research/infra/research_gemini_3_migration.md` for full migration analysis.*

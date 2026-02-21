@@ -130,7 +130,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 ```python
 response = client.models.generate_content(
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE during preview)
     contents=prompt,
     config=types.GenerateContentConfig(
         tools=[types.Tool(google_maps=types.GoogleMaps())],

@@ -36,7 +36,7 @@ from google.adk.agents import LlmAgent
 # --- Specialized Sub-Agents ---
 scene_description_agent = LlmAgent(
     name="SceneDescriber",
-    model="gemini-2.5-pro",
+    model="gemini-3.1-pro-preview",  # Gemini 3.1 Pro for deep vision
     description="Describes visual scenes in detail for visually impaired users.",
     instruction="""You are a visual scene describer...""",
     output_key="scene_description",
@@ -44,7 +44,7 @@ scene_description_agent = LlmAgent(
 
 navigation_agent = LlmAgent(
     name="NavigationAssistant",
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE during preview)
     description="Provides real-time navigation guidance and obstacle warnings.",
     instruction="""You are a navigation assistant...""",
     output_key="navigation_guidance",
@@ -52,7 +52,7 @@ navigation_agent = LlmAgent(
 
 text_reader_agent = LlmAgent(
     name="TextReader",
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE during preview)
     description="Reads and interprets text from images.",
     instruction="""You are an OCR and text interpretation agent...""",
     output_key="text_content",
@@ -61,7 +61,7 @@ text_reader_agent = LlmAgent(
 # --- Orchestrator ---
 sightline_coordinator = LlmAgent(
     name="SightLineCoordinator",
-    model="gemini-2.5-flash",
+    model="gemini-2.5-flash",  # Stays on 2.5 Flash for Live API compatibility
     description="Main coordinator that routes user requests to specialized vision agents.",
     instruction="""Route based on intent...""",
     sub_agents=[scene_description_agent, navigation_agent, text_reader_agent],
@@ -171,7 +171,7 @@ def get_location_info(latitude: float, longitude: float, tool_context=None) -> d
 
 nav_agent = LlmAgent(
     name="Navigator",
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # Gemini 3 Flash (FREE)
     instruction="Help users navigate safely.",
     tools=[get_location_info],
 )

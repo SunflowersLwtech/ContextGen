@@ -191,43 +191,42 @@ With `contextWindowCompression` + `SlidingWindow` enabled, sessions extend **ind
 
 ---
 
-## 2. Gemini 2.5 Flash vs Gemini 2.5 Pro
+## 2. Model Selection: Live API (2.5 Flash) + Sub-Agents (Gemini 3)
 
-### Head-to-Head Comparison
+### CRITICAL: Live API is Gemini 2.5 Flash ONLY
 
-| Dimension | 2.5 Flash | 2.5 Pro |
-|-----------|-----------|---------|
-| Context Window | 1,000,000 tokens | 1,000,000 tokens |
-| Input Price (text) | $0.30 / 1M tokens | $1.25 / 1M tokens |
-| Output Price (text) | $2.50 / 1M tokens | $10.00 / 1M tokens |
-| Audio Input | $1.00 / 1M tokens | Higher |
-| Speed | Fast (real-time optimized) | Slower (deeper reasoning) |
-| MMMU (Vision) | ~75% (estimated) | **81.7%** (state-of-the-art) |
-| VideoMME | Competitive | **84.8%** |
-| Live API Support | **Yes (native audio model)** | Limited live support |
-| Native Audio Model | `gemini-2.5-flash-native-audio-preview-12-2025` | Not available for live |
+As of February 2026, **Gemini 3 models (3.1 Pro, 3 Pro, 3 Flash) do NOT support the Live API**. The Live API with native audio is exclusively powered by Gemini 2.5 Flash:
+- **Current model**: `gemini-2.5-flash-native-audio-preview-12-2025`
+- **Gemini 3 models**: No Live API variants exist yet
 
-### Which is better for real-time orchestration?
+### Model Comparison (Including Gemini 3)
 
-**Gemini 2.5 Flash** -- has a dedicated native audio model for Live API, is purpose-built for speed and low latency, supports hybrid reasoning with controllable thinking depth, and is 4x cheaper on both input and output.
+| Dimension | 2.5 Flash (Live) | 3 Flash (Sub-agents) | 3.1 Pro (Vision) |
+|-----------|-------------------|---------------------|-------------------|
+| Live API | **YES** | No | No |
+| Context Window | 128K (Live) | 1M | 1M |
+| Text Input Price | $0.50/1M (Live) | **FREE** (preview) | $2.00/1M |
+| Text Output Price | $2.00/1M (Live) | **FREE** (preview) | $12.00/1M |
+| Audio Input Price | $3.00/1M (Live) | N/A | N/A |
+| Audio Output Price | $12.00/1M (Live) | N/A | N/A |
+| Performance | Real-time optimized | **Outperforms 2.5 Pro** | Best reasoning |
+| Thinking Config | `thinking_budget` (int) | `thinking_level` (enum) | `thinking_level` (enum) |
+| media_resolution | N/A (1 FPS fixed) | Supported | Supported |
 
-### Which is better for deep vision understanding?
+### Recommended Architecture
 
-**Gemini 2.5 Pro** -- 81.7% MMMU (significantly better visual reasoning), 84.8% VideoMME (state-of-the-art video), 69.4% Vibe-Eval (leading image comprehension), superior at complex spatial reasoning and OCR edge cases.
-
-### Can they be used together?
-
-**Yes, and this is the recommended architecture.** Flash runs the live session for real-time conversation. When a user needs deep analysis ("Read this entire menu", "Describe everything in this room in detail"), Flash triggers a function call that sends the current frame to Pro via REST API, then speaks the result.
+**2.5 Flash** runs the live session for real-time conversation (the only option for Live API). Sub-agents use **Gemini 3 Flash** (FREE, Pro-level quality) for OCR, navigation, grounding. When deep analysis is needed, **Gemini 3.1 Pro** handles vision via REST API.
 
 ### Pricing Estimate (per active user, 1 hour/day)
 
-| Component | Flash Cost | Pro Cost |
-|-----------|------------|----------|
-| Audio input (1hr/day, ~28.8M tokens/mo) | ~$28.80 | N/A |
-| Video frames (1fps, ~27.9M tokens/mo) | ~$8.37 | N/A |
-| Text output (~3M tokens/mo) | ~$7.50 | N/A |
-| Deep vision calls (10/day via Pro) | N/A | ~$3.38 |
-| **Combined monthly total** | **~$48/month** | |
+| Component | Model | Monthly Cost |
+|-----------|-------|-------------|
+| Live API audio input (1hr/day) | 2.5 Flash native audio | ~$5.40 |
+| Live API video frames (1fps) | 2.5 Flash native audio | ~$8.37 |
+| Live API audio output | 2.5 Flash native audio | ~$7.50 |
+| Sub-agent calls (OCR, Nav, etc.) | 3 Flash | **$0 (FREE)** |
+| Deep vision calls (10/day) | 3.1 Pro | ~$4.00 |
+| **Combined monthly total** | | **~$25/month** |
 
 ---
 
@@ -383,13 +382,18 @@ async for response in session.receive():
 ## 5. Critical Implementation Notes for SightLine
 
 1. **API Version**: Must use `v1alpha` for proactive audio and affective dialog
-2. **Model Name**: `gemini-2.5-flash-native-audio-preview-12-2025` (the older `09-2025` version is deprecated March 19, 2026)
-3. **ALWAYS enable `contextWindowCompression`** -- without it, audio+video sessions hard-cap at 2 minutes
-4. **`enable_affective_dialog` bug**: Must be top-level in `LiveConnectConfig`, not inside `GenerationConfig`
-5. **1 FPS processing**: Do not send frames faster than 1 FPS
-6. **Free tier**: Only 3 concurrent sessions -- use paid Tier 1 for the demo
-7. **Dual-model pipeline** (Flash live + Pro REST) shows technical sophistication for judges
-8. **Ephemeral tokens**: Use for client-side connections rather than exposing API keys
+2. **Live API Model**: `gemini-2.5-flash-native-audio-preview-12-2025` — **Gemini 3 does NOT support Live API**
+3. **Sub-Agent Models**: Use `gemini-3-flash-preview` (FREE) and `gemini-3.1-pro-preview` via REST API
+4. **Embedding Model**: Use `gemini-embedding-001` (GA) — `text-embedding-004` is deprecated
+5. **ALWAYS enable `contextWindowCompression`** -- without it, audio+video sessions hard-cap at 2 minutes
+6. **`enable_affective_dialog` bug**: Must be top-level in `LiveConnectConfig`, not inside `GenerationConfig`
+7. **`thinking_level`** (not `thinking_budget`) for Gemini 3 sub-agents; Live API still uses `thinking_budget`
+8. **`media_resolution`** parameter: Use for LOD-aware token optimization in Gemini 3 vision calls
+9. **`temperature=1.0`** for Gemini 3 (lower values cause looping)
+10. **1 FPS processing**: Do not send frames faster than 1 FPS
+11. **Free tier**: Only 3 concurrent Live sessions -- use paid Tier 1 for the demo
+12. **Triple-model pipeline** (2.5 Flash Live + 3 Flash sub-agents + 3.1 Pro vision) shows technical sophistication
+13. **Ephemeral tokens**: Use for client-side connections rather than exposing API keys
 
 ---
 

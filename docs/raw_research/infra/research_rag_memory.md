@@ -36,7 +36,7 @@ db = firestore.Client(project="sightline-project")
 
 def store_user_memory(user_id, memory_text, memory_type):
     embedding = genai.embed_content(
-        model="models/text-embedding-004", content=memory_text
+        model="gemini-embedding-001", content=memory_text
     )['embedding']
     db.collection("users").document(user_id)\
       .collection("memories").document().set({
@@ -48,7 +48,7 @@ def store_user_memory(user_id, memory_text, memory_type):
 
 def retrieve_memories(user_id, query, limit=5):
     query_vec = genai.embed_content(
-        model="models/text-embedding-004", content=query
+        model="gemini-embedding-001", content=query
     )['embedding']
     return db.collection("users").document(user_id)\
              .collection("memories").find_nearest(
@@ -143,7 +143,7 @@ relevance = (
 
 ```python
 cache = client.caches.create(
-    model="gemini-2.5-flash",
+    model="gemini-3-flash-preview",  # or gemini-3.1-pro-preview
     config=CreateCachedContentConfig(
         display_name="sightline-context",
         system_instruction=system_prompt,

@@ -1,0 +1,652 @@
+# SightLine Context Engine: Implementation Guide
+
+> Date: 2026-02-21
+> Status: Research-backed implementation specification
+> Raw Research: `../raw_research/engine/`
+
+---
+
+## Executive Summary
+
+经过对 18 篇学术论文、15+ 开源框架和 13 个商业产品的系统调研，我们确认：
+
+> **没有任何现有产品同时实现 (a) 跨会话用户记忆 + (b) 实时多传感器环境感知 + (c) 自适应信息密度（LOD）—— 专为视障用户设计。**
+
+这不是"锦上添花"。RAVEN (ASSETS 2025) 研究中 5/8 的盲人用户明确要求自适应细节层级；Say It My Way (CHI 2026) 证明盲人用户需要但目前缺乏持久偏好系统；Describe Now (DIS 2025) 证明手动控制反而增加认知负荷。
+
+SightLine 的 Context Engine 是填补这个空白的核心组件。
+
+---
+
+## 1. Architecture Overview
+
+```
+                    ┌─────────────────────────────┐
+                    │     Context Engine           │
+                    │  (Dynamic System Prompt 构建) │
+                    └──────────┬──────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+    │  Ephemeral   │  │   Session    │  │  Long-term   │
+    │  Context     │  │   Context    │  │  Context     │
+    │  (ms~s)      │  │  (min~hr)    │  │  (跨会话)    │
+    └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+           │                 │                 │
+    SEP-Telemetry      Gemini Context     Firestore +
+    JSON Stream        Window 内维持      Vector Search
+    + 规则引擎           + Session State    + Mem0-style
+      语义化               Manager          Auto-Extract
+```
+
+三层上下文融合后，输入 LOD Decision Engine，决定 LOD 1/2/3，然后构建 Dynamic System Prompt 交给 Orchestrator（Gemini 2.5 Flash Live API）。
+
+---
+
+## 2. Layer 1: Ephemeral Context — 实时传感器
+
+### 2.1 数据来源
+
+```json
+{
+  "timestamp": "2026-02-21T10:30:00Z",
+  "heart_rate": 78,
+  "hrv_ms": 45,
+  "step_cadence": 0,
+  "head_yaw_rate": 12.5,
+  "gps": { "lat": 37.7749, "lng": -122.4194 },
+  "device_type": "apple_watch"
+}
+```
+
+### 2.2 传感器 → 语义转化（ContextLLM 方法）
+
+**不要直接把 JSON 塞进 prompt**。参考 ContextLLM (ACM 2025) 的三层管道：
+
+```
+Layer 1 (Raw):     heart_rate=145, step_cadence=3.2/s, head_yaw=25°/s
+Layer 2 (Sparse):  "快速行走 + 心率偏高 + 频繁转头"
+Layer 3 (Semantic): "用户处于紧张的快速移动状态，可能在过马路"
+```
+
+实现方式——用规则引擎（不用 LLM，太慢）：
+
+```python
+def telemetry_to_semantic(t: Telemetry) -> str:
+    segments = []
+
+    # 运动状态
+    if t.step_cadence == 0:
+        segments.append("用户静止")
+    elif t.step_cadence < 1.0:
+        segments.append("缓慢行走，探索状态")
+    elif t.step_cadence < 2.0:
+        segments.append("正常步行")
+    else:
+        segments.append("快速移动")
+
+    # 压力状态
+    if t.heart_rate > 120 or t.hrv_ms < 20:
+        segments.append("高压力/恐慌信号")
+    elif t.heart_rate > 100:
+        segments.append("轻度紧张")
+    else:
+        segments.append("心率正常")
+
+    # 注意力信号
+    if t.head_yaw_rate > 20:
+        segments.append("频繁转头（寻找方向或不安）")
+    elif t.head_yaw_rate > 10:
+        segments.append("偶尔转头")
+
+    return "。".join(segments)
+```
+
+### 2.3 PANIC 中断机制
+
+学术依据：Pedestrian Stress with Biometric Sensors (ScienceDirect, 2025) 证明 HRV 在 30-120 秒窗口内对行走压力检测可靠。
+
+```python
+if t.heart_rate > 120 and t.hrv_ms < 20:
+    # PANIC: 强制 LOD 1，清空 TTS 队列
+    lod_manager.force_downgrade(level=1)
+    tts_queue.clear()
+    return safety_response("周围安全，深呼吸。需要我帮你做什么吗？")
+```
+
+---
+
+## 3. Layer 2: Session Context — 当前行程状态
+
+### 3.1 Session State Manager
+
+在 Gemini Live API 的上下文窗口内维持，不需要外部存储：
+
+```python
+class SessionContext:
+    trip_purpose: str           # "去面试" / "日常通勤" / "购物"
+    space_type: str             # "indoor" / "outdoor" / "vehicle"
+    space_transitions: list     # ["室外 → 大堂", "大堂 → 电梯"]
+    avg_cadence_30min: float    # 30 分钟步频均值（判断趋势）
+    conversation_topics: list   # 近期对话主题
+    active_task: str | None     # "正在读菜单" / None
+    narrative_snapshot: dict | None  # LOD 降级时的断点
+```
+
+### 3.2 空间转换检测
+
+```python
+def detect_space_transition(prev_gps, curr_gps, prev_light, curr_light):
+    """基于 GPS 跳变 + 光线变化检测室内外切换"""
+    if gps_distance(prev_gps, curr_gps) < 5:  # 5m 内
+        if abs(curr_light - prev_light) > threshold:
+            return "outdoor_to_indoor" if curr_light < prev_light else "indoor_to_outdoor"
+    return None
+```
+
+空间转换是 LOD 升级的天然触发器——进入新空间时用户需要更多信息（LOD 2）。
+
+### 3.3 Narrative Snapshot（LOD 降级断点保存）
+
+这是 SightLine 的独创设计，参考 Letta/MemGPT 的 context checkpoint 概念：
+
+```python
+# 降级时保存
+def on_lod_downgrade(current_task):
+    if current_task:
+        snapshot = {
+            "task_type": current_task.type,      # "menu_reading"
+            "progress": current_task.progress,    # "已读到第3道菜：宫保鸡丁"
+            "remaining": current_task.remaining,  # ["第4-8道菜", "饮品区"]
+            "timestamp": now()
+        }
+        session.narrative_snapshot = snapshot
+        tts.say("好的，我先暂停。")
+
+# 恢复时继续
+def on_lod_upgrade():
+    if session.narrative_snapshot:
+        snap = session.narrative_snapshot
+        time_delta = now() - snap["timestamp"]
+        if time_delta < timedelta(minutes=10):
+            # 从断点继续
+            prompt_inject = f"用户之前在{snap['task_type']}，已完成: {snap['progress']}。请从 {snap['remaining'][0]} 继续。"
+            session.narrative_snapshot = None
+            return prompt_inject
+        else:
+            # 超时，重新开始
+            session.narrative_snapshot = None
+            return None
+```
+
+---
+
+## 4. Layer 3: Long-term Context — 跨会话用户记忆
+
+### 4.1 架构选择
+
+调研了 Mem0（41K stars）、Letta（38K stars）、Zep/Graphiti（20K stars）三个框架后的建议：
+
+| 方案 | 优点 | 缺点 | 建议 |
+|------|------|------|------|
+| **Firestore 原生向量搜索**（当前方案） | 无额外依赖，已在技术栈内 | 查询能力有限，无自动提取 | 作为存储层保留 |
+| **+ Mem0 式自动提取逻辑** | 自动从对话中提取结构化记忆 | 需要额外 LLM 调用 | 采用其设计模式，自行实现 |
+| **+ Graphiti 式时序查询**（可选） | "用户上周 vs 现在的偏好" | 增加复杂度 | Phase 2 考虑 |
+
+**推荐方案**: 在 Firestore 之上自建 Mem0 式的自动提取层，不引入外部依赖。
+
+### 4.2 记忆分类与存储
+
+#### Explicit Profile（用户主动填写）
+
+基于 Beyond the Cane (ACM TACCESS 2022) 的研究发现设计：
+
+```python
+class UserProfile:
+    # === 基本信息 ===
+    vision_status: str          # "totally_blind" | "low_vision"
+    blindness_onset: str        # "congenital" | "acquired"
+    onset_age: int | None       # 后天盲的发生年龄
+    has_guide_dog: bool         # 有导盲犬 → 不需要水坑/台阶预警
+    has_white_cane: bool        # 有白杖 → 不需要碰撞危险预警
+
+    # === 偏好 ===
+    tts_speed: float            # 1.0 - 3.0x（盲人用户普遍偏好 2.0-3.0x）
+    verbosity_preference: str   # "minimal" | "standard" | "detailed"
+    language: str               # "zh-CN" | "en-US" | ...
+    description_priority: str   # "spatial" | "object" | "text"
+    # Beyond the Cane 发现：先天盲优先空间信息，后天盲优先物体位置
+
+    # === O&M（定向行走）训练 ===
+    om_level: str               # "beginner" | "intermediate" | "advanced"
+    travel_frequency: str       # "daily" | "weekly" | "rarely"
+    # Beyond the Cane 发现：高频出行者需要的信息量显著更少
+```
+
+**为什么这些字段重要**:
+- 先天盲用户出行频率高 11x，提问少 3x（Beyond the Cane）
+- 有导盲犬的用户不需要地面障碍预警（SightLine Final Spec）
+- TTS 语速偏好差异巨大，错误的语速直接影响可用性（社区共识）
+- O&M 训练水平和出行频率是信息需求量的最强预测因子
+
+#### Implicit Episodic Memory（系统自动学习）
+
+```python
+class EpisodicMemory:
+    category: str       # "preference" | "location" | "person" |
+                        # "behavior" | "stress_trigger" | "routine"
+    content: str        # "用户偏好先描述左侧再描述右侧"
+    source: str         # "conversation_extraction" | "behavior_pattern"
+    confidence: float   # 0.0 - 1.0
+    created_at: datetime
+    last_accessed: datetime
+    access_count: int
+    embedding: list[float]  # gemini-embedding-001, 3072 dims → truncate to 2048
+```
+
+**存储示例**:
+
+```json
+[
+  {
+    "category": "location",
+    "content": "用户称腾讯大厦B座为'公司'",
+    "confidence": 0.95,
+    "embedding": [...]
+  },
+  {
+    "category": "person",
+    "content": "face_id_abc123 是用户的老板 David，关系: 上下级",
+    "confidence": 0.90,
+    "embedding": [...]
+  },
+  {
+    "category": "stress_trigger",
+    "content": "用户在人多的地铁站心率持续升高，需要预防性 LOD 降级",
+    "confidence": 0.75,
+    "embedding": [...]
+  },
+  {
+    "category": "routine",
+    "content": "工作日 8:30 从家出发，步行 → 地铁 → 公司，约 45 分钟",
+    "confidence": 0.85,
+    "embedding": [...]
+  }
+]
+```
+
+### 4.3 记忆自动提取流程
+
+参考 Mem0 的设计模式，在 Session 结束时执行：
+
+```python
+async def consolidate_session_memories(conversation_history, user_id):
+    """Session 结束时的记忆巩固"""
+
+    # 1. 用 Gemini Flash 提取潜在记忆
+    extraction_prompt = f"""
+    分析以下对话，提取值得长期记住的信息。
+    分类: preference, location, person, behavior, stress_trigger, routine
+    只提取高置信度的事实，不要推测。
+    如果对话中没有值得记住的信息，返回空列表。
+
+    对话:
+    {conversation_history}
+    """
+    new_memories = await gemini_flash.generate(extraction_prompt)
+
+    # 2. 检查冲突——新记忆是否与已有记忆矛盾
+    for memory in new_memories:
+        existing = await firestore.vector_search(
+            collection="memories",
+            query_embedding=embed(memory.content),
+            top_k=3,
+            filters={"user_id": user_id, "category": memory.category}
+        )
+        if existing and cosine_similarity(existing[0].embedding, memory.embedding) > 0.85:
+            # 更新已有记忆，而非新建
+            await update_memory(existing[0].id, memory)
+        else:
+            # 新建记忆
+            await create_memory(user_id, memory)
+
+    # 3. 衰减旧记忆
+    await decay_unused_memories(user_id, decay_factor=0.95)
+```
+
+### 4.4 记忆检索（为 Dynamic Prompt 服务）
+
+```python
+async def retrieve_relevant_memories(user_id, current_context: str, top_k=5):
+    """基于当前上下文检索相关长期记忆"""
+
+    query_embedding = await embed(current_context)
+
+    results = await firestore.vector_search(
+        collection="memories",
+        query_embedding=query_embedding,
+        top_k=top_k * 2,  # 检索多一些，后面排序
+        filters={"user_id": user_id}
+    )
+
+    # Mem0 式排序：relevance * recency * importance
+    scored = []
+    for r in results:
+        relevance = r.similarity_score
+        recency = recency_score(r.last_accessed)  # 越近越高
+        importance = importance_weight(r.category)  # stress_trigger > routine > preference
+        final_score = relevance * 0.5 + recency * 0.3 + importance * 0.2
+        scored.append((r, final_score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [r for r, _ in scored[:top_k]]
+```
+
+---
+
+## 5. LOD Decision Engine — 三层融合决策
+
+### 5.1 Decision Algorithm
+
+参考 ContextAgent (NeurIPS 2025) 的主动必要性评分，但扩展为连续 LOD 值：
+
+```python
+def decide_lod(ephemeral: EphemeralContext,
+               session: SessionContext,
+               profile: UserProfile) -> int:
+    """融合三层 Context 决定 LOD 等级"""
+
+    # === Rule 1: PANIC 中断（最高优先级） ===
+    if ephemeral.heart_rate > 120 and ephemeral.hrv_ms < 20:
+        return 1  # 强制 LOD 1
+
+    # === Rule 2: 基于运动状态的基线 ===
+    if ephemeral.step_cadence > 2.0:
+        base_lod = 1  # 快速移动 → 沉默
+    elif ephemeral.step_cadence > 0.5:
+        base_lod = 1  # 正常行走 → 默认沉默，除非有重要信息
+    elif ephemeral.step_cadence > 0:
+        base_lod = 2  # 缓慢行走/探索 → 标准描述
+    else:
+        base_lod = 3  # 静止 → 可以详细叙述
+
+    # === Rule 3: 空间转换提升 ===
+    if session.recent_space_transition:
+        base_lod = max(base_lod, 2)  # 进入新空间至少 LOD 2
+
+    # === Rule 4: 用户偏好调整 ===
+    if profile.verbosity_preference == "minimal":
+        base_lod = max(1, base_lod - 1)
+    elif profile.verbosity_preference == "detailed":
+        base_lod = min(3, base_lod + 1)
+
+    # === Rule 5: O&M 水平调整 ===
+    if profile.om_level == "advanced" and profile.travel_frequency == "daily":
+        base_lod = max(1, base_lod - 1)  # 高水平用户需要更少信息
+
+    # === Rule 6: 用户显式请求 ===
+    if session.user_requested_detail:
+        return 3
+    if session.user_said_stop:
+        return 1
+
+    return base_lod
+```
+
+### 5.2 "发声有成本"机制
+
+```python
+class SpeechCostManager:
+    """每次发声分配认知成本分数"""
+
+    def should_speak(self, info_value: float, current_lod: int,
+                     step_cadence: float) -> bool:
+        # 运动越快，发声阈值越高
+        movement_penalty = step_cadence * 2.0  # 每步/秒增加 2.0 成本
+        threshold = BASE_THRESHOLD + movement_penalty
+
+        # 只有高价值信息能突破阈值
+        return info_value > threshold
+
+    def calculate_info_value(self, info_type: str) -> float:
+        VALUES = {
+            "safety_warning": 10.0,    # 始终突破
+            "navigation_instruction": 8.0,
+            "face_recognition": 7.0,
+            "space_description": 5.0,
+            "object_enumeration": 3.0,
+            "ambient_description": 1.0,  # 几乎从不在行走时说
+        }
+        return VALUES.get(info_type, 1.0)
+```
+
+---
+
+## 6. Dynamic System Prompt Construction
+
+### 6.1 Prompt 结构
+
+所有上下文层汇总为一个 System Prompt，交给 Orchestrator：
+
+```python
+def build_dynamic_prompt(lod: int,
+                         profile: UserProfile,
+                         ephemeral_semantic: str,
+                         session: SessionContext,
+                         long_term_memories: list[Memory],
+                         vision_result: str | None = None,
+                         face_result: str | None = None) -> str:
+
+    prompt = f"""你是 SightLine，为视障用户提供环境语义翻译的 AI 助手。
+
+## 用户档案
+- 视力: {profile.vision_status}（{'先天' if profile.blindness_onset == 'congenital' else '后天'}）
+- 辅助工具: {'导盲犬' if profile.has_guide_dog else ''}{'白杖' if profile.has_white_cane else ''}
+- TTS 语速: {profile.tts_speed}x
+- O&M 水平: {profile.om_level}
+- 描述偏好: {profile.verbosity_preference}
+
+## 当前状态（LOD {lod}）
+{LOD_INSTRUCTIONS[lod]}
+
+## 实时 Context
+{ephemeral_semantic}
+
+## 行程 Context
+- 出行目的: {session.trip_purpose or '未指定'}
+- 当前空间: {session.space_type}
+- 空间转换: {session.space_transitions[-1] if session.space_transitions else '无'}
+"""
+
+    # 条件注入
+    if session.narrative_snapshot:
+        prompt += f"""
+## 之前的任务
+{session.narrative_snapshot['task_type']}进行中，已完成: {session.narrative_snapshot['progress']}。
+请从 {session.narrative_snapshot['remaining'][0]} 继续，不要重头开始。
+"""
+
+    if long_term_memories:
+        prompt += "\n## 相关历史记忆\n"
+        for m in long_term_memories:
+            prompt += f"- [{m.category}] {m.content}\n"
+
+    if vision_result:
+        prompt += f"\n## 视觉分析\n{vision_result}\n"
+
+    if face_result:
+        prompt += f"\n## 人脸识别\n{face_result}\n"
+
+    return prompt
+```
+
+### 6.2 LOD 指令模板
+
+```python
+LOD_INSTRUCTIONS = {
+    1: """当前 LOD 1（静默/低语模式）。
+规则: 完全沉默或最多1句话（15-40字）。只说安全关键信息。
+风格: 简短、平静、不抢注意力。
+示例: "前方台阶" / "右侧有人靠近"
+如果没有安全关键信息，保持沉默。""",
+
+    2: """当前 LOD 2（标准模式）。
+规则: 中等描述（80-150字）。包含空间布局 + 关键物体。
+风格: 中等语速，清晰。
+描述顺序: 先整体空间 → 关键物体 → 可操作信息。
+示例: "你进入了一个约20米长的走廊，左侧有三扇门，右侧有落地窗。前方10米处有电梯入口。"
+""",
+
+    3: """当前 LOD 3（叙事模式）。
+规则: 详细描述（400-800字）。完整场景描述，包括细节、氛围、人物。
+风格: 慢速、富有表现力、叙事性。
+可以主动读取文字、描述菜单、详细介绍环境。
+用户处于放松/静止状态，可以接受丰富信息。"""
+}
+```
+
+---
+
+## 7. Token Optimization via LOD
+
+利用 Gemini 3 的 `media_resolution` 参数实现 LOD 与 token 成本联动：
+
+| LOD | media_resolution | Tokens/帧 | 节省比例 | 使用场景 |
+|-----|-----------------|-----------|---------|---------|
+| 1 | `low` | 70 | 94% | 快速安全扫描 |
+| 2 | `medium` | 560 | 50% | 标准空间描述 |
+| 3 | `high` | 1120 | 0%（基线） | 精细叙事描述 |
+
+```python
+def get_vision_config(lod: int) -> dict:
+    configs = {
+        1: {"media_resolution": "low", "thinking_level": "none"},
+        2: {"media_resolution": "medium", "thinking_level": "low"},
+        3: {"media_resolution": "high", "thinking_level": "medium"},
+    }
+    return configs[lod]
+```
+
+---
+
+## 8. Competitive Landscape — Why This Matters
+
+### 8.1 辅助产品的上下文鸿沟
+
+| 产品 | 用户记忆 | 实时感知 | 自适应密度 | Context 融合 |
+|------|---------|---------|-----------|-------------|
+| Be My Eyes | 无 | 快照式 | 无 | 单源 |
+| Google Lookout | 无 | 7 模式手动切换 | 无 | 单源 |
+| Seeing AI | 仅人脸库 | 快照式 | 无 | 最小 |
+| Aira | 人工笔记 | 实时（人工） | 人工判断 | 人工融合 |
+| OrCam MyEye | 仅人脸库 | 离线 | 无 | 单源 |
+| Envision | 人脸库 | 可穿戴 | 无 | 新兴 |
+| Sullivan+ | 无 | 连续 | 无 | 最小 |
+| **SightLine** | **三层记忆** | **连续+多传感器** | **自动 LOD 1/2/3** | **三层自动融合** |
+
+### 8.2 学术验证
+
+| 研究 | 发现 | 对 SightLine 的意义 |
+|------|------|-------------------|
+| RAVEN (ASSETS 2025) | 5/8 盲人用户要求自适应细节层级 | 用户需求已验证 |
+| Say It My Way (CHI 2026) | 盲人用户需要持久偏好系统 | Long-term Context 是刚需 |
+| Describe Now (DIS 2025) | 手动控制增加认知负荷 | 自动 LOD 是正确方向 |
+| Beyond the Cane (ACM 2022) | 先天盲 vs 后天盲信息需求差异大 | 用户 Profile 维度设计 |
+| LlamaPIE (2025) | 主动提醒提升准确率 37%→87% | 主动模式有效且不打扰 |
+| EgoBlind (NUS, 2025) | 最佳 MLLM 仅 56% vs 人类 87% | 适配层比原始模型更重要 |
+| BLV LVLM Preferences (2025) | 一刀切描述失败 | 个性化是必需的 |
+| Augmented Cane (Science Robotics, 2021) | 认知减负提升行走速度 18% | LOD 降级有可量化的物理效益 |
+
+### 8.3 核心壁垒
+
+> LOD Engine 不是一个 feature，而是一个 architectural decision。一旦竞品想要跟进，需要重构整个信息传递管线。
+
+具体来说：
+1. 需要重新设计 prompt 系统（从固定到动态）
+2. 需要建立传感器融合管道（从无到有）
+3. 需要构建跨会话记忆系统（从无状态到有状态）
+4. 需要重新训练/调整输出格式控制（从固定冗余度到自适应）
+
+这四个改动互相依赖，不能单独实现。这就是为什么现有竞品不太可能快速跟进——它不是加一个功能，而是架构级别的重构。
+
+---
+
+## 9. Implementation Risks & Mitigations
+
+| 风险 | 严重程度 | 缓解策略 |
+|------|---------|---------|
+| Gemini Live API 延迟 > 1s | 高 | Orchestrator 先说"让我看看..."，异步等待结果；LOD 1 不调用 Vision Agent |
+| 用户隐私（连续录音+生物数据） | 高 | 明确 opt-in 流程；生物数据仅本地处理不上传原始值；仅上传语义化后的状态描述 |
+| 记忆错误（LLM 幻觉记忆） | 中 | 新记忆 confidence < 0.7 不存储；关键记忆（人名、关系）需用户确认 |
+| LOD 误判（该说不说/该停不停） | 中 | 用户可随时语音覆盖（"详细说说"/"停"）；A/B 测试阈值参数 |
+| Token 成本失控（LOD 3 高频触发） | 中 | media_resolution 联动；LOD 3 仅在静止时触发；Gemini 3 Flash 免费覆盖 sub-agent 调用 |
+| 硬件碎片化 | 低 | SEP 协议已解耦，任何遵循 JSON 格式的设备都能接入 |
+
+---
+
+## 10. Recommended Implementation Phases
+
+### Phase 1: MVP Core Loop（Hackathon Target）
+- [ ] Ephemeral → LOD Decision（规则引擎）
+- [ ] Static User Profile（手动填写）
+- [ ] Dynamic System Prompt 构建
+- [ ] LOD 1/2/3 输出格式控制
+- [ ] Developer Console + Telemetry 滑块
+
+### Phase 2: Memory Layer
+- [ ] Session Context Manager（空间转换、Narrative Snapshot）
+- [ ] Mem0 式 Session-End 记忆提取
+- [ ] Firestore 向量搜索集成
+- [ ] 记忆冲突检测与合并
+
+### Phase 3: Full Context Fusion
+- [ ] 人脸识别 → 社交记忆联动
+- [ ] 位置实体记忆（"公司"="腾讯B座"）
+- [ ] 压力触发器学习与预防性 LOD 调整
+- [ ] 用户行为模式识别（通勤路线等）
+
+### Phase 4: Optimization
+- [ ] media_resolution × LOD 联动 token 优化
+- [ ] 记忆衰减与清理策略
+- [ ] A/B 测试 LOD 阈值参数
+- [ ] 用户反馈循环（LOD 满意度追踪）
+
+---
+
+## References
+
+### Academic Papers
+- RAVEN (ASSETS 2025): [arXiv 2510.06573](https://arxiv.org/abs/2510.06573)
+- Say It My Way (CHI 2026): [arXiv 2602.16930](https://arxiv.org/html/2602.16930)
+- Describe Now (DIS 2025): [ACM DL](https://dl.acm.org/doi/10.1145/3715336.3735685)
+- Beyond the Cane (ACM TACCESS 2022): [PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC9491388/)
+- ContextAgent (NeurIPS 2025): [arXiv 2505.14668](https://arxiv.org/html/2505.14668v1)
+- ContextLLM (ACM 2025): [ACM DL](https://dl.acm.org/doi/pdf/10.1145/3708468.3711892)
+- EgoBlind (NUS 2025): [arXiv 2503.08221](https://arxiv.org/abs/2503.08221)
+- VIPTour/FocusFormer (npj AI 2025): [Nature](https://www.nature.com/articles/s44387-025-00006-w)
+- BLV LVLM Preferences (CHI 2025): [arXiv 2502.14883](https://arxiv.org/abs/2502.14883)
+- LlamaPIE (2025): [arXiv](https://arxiv.org/html/2505.04066v2)
+- Augmented Cane (Science Robotics 2021): DOI: 10.1126/scirobotics.abg6594
+- Pedestrian Stress (ScienceDirect 2025): Biometric sensor fusion for walking stress
+
+### Open-Source Frameworks
+- ContextAgent: [GitHub](https://github.com/openaiotlab/ContextAgent)
+- Letta/MemGPT: [GitHub](https://github.com/letta-ai/letta) (38K stars)
+- Mem0: [GitHub](https://github.com/mem0ai/mem0) (41K stars)
+- Zep/Graphiti: [GitHub](https://github.com/getzep/graphiti) (20K stars)
+
+### Commercial Products
+- Be My Eyes: [bemyeyes.com](https://www.bemyeyes.com/)
+- Google Lookout: [Google Blog](https://blog.google/outreach-and-initiatives/accessibility/)
+- Microsoft Seeing AI: [seeing-ai.com](https://www.microsoft.com/en-us/ai/seeing-ai)
+- Aira: [aira.io](https://aira.io/)
+- OrCam MyEye 3 Pro: [orcam.com](https://www.orcam.com/)
+- Envision Glasses: [letsenvision.com](https://www.letsenvision.com/)
+- Sullivan+: [Google Play](https://play.google.com/store/apps/details?id=tuat.kr.sullivan)
+- Meta Ray-Ban Smart Glasses: [meta.com](https://www.meta.com/ai-glasses/)
+
+### Raw Research Data
+- `../raw_research/engine/research_academic_context_aware_ai.md`
+- `../raw_research/engine/research_opensource_frameworks.md`
+- `../raw_research/engine/research_commercial_products.md`

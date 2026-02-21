@@ -1,0 +1,9 @@
+{
+  "name": "SightLine AI",
+  "description": "A comprehensive AI assistant featuring Smart Chat, Live Audio, Vision Studio, and Audio Studio using Gemini models.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

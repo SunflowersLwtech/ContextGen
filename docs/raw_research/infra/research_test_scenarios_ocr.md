@@ -180,16 +180,18 @@ Key resources: `google_cloud_run_v2_service`, `google_firestore_database`, `goog
 
 ## COST SUMMARY
 
-### Per-Session (10 min, Gemini 2.5 Flash)
+### Per-Session (10 min)
 
-| Component | Tokens | Cost |
-|-----------|--------|------|
-| Audio input | 15,000 | $0.005 |
-| Audio output | 7,500 | $0.019 |
-| Video input (1fps) | 154,800 | $0.046 |
-| **Total** | **~179K** | **~$0.08** |
+| Component | Model | Tokens | Cost |
+|-----------|-------|--------|------|
+| Audio input (Live API) | 2.5 Flash native audio | 15,000 | $0.045 |
+| Audio output (Live API) | 2.5 Flash native audio | 7,500 | $0.090 |
+| Video input (Live API, 1fps) | 2.5 Flash native audio | 154,800 | $0.464 |
+| Sub-agent calls | 3 Flash (FREE) | ~10,000 | **$0.00** |
+| **Total** | | **~187K** | **~$0.60** |
 
-Monthly (2hr/day active user): ~$0.96
+*Note: Live API native audio pricing ($3.00/1M audio in, $12.00/1M audio out) is higher than standard API*
+Monthly (2hr/day active user): ~$7.20 (Live API) + $0.00 (sub-agents)
 
 ---
 
@@ -197,12 +199,12 @@ Monthly (2hr/day active user): ~$0.96
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| OCR | Gemini Native | Lower latency, sufficient accuracy |
-| Gym Equipment | Gemini Vision | General understanding suffices |
+| OCR | Gemini 3 Flash Native (FREE) | Lower latency, sufficient accuracy, zero cost |
+| Gym Equipment | Gemini 3.1 Pro / 3 Flash Vision | General understanding suffices |
 | Distance | Gemini Spatial + clock-face | No extra API, cross-platform |
 | Barcode | ML Kit + Gemini fallback | Speed + reliability |
 | Currency | Gemini Vision | Already in pipeline |
-| TTS | Gemini Native Audio | Lowest latency |
+| TTS | Gemini 2.5 Flash Native Audio (Live API) | Lowest latency; Gemini 3 has no Live API yet |
 | Session | Compression + Resumption | Unlimited sessions |
 
 ---
