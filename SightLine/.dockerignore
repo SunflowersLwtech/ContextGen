@@ -1,0 +1,13 @@
+.git
+.env
+*.json
+__pycache__
+*.pyc
+dev/
+SightLine/
+SightLine.xcodeproj/
+*.xcworkspace
+*.swift
+.pytest_cache
+.mypy_cache
+sightline-backend-sa.json

@@ -2,16 +2,18 @@
 //  SightLineApp.swift
 //  SightLine
 //
-//  Created by Liu Wei on 2/22/26.
+//  Main app entry point. Uses AppDelegate for audio session setup.
 //
 
 import SwiftUI
 
 @main
 struct SightLineApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainView()
         }
     }
 }
