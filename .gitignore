@@ -66,6 +66,9 @@ DerivedData/
 *.hmap
 *.ipa
 
+# === Dev / Scratch ===
+SightLine/dev/
+
 # === Misc ===
 *.tgz
 *.tar.gz
