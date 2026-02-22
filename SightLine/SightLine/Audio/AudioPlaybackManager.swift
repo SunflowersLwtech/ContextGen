@@ -27,6 +27,9 @@ class AudioPlaybackManager: ObservableObject {
     private var jitterKickoffWorkItem: DispatchWorkItem?
 
     func setup() {
+        // Make setup idempotent: permission dialogs / route changes can invalidate
+        // the current engine; rebuilding restores audible output reliably.
+        teardown()
         configureAudioSession()
 
         let engine = AVAudioEngine()

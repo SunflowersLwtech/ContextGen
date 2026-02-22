@@ -325,10 +325,7 @@ struct MainView: View {
             }
         }
 
-        // 1. Setup audio playback engine
-        audioPlayback.setup()
-
-        // 2. Build WebSocket URL and wire callbacks
+        // 1. Build WebSocket URL and wire callbacks
         let url = SightLineConfig.wsURL(
             userId: SightLineConfig.defaultUserId,
             sessionId: SightLineConfig.defaultSessionId,
@@ -382,7 +379,7 @@ struct MainView: View {
 
         webSocketManager.connect(url: url)
 
-        // 3. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
+        // 2. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
         cameraManager.onCameraFailure = { reason in
             webSocketManager.sendText("{\"type\":\"camera_failure\",\"error\":\"\(reason)\",\"reason\":\"\(reason)\"}")
         }
@@ -403,7 +400,7 @@ struct MainView: View {
             frameSelector.markFrameSent()
         }
 
-        // 4. Setup audio capture -> WebSocket + NoiseMeter RMS feed
+        // 3. Setup audio capture -> WebSocket + NoiseMeter RMS feed
         //    Phase 5: Binary frame optimization — raw PCM without Base64 encoding
         audioCapture.onAudioCaptured = { pcmData in
             let msg = UpstreamMessage.audio(data: pcmData)
@@ -417,10 +414,10 @@ struct MainView: View {
             sensorManager.processAudioRMS(rms)
         }
 
-        // 5. Start sensor collection
+        // 4. Start sensor collection
         sensorManager.startAll()
 
-        // 6. Start telemetry aggregator
+        // 5. Start telemetry aggregator
         telemetryAggregator.start(sensorManager: sensorManager, webSocket: webSocketManager)
     }
 
@@ -437,7 +434,11 @@ struct MainView: View {
             }
 
             await MainActor.run {
-                audioCapture.startCapture()
+                // Rebuild playback after permission prompts; iOS may reset audio session state.
+                audioPlayback.setup()
+                if !isMuted {
+                    audioCapture.startCapture()
+                }
                 cameraManager.startCapture()
             }
         }
