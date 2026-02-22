@@ -383,6 +383,27 @@ def _json_safe(value):
         return json.loads(json.dumps(value, default=str))
 
 
+def _extract_function_calls(event) -> list:
+    """Extract function calls from ADK event objects across SDK schema changes."""
+    getter = getattr(event, "get_function_calls", None)
+    if callable(getter):
+        try:
+            calls = getter() or []
+            if calls:
+                return list(calls)
+        except Exception:
+            logger.debug("event.get_function_calls() failed; trying legacy access path", exc_info=True)
+
+    # Legacy fallback (older assumptions in downstream loop).
+    actions = getattr(event, "actions", None)
+    if not actions:
+        return []
+    legacy_calls = getattr(actions, "function_calls", None)
+    if not legacy_calls:
+        return []
+    return list(legacy_calls)
+
+
 async def _dispatch_function_call(
     func_name: str,
     func_args: dict,
@@ -1587,8 +1608,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         })
 
                 # --- Function calls from Gemini (Phase 3) ---
-                if hasattr(event, "actions") and event.actions and event.actions.function_calls:
-                    for fc in event.actions.function_calls:
+                function_calls = _extract_function_calls(event)
+                if function_calls:
+                    for fc in function_calls:
                         behavior = resolve_tool_behavior(
                             tool_name=fc.name,
                             lod=session_ctx.current_lod,

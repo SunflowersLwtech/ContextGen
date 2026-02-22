@@ -26,13 +26,18 @@ def _compute_embedding(text: str) -> list[float]:
 
     Returns a zero vector on failure so callers can proceed gracefully.
     """
+    normalized = (text or "").strip()
+    if not normalized:
+        logger.debug("Embedding input text is empty; using zero vector")
+        return [0.0] * EMBEDDING_DIM
+
     try:
         from google import genai
 
         client = genai.Client()
         result = client.models.embed_content(
             model=EMBEDDING_MODEL,
-            contents=text,
+            contents=normalized,
             config={"output_dimensionality": EMBEDDING_DIM},
         )
         return result.embeddings[0].values
