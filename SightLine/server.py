@@ -20,15 +20,22 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.runners import Runner
 from google.genai import types
 from starlette.websockets import WebSocketState
 
 from agents.orchestrator import create_orchestrator_agent
-from live_api.session_manager import SessionManager, create_session_service
+from live_api.session_manager import (
+    SessionManager,
+    build_vad_runtime_update_message,
+    build_vad_runtime_update_payload,
+    create_session_service,
+    supports_runtime_vad_reconfiguration,
+)
 from lod import (
     PanicHandler,
     build_full_dynamic_prompt,
@@ -153,6 +160,186 @@ async def health() -> dict:
             "face": _face_available,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# REST API — Face Registration (Phase 5, SL-P2-①)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/face/register")
+async def api_register_face(request: Request) -> JSONResponse:
+    """Register a face via REST (for iOS FaceRegistrationView).
+
+    Body JSON:
+        user_id: str
+        person_name: str
+        relationship: str
+        image_base64: str  (JPEG base64-encoded)
+        photo_index: int (optional, default 0)
+
+    Returns the face_id and metadata on success.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    user_id = body.get("user_id")
+    person_name = body.get("person_name")
+    relationship = body.get("relationship", "")
+    image_base64 = body.get("image_base64")
+    photo_index = body.get("photo_index", 0)
+
+    if not all([user_id, person_name, image_base64]):
+        return JSONResponse(
+            {"error": "Missing required fields: user_id, person_name, image_base64"},
+            status_code=400,
+        )
+
+    if not _face_available:
+        return JSONResponse(
+            {"error": "Face recognition is not available on this server"},
+            status_code=503,
+        )
+
+    try:
+        from tools.face_tools import register_face
+        result = await asyncio.to_thread(
+            register_face,
+            user_id=user_id,
+            person_name=person_name,
+            relationship=relationship,
+            image_base64=image_base64,
+            photo_index=photo_index,
+        )
+        logger.info("REST face register: %s for user %s", result.get("face_id"), user_id)
+        return JSONResponse(result, status_code=201)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        logger.exception("Face registration failed")
+        return JSONResponse({"error": f"Registration failed: {str(e)}"}, status_code=500)
+
+
+@app.get("/api/face/list/{user_id}")
+async def api_list_faces(user_id: str) -> JSONResponse:
+    """List all registered faces for a user (without embeddings)."""
+    if not _face_available:
+        return JSONResponse({"error": "Face recognition not available"}, status_code=503)
+
+    try:
+        from tools.face_tools import list_faces
+        faces = await asyncio.to_thread(list_faces, user_id)
+        return JSONResponse({"faces": faces, "count": len(faces)})
+    except Exception as e:
+        logger.exception("List faces failed for user %s", user_id)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/face/{user_id}/{face_id}")
+async def api_delete_face(user_id: str, face_id: str) -> JSONResponse:
+    """Delete a single face entry from the library."""
+    if not _face_available:
+        return JSONResponse({"error": "Face recognition not available"}, status_code=503)
+
+    try:
+        from tools.face_tools import delete_face
+        deleted = await asyncio.to_thread(delete_face, user_id, face_id)
+        if deleted:
+            return JSONResponse({"status": "deleted", "face_id": face_id})
+        return JSONResponse({"error": "Face not found"}, status_code=404)
+    except Exception as e:
+        logger.exception("Delete face failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/face/{user_id}")
+async def api_clear_face_library(user_id: str) -> JSONResponse:
+    """Clear all faces in the user's library."""
+    if not _face_available:
+        return JSONResponse({"error": "Face recognition not available"}, status_code=503)
+
+    try:
+        from tools.face_tools import clear_face_library
+        count = await asyncio.to_thread(clear_face_library, user_id)
+        return JSONResponse({"status": "cleared", "deleted_count": count})
+    except Exception as e:
+        logger.exception("Clear face library failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# REST API — User Profile (Phase 5, SL-P2-③)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/profile/{user_id}")
+async def api_get_profile(user_id: str) -> JSONResponse:
+    """Get the UserProfile from Firestore."""
+    try:
+        from google.cloud import firestore as _fs
+        db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
+        doc = db.collection("users").document(user_id).get()
+        if not doc.exists:
+            return JSONResponse({"error": "Profile not found"}, status_code=404)
+        data = doc.to_dict()
+        # Convert timestamps to ISO strings
+        for key in ("created_at", "updated_at"):
+            if key in data and hasattr(data[key], "isoformat"):
+                data[key] = data[key].isoformat()
+        return JSONResponse(data)
+    except Exception as e:
+        logger.exception("Get profile failed for %s", user_id)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/profile/{user_id}")
+async def api_save_profile(user_id: str, request: Request) -> JSONResponse:
+    """Create or update a UserProfile in Firestore.
+
+    Body JSON — any of:
+        vision_status: str (totally_blind / low_vision)
+        blindness_onset: str (congenital / acquired)
+        onset_age: int | null
+        has_guide_dog: bool
+        has_white_cane: bool
+        tts_speed: float
+        verbosity_preference: str (concise / detailed)
+        language: str
+        description_priority: str (spatial / object)
+        color_description: bool
+        om_level: str (beginner / intermediate / advanced)
+        travel_frequency: str (daily / weekly / rarely)
+        preferred_name: str
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    ALLOWED_FIELDS = {
+        "vision_status", "blindness_onset", "onset_age",
+        "has_guide_dog", "has_white_cane", "tts_speed",
+        "verbosity_preference", "language", "description_priority",
+        "color_description", "om_level", "travel_frequency", "preferred_name",
+    }
+    filtered = {k: v for k, v in body.items() if k in ALLOWED_FIELDS}
+    if not filtered:
+        return JSONResponse({"error": "No valid fields provided"}, status_code=400)
+
+    try:
+        from google.cloud import firestore as _fs
+        db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
+        doc_ref = db.collection("users").document(user_id)
+        filtered["updated_at"] = _fs.SERVER_TIMESTAMP
+        # Merge so we don't overwrite fields not included in this request
+        doc_ref.set(filtered, merge=True)
+        logger.info("REST profile save for user %s: %s", user_id, list(filtered.keys()))
+        return JSONResponse({"status": "saved", "user_id": user_id, "fields": list(filtered.keys())})
+    except Exception as e:
+        logger.exception("Save profile failed for %s", user_id)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +591,35 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             logger.exception("Failed to load memories for user %s", user_id)
             return []
 
-    async def _notify_ios_lod_change(new_lod: int, reason: str, debug_dict: dict) -> None:
+    async def _sync_runtime_vad_update(new_lod: int) -> dict:
+        """Inject a best-effort runtime VAD update marker into the live session."""
+        supported, reason = supports_runtime_vad_reconfiguration()
+        payload = build_vad_runtime_update_payload(new_lod)
+        payload["runtime_hot_reconfig_supported"] = supported
+        payload["runtime_note"] = "transport_hot_update_applied" if supported else reason
+
+        content = types.Content(
+            parts=[types.Part(text=build_vad_runtime_update_message(new_lod))],
+            role="user",
+        )
+        live_request_queue.send_content(content)
+
+        if supported:
+            logger.info("Injected runtime VAD update payload for LOD %d: %s", new_lod, payload)
+        else:
+            logger.warning(
+                "Runtime VAD transport hot-update unavailable (%s); injected sync marker only: %s",
+                reason,
+                payload,
+            )
+        return payload
+
+    async def _notify_ios_lod_change(
+        new_lod: int,
+        reason: str,
+        debug_dict: dict,
+        vad_update: dict | None = None,
+    ) -> None:
         """Send LOD change notification to iOS client."""
         await _safe_send_json({
             "type": "lod_update",
@@ -413,6 +628,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         })
         # SL-77: Include memory_top3 in debug_lod for DebugOverlay
         debug_dict["memory_top3"] = memory_top3
+        if vad_update:
+            debug_dict["vad_update"] = vad_update
         await _safe_send_json({
             "type": "debug_lod",
             "data": debug_dict,
@@ -430,6 +647,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         on_lod_change(session_ctx, old_lod, 1)
 
         panic_reason = "PANIC: safety mode activated"
+        vad_update = await _sync_runtime_vad_update(1)
         await _notify_ios_lod_change(
             1,
             panic_reason,
@@ -440,6 +658,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "rules": ["Rule0:PANIC_flag->LOD1"],
                 "panic": True,
             },
+            vad_update=vad_update,
         )
         await _send_lod_update(1, ephemeral_ctx, panic_reason)
         logger.warning("PANIC activated for session %s: LOD %d -> 1", session_id, old_lod)
@@ -666,8 +885,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # -- Upstream handler ----------------------------------------------------
 
+    # Binary frame magic bytes for audio/image binary protocol (Phase 5)
+    _MAGIC_AUDIO = 0x01
+    _MAGIC_IMAGE = 0x02
+
     async def _upstream() -> None:
         """Read messages from the iOS client and forward to the Live API.
+
+        Supports both legacy JSON text messages and optimized binary frames.
+        Binary protocol: first byte is magic byte (0x01=audio, 0x02=image),
+        remaining bytes are raw payload. This eliminates ~33% Base64 overhead.
 
         Handles upstream message types: audio, image, telemetry,
         activity_start, activity_end, gesture.
@@ -676,9 +903,63 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
         try:
             while True:
-                raw = await websocket.receive_text()
+                # Use low-level receive() to handle both text and binary
+                ws_message = await websocket.receive()
+
+                # --- Binary frame (optimized path) ---
+                if "bytes" in ws_message and ws_message["bytes"]:
+                    raw_bytes: bytes = ws_message["bytes"]
+                    if len(raw_bytes) < 2:
+                        continue
+
+                    magic = raw_bytes[0]
+                    payload = raw_bytes[1:]
+
+                    if magic == _MAGIC_AUDIO:
+                        blob = types.Blob(
+                            data=payload,
+                            mime_type="audio/pcm;rate=16000",
+                        )
+                        live_request_queue.send_realtime(blob)
+                        continue
+
+                    elif magic == _MAGIC_IMAGE:
+                        blob = types.Blob(
+                            data=payload,
+                            mime_type="image/jpeg",
+                        )
+                        live_request_queue.send_realtime(blob)
+
+                        # Trigger async sub-agents (same logic as JSON path)
+                        import time as _time
+                        now = _time.monotonic()
+                        lod = session_ctx.current_lod
+                        vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                        if now - _last_vision_time >= vision_interval:
+                            _last_vision_time = now
+                            image_b64 = base64.b64encode(payload).decode("ascii")
+                            await _emit_tool_event(
+                                "analyze_scene", ToolBehavior.WHEN_IDLE, status="queued",
+                            )
+                            asyncio.create_task(_run_vision(image_b64, lod))
+                            asyncio.create_task(_run_face_id(image_b64))
+                            asyncio.create_task(_run_ocr(image_b64))
+                        continue
+
+                    else:
+                        logger.warning("Unknown binary magic byte: 0x%02x", magic)
+                        continue
+
+                # --- Text frame (JSON, legacy + control messages) ---
+                raw_text = ws_message.get("text")
+                if not raw_text:
+                    # Check for disconnect
+                    if ws_message.get("type") == "websocket.disconnect":
+                        break
+                    continue
+
                 try:
-                    message = json.loads(raw)
+                    message = json.loads(raw_text)
                 except json.JSONDecodeError:
                     logger.warning("Received non-JSON text message, ignoring")
                     continue
@@ -840,6 +1121,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             resume_prompt = on_lod_change(session_ctx, old_lod, new_lod)
             session_ctx.current_lod = new_lod
             telemetry_agg.update_lod(new_lod)
+            vad_update = await _sync_runtime_vad_update(new_lod)
 
             await _send_lod_update(new_lod, ephemeral_ctx, decision_log.reason)
 
@@ -852,7 +1134,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 logger.info("Injected [RESUME] prompt for session %s", session_id)
 
             await _notify_ios_lod_change(
-                new_lod, decision_log.reason, decision_log.to_debug_dict(),
+                new_lod,
+                decision_log.reason,
+                decision_log.to_debug_dict(),
+                vad_update=vad_update,
             )
 
     # -- Downstream handler --------------------------------------------------

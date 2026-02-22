@@ -107,6 +107,59 @@ LOD_VAD_PRESETS: dict[int, dict] = {
     },
 }
 
+
+def _enum_label(value) -> str:
+    """Convert SDK enum values into stable log/debug labels."""
+    if value is None:
+        return "UNSPECIFIED"
+    if hasattr(value, "name"):
+        return str(value.name)
+    return str(value).split(".")[-1]
+
+
+def get_lod_vad_preset(lod: int) -> dict:
+    """Return a copy of the LOD-specific VAD preset."""
+    return dict(LOD_VAD_PRESETS.get(lod, LOD_VAD_PRESETS[2]))
+
+
+def supports_runtime_vad_reconfiguration() -> tuple[bool, str]:
+    """Whether ADK transport can hot-update VAD config mid-session.
+
+    google-adk 1.25.x LiveRequestQueue currently only supports:
+    content, realtime blobs, and activity start/end signals.
+    """
+    return (
+        False,
+        "LiveRequestQueue does not expose realtime_input_config updates mid-session.",
+    )
+
+
+def build_vad_runtime_update_payload(lod: int) -> dict:
+    """Build a serializable VAD payload for logging/debug contracts."""
+    preset = get_lod_vad_preset(lod)
+    return {
+        "lod": lod,
+        "start_of_speech_sensitivity": _enum_label(preset.get("start_sensitivity")),
+        "end_of_speech_sensitivity": _enum_label(preset.get("end_sensitivity")),
+        "prefix_padding_ms": int(preset.get("prefix_padding_ms", 200)),
+        "silence_duration_ms": int(preset.get("silence_duration_ms", 800)),
+    }
+
+
+def build_vad_runtime_update_message(lod: int) -> str:
+    """Build an internal control message injected on LOD transitions."""
+    payload = build_vad_runtime_update_payload(lod)
+    return (
+        "[VAD UPDATE]\n"
+        "Internal control sync. Keep this as configuration context only.\n"
+        f"- LOD: {payload['lod']}\n"
+        f"- start_of_speech_sensitivity: {payload['start_of_speech_sensitivity']}\n"
+        f"- end_of_speech_sensitivity: {payload['end_of_speech_sensitivity']}\n"
+        f"- prefix_padding_ms: {payload['prefix_padding_ms']}\n"
+        f"- silence_duration_ms: {payload['silence_duration_ms']}\n"
+        "Do not narrate this block to the user."
+    )
+
 # ---------------------------------------------------------------------------
 # Firestore client (lazy)
 # ---------------------------------------------------------------------------
@@ -155,7 +208,7 @@ class SessionManager:
         else:
             logger.info("Starting fresh session %s (no cached handle)", session_id)
 
-        vad_preset = LOD_VAD_PRESETS.get(lod, LOD_VAD_PRESETS[2])
+        vad_preset = get_lod_vad_preset(lod)
 
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,

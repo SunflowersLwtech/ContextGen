@@ -10,6 +10,13 @@ import Foundation
 
 // MARK: - Upstream Messages (iOS -> Server)
 
+/// Magic bytes for binary WebSocket protocol.
+/// Eliminates ~33% Base64 overhead on audio/image payloads.
+enum BinaryMagic {
+    static let audio: UInt8 = 0x01   // PCM 16kHz mono
+    static let image: UInt8 = 0x02   // JPEG 768x768
+}
+
 enum UpstreamMessage {
     case audio(data: Data)                         // PCM 16kHz mono
     case image(data: Data, mimeType: String)       // JPEG 768x768
@@ -18,6 +25,26 @@ enum UpstreamMessage {
     case activityEnd
     case gesture(type: String)
 
+    /// Encode as optimized binary frame (magic byte + raw payload).
+    /// Returns nil for message types that must be sent as JSON text.
+    func toBinary() -> Data? {
+        switch self {
+        case .audio(let data):
+            var frame = Data(capacity: 1 + data.count)
+            frame.append(BinaryMagic.audio)
+            frame.append(data)
+            return frame
+        case .image(let data, _):
+            var frame = Data(capacity: 1 + data.count)
+            frame.append(BinaryMagic.image)
+            frame.append(data)
+            return frame
+        default:
+            return nil  // Non-binary types use JSON
+        }
+    }
+
+    /// Legacy JSON encoding (for telemetry, gestures, control messages).
     func toJSON() -> String {
         switch self {
         case .audio(let data):

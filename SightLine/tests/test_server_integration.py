@@ -106,6 +106,38 @@ class TestSessionManager:
         from live_api.session_manager import SessionManager, LOD_VAD_PRESETS
         assert LOD_VAD_PRESETS[3]["silence_duration_ms"] > LOD_VAD_PRESETS[1]["silence_duration_ms"]
 
+    def test_context_window_compression_guardrail(self):
+        """High-risk guardrail: keep context compression enabled for long AV sessions."""
+        from live_api.session_manager import SessionManager
+        mgr = SessionManager()
+        config = mgr.get_run_config("test", lod=2)
+        compression = config.context_window_compression
+        assert compression is not None
+        assert compression.trigger_tokens == 100000
+        assert compression.sliding_window is not None
+        assert compression.sliding_window.target_tokens == 80000
+
+    def test_runtime_vad_update_payload_contract(self):
+        """Runtime VAD updates should expose explicit payload+capability metadata."""
+        from live_api.session_manager import (
+            build_vad_runtime_update_message,
+            build_vad_runtime_update_payload,
+            supports_runtime_vad_reconfiguration,
+        )
+
+        supported, reason = supports_runtime_vad_reconfiguration()
+        assert supported is False
+        assert reason
+
+        payload = build_vad_runtime_update_payload(1)
+        assert payload["lod"] == 1
+        assert 300 <= payload["silence_duration_ms"] <= 500
+        assert payload["prefix_padding_ms"] >= 0
+
+        message = build_vad_runtime_update_message(1)
+        assert "[VAD UPDATE]" in message
+        assert "silence_duration_ms" in message
+
 
 # ---------------------------------------------------------------------------
 # Telemetry → LOD integration

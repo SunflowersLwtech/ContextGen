@@ -31,9 +31,12 @@ steps:
       - '--cpu=2'
       - '--no-cpu-throttling'
       - '--cpu-boost'
-      - '--set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=FALSE'
+      - '--set-env-vars=GOOGLE_GENAI_USE_VERTEXAI=FALSE,AGENT_ENGINE_ID=${_AGENT_ENGINE_ID}'
       - '--set-secrets=GOOGLE_API_KEY=gemini-api-key:latest,GOOGLE_MAPS_API_KEY=google-maps-api-key:latest'
       - '--service-account=sightline-backend@$PROJECT_ID.iam.gserviceaccount.com'
+
+substitutions:
+  _AGENT_ENGINE_ID: 'projects/sightline-hackathon/locations/us-central1/reasoningEngines/YOUR_ID'
 
 timeout: '1800s'
 options:

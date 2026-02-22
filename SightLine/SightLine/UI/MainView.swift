@@ -36,6 +36,8 @@ struct MainView: View {
     @State private var whenIdleToolQueue: [String] = []
     @State private var showDebugOverlay = false
     @State private var showDevConsole = false
+    @State private var showFaceRegistration = false
+    @State private var showUserProfile = false
     @State private var isMuted = false
     @State private var isEmergencyPaused = false
     @State private var lastAgentTranscript = ""
@@ -164,8 +166,16 @@ struct MainView: View {
                 model: devConsoleModel,
                 webSocketManager: webSocketManager,
                 cameraManager: cameraManager,
-                telemetryAggregator: telemetryAggregator
+                telemetryAggregator: telemetryAggregator,
+                showFaceRegistration: $showFaceRegistration,
+                showUserProfile: $showUserProfile
             )
+        }
+        .sheet(isPresented: $showFaceRegistration) {
+            FaceRegistrationView()
+        }
+        .sheet(isPresented: $showUserProfile) {
+            UserProfileOnboardingView()
         }
         .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")")
     }
@@ -315,14 +325,24 @@ struct MainView: View {
                 logger.debug("Frame skipped (pixel-diff below threshold)")
                 return
             }
+            // Phase 5: Binary frame optimization — eliminates ~33% Base64 overhead
             let msg = UpstreamMessage.image(data: jpegData, mimeType: "image/jpeg")
-            webSocketManager.sendText(msg.toJSON())
+            if let binaryFrame = msg.toBinary() {
+                webSocketManager.sendBinary(binaryFrame)
+            } else {
+                webSocketManager.sendText(msg.toJSON())
+            }
         }
 
         // 4. Setup audio capture -> WebSocket + NoiseMeter RMS feed
+        //    Phase 5: Binary frame optimization — raw PCM without Base64 encoding
         audioCapture.onAudioCaptured = { pcmData in
             let msg = UpstreamMessage.audio(data: pcmData)
-            webSocketManager.sendText(msg.toJSON())
+            if let binaryFrame = msg.toBinary() {
+                webSocketManager.sendBinary(binaryFrame)
+            } else {
+                webSocketManager.sendText(msg.toJSON())
+            }
         }
         audioCapture.onAudioLevelUpdate = { rms in
             sensorManager.processAudioRMS(rms)

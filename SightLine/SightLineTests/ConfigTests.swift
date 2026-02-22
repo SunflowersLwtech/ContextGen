@@ -40,6 +40,17 @@ struct ConfigTests {
         #expect(SightLineConfig.audioBufferSize == 1600)
     }
 
+    @Test("audio jitter buffer keeps 2-3 chunks")
+    func audioJitterBufferChunks() {
+        #expect((2...3).contains(SightLineConfig.audioJitterBufferChunks))
+    }
+
+    @Test("audio jitter max wait is under 100ms")
+    func audioJitterMaxWait() {
+        #expect(SightLineConfig.audioJitterMaxWait > 0)
+        #expect(SightLineConfig.audioJitterMaxWait <= 0.1)
+    }
+
     @Test("video frame dimensions are 768x768")
     func videoFrameDimensions() {
         #expect(SightLineConfig.videoFrameWidth == 768)

@@ -113,7 +113,7 @@ class TelemetryAggregator: ObservableObject {
         let newData = sensor.snapshot()
 
         // Check for immediate triggers (bypass throttle)
-        if let trigger = checkImmediateTriggers(old: lastSentTelemetry, new: newData) {
+        if let trigger = immediateTrigger(old: lastSentTelemetry, new: newData) {
             sendTelemetry(newData, via: ws, trigger: trigger)
             return
         }
@@ -135,7 +135,9 @@ class TelemetryAggregator: ObservableObject {
         }
     }
 
-    private func checkImmediateTriggers(old: TelemetryData?, new: TelemetryData) -> ImmediateTrigger? {
+    /// Evaluates whether telemetry should bypass throttle and send immediately.
+    /// Kept internal so unit tests can verify safety-critical trigger rules.
+    func immediateTrigger(old: TelemetryData?, new: TelemetryData) -> ImmediateTrigger? {
         guard let old = old else { return nil }
 
         // Motion state changed
