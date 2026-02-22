@@ -7,11 +7,6 @@
 
 ---
 
-## Languages
-
-- English (default): this file
-- 中文版本: [README.zh-CN.md](README.zh-CN.md)
-
 ## ✨ Project Overview (Current)
 
 **SightLine** is a real-time semantic assistance system for blind and low-vision users:
@@ -52,22 +47,21 @@ graph TD
     J <--> L[(Firestore)]
 ```
 
-  ## 🤖 Agent Orchestration (Current)
+## 🤖 Agent Orchestration (Current)
 
-  - **Orchestrator Agent:** Unified decision layer and response entry point.
-  - **Vision Agent:** Scene understanding with LOD-adaptive summarization.
-  - **OCR Agent:** Text extraction for menus, signs, and documents.
-  - **Face Agent:** InsightFace `buffalo_l` 512-D embeddings + cosine matching (default threshold `0.4`).
-  - **Memory Service:** Long-term preferences and session memory persisted in Firestore (vector retrieval).
-  - **Tool Calling:** Google Maps (navigation/places) + Grounding (retrieval augmentation).
+- **Orchestrator Agent:** Unified decision layer and response entry point.
+- **Vision Agent:** Scene understanding with LOD-adaptive summarization.
+- **OCR Agent:** Text extraction for menus, signs, and documents.
+- **Face Agent:** InsightFace `buffalo_l` 512-D embeddings + cosine matching (default threshold `0.4`).
+- **Memory Service:** Long-term preferences and session memory persisted in Firestore (vector retrieval).
+- **Tool Calling:** Google Maps (navigation/places) + Grounding (retrieval augmentation).
 
-  ## 📁 Repository Structure (Key)
+## 📁 Repository Structure (Key)
 
 ```text
 ContextGen/
 ├── README.md
-  ├── README.zh-CN.md
-  ├── docs/                                # specs, research, architecture docs
+├── docs/                                # specs, research, architecture docs
 └── SightLine/
     ├── server.py                        # FastAPI + WebSocket realtime backend entry
     ├── agents/                          # orchestrator / vision / ocr / face
@@ -151,7 +145,6 @@ gcloud builds submit --config cloudbuild.yaml
 
 - Product and technical final spec: `docs/SightLine_Final_Specification.md`
 - Consolidated development reference: `docs/SightLine_Consolidated_Development_Reference.md`
-- Agent orchestration and context modeling: `docs/SightLine 核心架构_ Agent编排与上下文建模.md`
 - iOS/backend protocol alignment: `docs/SightLine_iOS_Backend_Protocol_Alignment_Matrix.md`
 
 ## 🧭 Short-Term Roadmap
