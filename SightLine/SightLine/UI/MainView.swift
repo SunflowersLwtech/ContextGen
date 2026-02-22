@@ -737,20 +737,10 @@ private final class MediaPermissionGate: ObservableObject {
             }
         }
 
-        let session = AVAudioSession.sharedInstance()
-        switch session.recordPermission {
-        case .granted:
-            return true
-        case .undetermined:
-            return await withCheckedContinuation { continuation in
-                session.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
+        return await withCheckedContinuation { continuation in
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                continuation.resume(returning: granted)
             }
-        case .denied:
-            return false
-        @unknown default:
-            return false
         }
     }
 }

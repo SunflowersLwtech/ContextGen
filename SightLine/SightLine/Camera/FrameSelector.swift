@@ -23,8 +23,10 @@ class FrameSelector: ObservableObject {
 
     // Pixel-diff deduplication (SL-75)
     private var previousThumbnail: [UInt8]?
+    private var lastSentTime: Date = .distantPast
     private let thumbnailSize = 32
     private let diffThreshold: Float = 5.0  // 0-255 scale; below this = "same scene"
+    private let maxSkipDuration: TimeInterval = 5.0  // Force-send even static frames every 5s
 
     var minInterval: TimeInterval {
         switch currentLOD {
@@ -42,19 +44,39 @@ class FrameSelector: ObservableObject {
 
     /// Check if the frame differs enough from the previous one to be worth sending.
     /// Returns true if the frame is sufficiently different or if no previous frame exists.
+    ///
+    /// IMPORTANT: Only updates the baseline thumbnail when the frame IS different.
+    /// Previously, `defer` updated on every call — causing consecutive rejected frames
+    /// (33ms apart at 30fps) to always compare nearly-identical thumbnails, permanently
+    /// blocking all frames after the first rejection.
+    ///
+    /// Safety valve: force-sends at least one frame every `maxSkipDuration` seconds
+    /// even if the scene is truly static, so the server always has fresh visual context.
     func isFrameDifferent(jpegData: Data) -> Bool {
         guard let thumbnail = downsampleToGrayscale(jpegData: jpegData) else {
-            return true  // Can't compute diff, send it
+            return true
         }
 
-        defer { previousThumbnail = thumbnail }
-
         guard let prev = previousThumbnail, prev.count == thumbnail.count else {
-            return true  // First frame, always send
+            previousThumbnail = thumbnail
+            lastSentTime = Date()
+            return true
+        }
+
+        // Force-send if we haven't sent anything for too long
+        if Date().timeIntervalSince(lastSentTime) >= maxSkipDuration {
+            previousThumbnail = thumbnail
+            lastSentTime = Date()
+            return true
         }
 
         let diff = meanAbsoluteDifference(prev, thumbnail)
-        return diff >= diffThreshold
+        if diff >= diffThreshold {
+            previousThumbnail = thumbnail
+            lastSentTime = Date()
+            return true
+        }
+        return false
     }
 
     func markFrameSent() {

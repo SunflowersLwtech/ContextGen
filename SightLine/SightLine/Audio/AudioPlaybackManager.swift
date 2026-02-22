@@ -27,6 +27,8 @@ class AudioPlaybackManager: ObservableObject {
     private var jitterKickoffWorkItem: DispatchWorkItem?
 
     func setup() {
+        configureAudioSession()
+
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
 
@@ -115,6 +117,23 @@ class AudioPlaybackManager: ObservableObject {
         playbackFormat = nil
         DispatchQueue.main.async { self.isPlaying = false }
         Self.logger.info("Audio playback engine stopped")
+    }
+
+    /// Configure the shared AVAudioSession for simultaneous recording and playback.
+    /// Must be called before either AVAudioEngine starts.
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            )
+            try session.setActive(true)
+            Self.logger.info("AVAudioSession configured: playAndRecord + defaultToSpeaker")
+        } catch {
+            Self.logger.error("AVAudioSession configuration failed: \(error)")
+        }
     }
 
     private func scheduleNextChunk(player: AVAudioPlayerNode, format: AVAudioFormat) {
