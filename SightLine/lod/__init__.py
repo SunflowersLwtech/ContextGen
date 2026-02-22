@@ -14,7 +14,12 @@ from lod.models import (
 )
 from lod.narrative_snapshot import on_lod_change
 from lod.panic_handler import PanicHandler
-from lod.prompt_builder import build_full_dynamic_prompt, build_lod_update_message
+from lod.prompt_builder import (
+    build_dynamic_prompt,
+    build_full_dynamic_prompt,
+    build_lod_update_message,
+)
+from lod.telemetry_aggregator import LOD_TELEMETRY_INTERVAL, TelemetryAggregator
 
 __all__ = [
     "LODDecisionLog",
@@ -24,9 +29,12 @@ __all__ = [
     "SessionContext",
     "UserProfile",
     "PanicHandler",
+    "LOD_TELEMETRY_INTERVAL",
+    "TelemetryAggregator",
     "decide_lod",
     "should_speak",
     "on_lod_change",
+    "build_dynamic_prompt",
     "build_full_dynamic_prompt",
     "build_lod_update_message",
 ]

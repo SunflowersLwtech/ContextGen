@@ -269,3 +269,27 @@ def build_full_dynamic_prompt(
         )
 
     return "\n".join(parts)
+
+
+def build_dynamic_prompt(
+    lod: int,
+    profile: UserProfile,
+    ephemeral_semantic: str,
+    session: SessionContext,
+    memories: list[str] | None = None,
+    vision_result: str | None = None,
+    face_result: str | None = None,
+) -> str:
+    """Backward-compatible entrypoint required by Phase 2 gates.
+
+    Delegates to ``build_full_dynamic_prompt`` to preserve existing behavior.
+    """
+    return build_full_dynamic_prompt(
+        lod=lod,
+        profile=profile,
+        ephemeral_semantic=ephemeral_semantic,
+        session=session,
+        memories=memories,
+        vision_result=vision_result,
+        face_result=face_result,
+    )

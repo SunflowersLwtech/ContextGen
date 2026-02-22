@@ -128,21 +128,53 @@ def decide_lod(
     (lod, log) : tuple[int, LODDecisionLog]
         lod in {1, 2, 3}; log contains full decision trace.
     """
+    def _to_float(value, default: float) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_opt_float(value) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    motion_state = getattr(ephemeral, "motion_state", "stationary") or "stationary"
+    step_cadence = _to_float(getattr(ephemeral, "step_cadence", 0.0), 0.0)
+    ambient_noise_db = _to_float(getattr(ephemeral, "ambient_noise_db", 50.0), 50.0)
+    heart_rate = _to_opt_float(getattr(ephemeral, "heart_rate", None))
+    panic = bool(getattr(ephemeral, "panic", False))
+    user_gesture = getattr(ephemeral, "user_gesture", None)
+
+    recent_space_transition = bool(getattr(session, "recent_space_transition", False))
+    user_requested_detail = bool(getattr(session, "user_requested_detail", False))
+    user_said_stop = bool(getattr(session, "user_said_stop", False))
+    previous_lod = int(getattr(session, "current_lod", 2) or 2)
+
+    verbosity_preference = getattr(profile, "verbosity_preference", "standard") or "standard"
+    om_level = getattr(profile, "om_level", "intermediate") or "intermediate"
+    travel_frequency = getattr(profile, "travel_frequency", "weekly") or "weekly"
+
     log = LODDecisionLog(
-        motion_state=ephemeral.motion_state,
-        step_cadence=ephemeral.step_cadence,
-        ambient_noise_db=ephemeral.ambient_noise_db,
-        heart_rate=ephemeral.heart_rate,
-        panic=ephemeral.panic,
-        space_transition=session.recent_space_transition,
-        verbosity_preference=profile.verbosity_preference,
-        om_level=profile.om_level,
-        travel_frequency=profile.travel_frequency,
-        previous_lod=session.current_lod,
+        motion_state=motion_state,
+        step_cadence=step_cadence,
+        ambient_noise_db=ambient_noise_db,
+        heart_rate=heart_rate,
+        panic=panic,
+        space_transition=recent_space_transition,
+        verbosity_preference=verbosity_preference,
+        om_level=om_level,
+        travel_frequency=travel_frequency,
+        previous_lod=previous_lod,
     )
 
     # ── Rule 0: Explicit PANIC flag from iOS ──────────────────────────
-    if ephemeral.panic:
+    if panic:
         log.triggered_rules.append("Rule0:PANIC_flag→LOD1")
         log.final_lod = 1
         log.reason = "PANIC flag set by client"
@@ -150,28 +182,28 @@ def decide_lod(
         return 1, log
 
     # ── Rule 1: Heart-rate PANIC (only if watch connected) ────────────
-    if ephemeral.heart_rate is not None and ephemeral.heart_rate > 120:
-        log.triggered_rules.append(f"Rule1:HR={ephemeral.heart_rate:.0f}>120→LOD1")
+    if heart_rate is not None and heart_rate > 120:
+        log.triggered_rules.append(f"Rule1:HR={heart_rate:.0f}>120→LOD1")
         log.final_lod = 1
-        log.reason = f"PANIC: heart_rate={ephemeral.heart_rate:.0f}>120"
-        logger.warning("Heart-rate PANIC (%.0f bpm) → LOD 1", ephemeral.heart_rate)
+        log.reason = f"PANIC: heart_rate={heart_rate:.0f}>120"
+        logger.warning("Heart-rate PANIC (%.0f bpm) → LOD 1", heart_rate)
         return 1, log
 
     # ── Rule 2: Motion-state baseline ─────────────────────────────────
-    if ephemeral.motion_state == "running" or ephemeral.step_cadence > 120:
+    if motion_state == "running" or step_cadence > 120:
         base_lod = 1
         log.triggered_rules.append("Rule2:running→LOD1")
-    elif ephemeral.motion_state == "walking":
-        if ephemeral.step_cadence < 60:
+    elif motion_state == "walking":
+        if step_cadence < 60:
             base_lod = 2  # slow exploration
             log.triggered_rules.append("Rule2:slow_walk(<60spm)→LOD2")
         else:
             base_lod = 1  # normal walking
             log.triggered_rules.append("Rule2:walking(≥60spm)→LOD1")
-    elif ephemeral.motion_state == "in_vehicle":
+    elif motion_state == "in_vehicle":
         base_lod = 3
         log.triggered_rules.append("Rule2:in_vehicle→LOD3")
-    elif ephemeral.motion_state == "cycling":
+    elif motion_state == "cycling":
         base_lod = 1
         log.triggered_rules.append("Rule2:cycling→LOD1")
     else:  # stationary
@@ -181,53 +213,53 @@ def decide_lod(
     log.base_lod_before_adjustments = base_lod
 
     # ── Rule 3: Ambient noise override ────────────────────────────────
-    if ephemeral.ambient_noise_db > 80:
+    if ambient_noise_db > 80:
         if base_lod > 1:
-            log.triggered_rules.append(f"Rule3:noise={ephemeral.ambient_noise_db:.0f}dB>80→cap_LOD1")
+            log.triggered_rules.append(f"Rule3:noise={ambient_noise_db:.0f}dB>80→cap_LOD1")
         base_lod = min(base_lod, 1)
 
     # ── Rule 4: Space transition boost ────────────────────────────────
-    if session.recent_space_transition:
+    if recent_space_transition:
         if base_lod < 2:
             log.triggered_rules.append("Rule4:space_transition→boost_LOD2")
         base_lod = max(base_lod, 2)
 
     # ── Rule 5: User verbosity preference ─────────────────────────────
-    if profile.verbosity_preference == "minimal":
+    if verbosity_preference == "minimal":
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
             log.triggered_rules.append("Rule5:minimal_pref→-1")
-    elif profile.verbosity_preference == "detailed":
+    elif verbosity_preference == "detailed":
         prev = base_lod
         base_lod = min(3, base_lod + 1)
         if base_lod != prev:
             log.triggered_rules.append("Rule5:detailed_pref→+1")
 
     # ── Rule 6: O&M expert adjustment ─────────────────────────────────
-    if profile.om_level == "advanced" and profile.travel_frequency == "daily":
+    if om_level == "advanced" and travel_frequency == "daily":
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
             log.triggered_rules.append("Rule6:advanced_daily→-1")
 
     # ── Rule 7: Explicit user override (highest priority after PANIC) ─
-    if session.user_requested_detail:
+    if user_requested_detail:
         base_lod = 3
         log.triggered_rules.append("Rule7:user_requested_detail→LOD3")
         log.user_override = "detail"
-    elif session.user_said_stop:
+    elif user_said_stop:
         base_lod = 1
         log.triggered_rules.append("Rule7:user_said_stop→LOD1")
         log.user_override = "stop"
 
     # ── User gesture override ─────────────────────────────────────────
-    if ephemeral.user_gesture == "lod_up":
+    if user_gesture == "lod_up":
         prev = base_lod
         base_lod = min(3, base_lod + 1)
         if base_lod != prev:
             log.triggered_rules.append("Gesture:lod_up→+1")
-    elif ephemeral.user_gesture == "lod_down":
+    elif user_gesture == "lod_down":
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
@@ -240,10 +272,10 @@ def decide_lod(
     else:
         log.reason = f"default → LOD {base_lod}"
 
-    if base_lod != session.current_lod:
+    if base_lod != previous_lod:
         logger.info(
             "LOD %d → %d  (%s)",
-            session.current_lod,
+            previous_lod,
             base_lod,
             log.reason,
         )

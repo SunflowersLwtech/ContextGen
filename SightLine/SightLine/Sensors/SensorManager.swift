@@ -21,6 +21,7 @@ class SensorManager: ObservableObject {
     let locationManager = LocationManager()
     let noiseMeter = NoiseMeter()
     let healthKitManager = HealthKitManager()
+    let watchReceiver = WatchReceiver()
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -35,13 +36,16 @@ class SensorManager: ObservableObject {
         motionManager.startMonitoring()
         locationManager.startMonitoring()
 
-        // HealthKit needs async authorization
+        // Activate WCSession for real-time watch heart rate (<1s latency)
+        watchReceiver.activate()
+
+        // HealthKit needs async authorization (backup channel, 10-20 min delay)
         Task {
             await healthKitManager.requestAuthorization()
             healthKitManager.startMonitoring()
         }
 
-        Self.logger.info("All sensors started")
+        Self.logger.info("All sensors started (watch receiver activated)")
     }
 
     /// Stop all sensor collection.
@@ -84,7 +88,10 @@ class SensorManager: ObservableObject {
         }
 
         data.timeContext = Self.currentTimeContext()
-        data.heartRate = healthKitManager.heartRate
+
+        // Prefer real-time watch HR (WCSession, <1s) over HealthKit (system sync, 10-20 min)
+        data.heartRate = watchReceiver.freshHeartRate ?? healthKitManager.heartRate
+
         data.panic = false
 
         return data
@@ -95,6 +102,7 @@ class SensorManager: ObservableObject {
     /// Observe sub-sensor changes and update currentTelemetry.
     private func observeSubSensors() {
         // Combine all sensor publishers to update the aggregate
+        // Group 1: motion + noise + HealthKit HR (backup)
         Publishers.CombineLatest4(
             motionManager.$motionState,
             motionManager.$stepCadence,
@@ -106,6 +114,14 @@ class SensorManager: ObservableObject {
             self?.currentTelemetry = self?.snapshot() ?? TelemetryData()
         }
         .store(in: &cancellables)
+
+        // Group 2: Real-time watch heart rate (primary channel)
+        watchReceiver.$heartRate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.currentTelemetry = self?.snapshot() ?? TelemetryData()
+            }
+            .store(in: &cancellables)
     }
 
     /// Derive time context from current hour.

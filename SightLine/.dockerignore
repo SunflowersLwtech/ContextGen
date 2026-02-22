@@ -6,6 +6,7 @@ __pycache__
 dev/
 SightLine/
 SightLine.xcodeproj/
+SightLineWatch/
 *.xcworkspace
 *.swift
 tests/

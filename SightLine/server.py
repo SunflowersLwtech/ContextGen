@@ -183,14 +183,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     async def _notify_ios_lod_change(new_lod: int, reason: str, debug_dict: dict) -> None:
         """Send LOD change notification to iOS client."""
         await _safe_send_json({
-            "type": "lodUpdate",
+            "type": "lod_update",
             "lod": new_lod,
             "reason": reason,
         })
         # Debug overlay event (separate message for optional consumption)
         await _safe_send_json({
             "type": "debug_lod",
-            **debug_dict,
+            "data": debug_dict,
         })
 
     async def _handle_panic(ephemeral_ctx) -> None:
@@ -209,7 +209,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         on_lod_change(session_ctx, old_lod, 1)
 
         # Inject PANIC-level LOD update into Live session
-        await _send_lod_update(1, ephemeral_ctx, "PANIC: safety mode activated")
+        panic_reason = "PANIC: safety mode activated"
+        await _send_lod_update(1, ephemeral_ctx, panic_reason)
+
+        # Notify iOS immediately for local degradation UX / E2E contract.
+        await _notify_ios_lod_change(
+            1,
+            panic_reason,
+            {
+                "lod": 1,
+                "prev": old_lod,
+                "reason": panic_reason,
+                "rules": ["Rule0:PANIC_flag→LOD1"],
+                "panic": True,
+            },
+        )
 
         logger.warning(
             "PANIC activated for session %s: LOD %d → 1",

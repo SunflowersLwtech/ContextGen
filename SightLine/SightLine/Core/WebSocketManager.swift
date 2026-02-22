@@ -240,7 +240,7 @@ class WebSocketManager: ObservableObject {
             hasDegradedNotification = true
             DispatchQueue.main.async { [weak self] in
                 let generator = UINotificationFeedbackGenerator()
-                generator.notificationOccurred(.error)
+                generator.notificationOccurred(.warning)
                 self?.onDisconnectionDegraded?()
             }
         }

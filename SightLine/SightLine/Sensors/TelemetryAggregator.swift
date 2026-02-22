@@ -16,6 +16,13 @@ class TelemetryAggregator: ObservableObject {
     @Published var isPaused: Bool = false
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "Telemetry")
+    // SL-31 telemetry interval windows:
+    // LOD 1: 3-4s, LOD 2: 2-3s, LOD 3: 5-10s.
+    private let lodTelemetryIntervalWindow: [Int: (TimeInterval, TimeInterval)] = [
+        1: (3.0, 4.0),
+        2: (2.0, 3.0),
+        3: (5.0, 10.0)
+    ]
 
     private var timer: Timer?
     private weak var sensorManager: SensorManager?
@@ -34,12 +41,8 @@ class TelemetryAggregator: ObservableObject {
 
     /// LOD-aware send interval in seconds.
     var sendInterval: TimeInterval {
-        switch currentLOD {
-        case 1: return 3.0   // Walking: safety-first but avoid flooding
-        case 2: return 2.0   // Exploration: detect space changes
-        case 3: return 5.0   // Stationary: stable state
-        default: return 2.0
-        }
+        let window = lodTelemetryIntervalWindow[currentLOD] ?? lodTelemetryIntervalWindow[2]!
+        return (window.0 + window.1) / 2.0
     }
 
     /// Start the telemetry aggregation loop.
