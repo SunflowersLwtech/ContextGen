@@ -457,6 +457,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _vision_lock = asyncio.Lock()
     _vision_in_progress = False
     _last_vision_time = 0.0
+    _is_client_muted = False
 
     def _is_websocket_open() -> bool:
         return (
@@ -1112,7 +1113,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 elif message.get("type") == "camera_failure":
                     # SL-76: Camera hardware failure path
-                    camera_error = message.get("error", "camera_unavailable")
+                    camera_error = (
+                        message.get("error")
+                        or message.get("reason")
+                        or "camera_unavailable"
+                    )
                     logger.warning("Camera failure reported: %s", camera_error)
                     await _emit_capability_degraded(
                         "camera",
@@ -1169,8 +1174,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             live_request_queue.send_content(content)
 
                     elif gesture == "mute_toggle":
-                        is_muted = message.get("muted", False)
-                        logger.info("Mute toggle: muted=%s", is_muted)
+                        # Support explicit state from iOS and legacy toggle-only payloads.
+                        if "muted" in message:
+                            _is_client_muted = _coerce_bool(message.get("muted"), default=False)
+                        else:
+                            _is_client_muted = not _is_client_muted
+                        logger.info("Mute toggle: muted=%s", _is_client_muted)
 
                     elif gesture == "sos":
                         logger.warning("SOS gesture received for session %s", session_id)

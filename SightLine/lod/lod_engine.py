@@ -168,7 +168,8 @@ def decide_lod(
     user_said_stop = bool(getattr(session, "user_said_stop", False))
     previous_lod = int(getattr(session, "current_lod", 2) or 2)
 
-    verbosity_preference = getattr(profile, "verbosity_preference", "standard") or "standard"
+    verbosity_preference_raw = getattr(profile, "verbosity_preference", "standard") or "standard"
+    verbosity_preference = str(verbosity_preference_raw).strip().lower()
     om_level = getattr(profile, "om_level", "intermediate") or "intermediate"
     travel_frequency = getattr(profile, "travel_frequency", "weekly") or "weekly"
 
@@ -243,11 +244,12 @@ def decide_lod(
         base_lod = max(base_lod, 2)
 
     # ── Rule 5: User verbosity preference ─────────────────────────────
-    if verbosity_preference == "minimal":
+    if verbosity_preference in ("minimal", "concise"):
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
-            log.triggered_rules.append("Rule5:minimal_pref→-1")
+            rule = "Rule5:concise_pref→-1" if verbosity_preference == "concise" else "Rule5:minimal_pref→-1"
+            log.triggered_rules.append(rule)
     elif verbosity_preference == "detailed":
         prev = base_lod
         base_lod = min(3, base_lod + 1)

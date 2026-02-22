@@ -212,6 +212,7 @@ struct TelemetryData: Codable {
     var heartRate: Double?
     var userGesture: String?
     var panic: Bool = false
+    var deviceType: String = "phone_only"
 
     enum CodingKeys: String, CodingKey {
         case motionState = "motion_state"
@@ -223,6 +224,7 @@ struct TelemetryData: Codable {
         case heartRate = "heart_rate"
         case userGesture = "user_gesture"
         case panic
+        case deviceType = "device_type"
     }
 }
 

@@ -135,6 +135,14 @@ def test_detailed_pref_increases_lod(default_session, detailed_profile):
     assert lod == 3  # 2 + 1 = 3
 
 
+def test_concise_pref_decreases_lod(stationary_ephemeral, default_session, default_profile):
+    profile = UserProfile.default()
+    profile.verbosity_preference = "concise"
+    lod, log = decide_lod(stationary_ephemeral, default_session, profile)
+    assert lod == 2  # 3 - 1 = 2
+    assert any("concise_pref" in r for r in log.triggered_rules)
+
+
 # =====================================================================
 # decide_lod() — Rule 6: Advanced O&M
 # =====================================================================

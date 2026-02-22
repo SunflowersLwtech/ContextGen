@@ -237,7 +237,7 @@ struct MainView: View {
         } else if !isEmergencyPaused {
             audioCapture.startCapture()
         }
-        webSocketManager.sendText(UpstreamMessage.gesture(type: "mute_toggle").toJSON())
+        webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":\(isMuted)}")
         UIAccessibility.post(notification: .announcement, argument: isMuted ? "Microphone muted" : "Microphone unmuted")
         logger.info("Gesture: mute_toggle (isMuted=\(isMuted))")
     }
@@ -371,7 +371,7 @@ struct MainView: View {
 
         // 3. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
         cameraManager.onCameraFailure = { reason in
-            webSocketManager.sendText("{\"type\":\"camera_failure\",\"reason\":\"\(reason)\"}")
+            webSocketManager.sendText("{\"type\":\"camera_failure\",\"error\":\"\(reason)\",\"reason\":\"\(reason)\"}")
         }
         cameraManager.frameSelector = frameSelector
         cameraManager.onFrameCaptured = { jpegData in

@@ -91,6 +91,9 @@ class SensorManager: ObservableObject {
 
         // Prefer real-time watch HR (WCSession, <1s) over HealthKit (system sync, 10-20 min)
         data.heartRate = watchReceiver.freshHeartRate ?? healthKitManager.heartRate
+        data.deviceType = (watchReceiver.freshHeartRate != nil || watchReceiver.isWatchMonitoring)
+            ? "phone_and_watch"
+            : "phone_only"
 
         data.panic = false
 

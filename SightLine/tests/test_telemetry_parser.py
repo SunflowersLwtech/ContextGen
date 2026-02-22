@@ -78,3 +78,8 @@ def test_ephemeral_invalid_values():
     ctx = parse_telemetry_to_ephemeral({"step_cadence": "abc", "ambient_noise_db": "xyz"})
     assert ctx.step_cadence == 0.0
     assert ctx.ambient_noise_db == 50.0
+
+
+def test_ephemeral_device_type_passthrough():
+    ctx = parse_telemetry_to_ephemeral({"device_type": "phone_and_watch"})
+    assert ctx.device_type == "phone_and_watch"
