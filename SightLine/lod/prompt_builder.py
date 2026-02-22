@@ -95,7 +95,12 @@ def _build_persona_block(profile: UserProfile) -> str:
     onset = "congenital" if profile.blindness_onset == "congenital" else "acquired"
     color_note = ""
     if profile.blindness_onset == "congenital" and not profile.color_description:
-        color_note = "\n- Color descriptions: DISABLED (user has never seen colors; use tactile/spatial/sound analogies instead)"
+        color_note = (
+            "\n- Color descriptions: DISABLED — The user was born blind and does "
+            "not understand colors. NEVER describe things by color. Instead, use "
+            "tactile (smooth, rough, warm, cold), spatial (left, right, near, far), "
+            "or sound-based analogies."
+        )
 
     lang_name = _language_display(profile.language)
 

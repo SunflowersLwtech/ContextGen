@@ -33,31 +33,33 @@ AGENT_ENGINE_ID = os.getenv("AGENT_ENGINE_ID", "")
 def create_session_service():
     """Create the session service, preferring VertexAiSessionService.
 
-    Falls back gracefully when Agent Engine is not configured or
-    the SDK version does not include VertexAiSessionService.
+    Uses VertexAiSessionService whenever the SDK provides it. Falls back
+    gracefully for local development.
     """
-    agent_engine_id = AGENT_ENGINE_ID
+    # Read env at call time because server.py loads .env after imports.
+    agent_engine_id = os.getenv("AGENT_ENGINE_ID", "").strip() or None
     project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
     location = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
 
     try:
         from google.adk.sessions import VertexAiSessionService
 
+        svc = VertexAiSessionService(
+            project=project,
+            location=location,
+            agent_engine_id=agent_engine_id,
+        )
         if agent_engine_id:
-            svc = VertexAiSessionService(
-                project=project,
-                location=location,
-                agent_engine_id=agent_engine_id,
-            )
             logger.info(
                 "Using VertexAiSessionService (engine=%s)", agent_engine_id
             )
-            return svc
         else:
-            logger.warning(
-                "AGENT_ENGINE_ID not set; VertexAiSessionService requires it. "
-                "Falling back to DatabaseSessionService."
+            logger.info(
+                "Using VertexAiSessionService (engine unset, project=%s, location=%s)",
+                project,
+                location,
             )
+        return svc
     except (ImportError, Exception) as exc:
         logger.warning("VertexAiSessionService unavailable (%s); using fallback.", exc)
 
@@ -68,8 +70,8 @@ def create_session_service():
         svc = DatabaseSessionService(db_url="sqlite:///sightline_sessions.db")
         logger.info("Using DatabaseSessionService (SQLite fallback)")
         return svc
-    except (ImportError, Exception):
-        pass
+    except (ImportError, Exception) as exc:
+        logger.warning("DatabaseSessionService unavailable (%s); using in-memory.", exc)
 
     # Last resort — lightweight in-memory service
     from google.adk.sessions import InMemorySessionService as _InMemory

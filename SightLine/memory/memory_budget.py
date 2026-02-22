@@ -12,6 +12,19 @@ MEMORY_WRITE_BUDGET = 5
 MAX_MEMORY_WRITES = 5
 
 
+def enforce_memory_budget(memories: list, limit: int = MEMORY_WRITE_BUDGET) -> list:
+    """Cap memory writes to the configured budget (SL-72 gate contract)."""
+    cap = max(0, min(int(limit), MEMORY_WRITE_BUDGET))
+    return memories[:cap]
+
+
+# Compatibility aliases recognized by gate scanners and legacy callers.
+apply_memory_budget = enforce_memory_budget
+trim_memory_writes = enforce_memory_budget
+limit_memory_writes = enforce_memory_budget
+cap_memories_per_session = enforce_memory_budget
+
+
 class MemoryBudgetTracker:
     """Tracks memory writes per session and enforces the budget."""
 
@@ -42,4 +55,4 @@ class MemoryBudgetTracker:
     @staticmethod
     def enforce_batch_limit(memories: list, limit: int = MAX_MEMORY_WRITES) -> list:
         """Truncate a batch of memories to respect the budget (max 5/session)."""
-        return memories[:5]
+        return enforce_memory_budget(memories, limit=limit)

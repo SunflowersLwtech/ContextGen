@@ -128,6 +128,9 @@ class MemoryBankService:
         fails (e.g. index not ready), falls back to fetching recent
         memories and doing client-side text matching.
 
+        Results are re-ranked using the three-dimensional scoring from
+        memory_ranking (relevance 0.5 + recency 0.3 + importance 0.2).
+
         Args:
             context: Current conversation context or query string.
             top_k: Maximum number of memories to return.
@@ -136,17 +139,22 @@ class MemoryBankService:
             List of memory dicts with content, category, importance,
             timestamp, relevance_score, and memory_id.
         """
+        from memory.memory_ranking import rank_memories
+
         if not self._firestore:
-            return self._retrieve_from_cache(context, top_k)
+            results = self._retrieve_from_cache(context, top_k * 2)
+            return rank_memories(results, query_context=context, max_results=top_k)
 
         # Try Firestore vector search first
         try:
-            return self._vector_search(context, top_k)
+            results = self._vector_search(context, top_k * 2)
+            return rank_memories(results, query_context=context, max_results=top_k)
         except Exception:
             logger.debug("Vector search unavailable, falling back to text match", exc_info=True)
 
         # Fallback: fetch recent memories and rank by text overlap
-        return self._text_fallback(context, top_k)
+        results = self._text_fallback(context, top_k * 2)
+        return rank_memories(results, query_context=context, max_results=top_k)
 
     def _vector_search(self, context: str, top_k: int) -> list[dict]:
         """Firestore find_nearest vector search."""

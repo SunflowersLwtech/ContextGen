@@ -61,7 +61,7 @@ final class DebugOverlayModel: ObservableObject {
         if let noise = data["noise_db"] as? Double { noiseDb = noise }
         if let cadence = data["cadence"] as? Double { stepCadence = cadence }
         if let memories = data["memory_top3"] as? [String] {
-            memoryTop3 = memories
+            memoryTop3 = Array(memories.prefix(3))
         }
         lastEventTime = Date()
     }

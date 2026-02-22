@@ -16,6 +16,7 @@ enum UpstreamMessage {
     case telemetry(data: TelemetryData)
     case activityStart
     case activityEnd
+    case gesture(type: String)
 
     func toJSON() -> String {
         switch self {
@@ -31,6 +32,8 @@ enum UpstreamMessage {
             return "{\"type\":\"activity_start\"}"
         case .activityEnd:
             return "{\"type\":\"activity_end\"}"
+        case .gesture(let type):
+            return "{\"type\":\"gesture\",\"gesture_type\":\"\(type)\"}"
         }
     }
 }

@@ -31,6 +31,7 @@ from agents.orchestrator import create_orchestrator_agent
 from live_api.session_manager import SessionManager, create_session_service
 from lod import (
     PanicHandler,
+    build_full_dynamic_prompt,
     build_lod_update_message,
     decide_lod,
     on_lod_change,
@@ -106,6 +107,7 @@ try:
 except ImportError:
     logger.warning("Face agent not available (missing dependencies)")
 
+from tools import ALL_FUNCTIONS
 from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
@@ -115,6 +117,7 @@ from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_beh
 # ---------------------------------------------------------------------------
 
 _memory_available = False
+_memory_extractor_available = False
 try:
     from memory.memory_bank import load_relevant_memories, MemoryBankService
     from memory.memory_budget import MemoryBudgetTracker, MEMORY_WRITE_BUDGET
@@ -124,6 +127,12 @@ except ImportError:
 
     def load_relevant_memories(user_id: str, context: str, top_k: int = 3) -> list[str]:
         return []
+
+try:
+    from memory.memory_extractor import MemoryExtractor
+    _memory_extractor_available = True
+except ImportError:
+    logger.warning("Memory extractor not available")
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +177,19 @@ async def _dispatch_function_call(
 ) -> dict:
     """Dispatch a function call from Gemini to the appropriate tool.
 
+    Uses the unified ALL_FUNCTIONS dict for dispatch.  Navigation tools
+    get automatic GPS/heading injection from ephemeral context.
+
     Returns the tool result as a dict to be sent back as function response.
     """
     logger.info("Function call: %s(%s)", func_name, func_args)
 
-    # Navigation tools
+    if func_name not in ALL_FUNCTIONS:
+        logger.warning("Unknown function call: %s", func_name)
+        return {"error": f"Unknown function: {func_name}"}
+
+    # Navigation tools: inject current GPS/heading from ephemeral context
     if func_name in NAVIGATION_FUNCTIONS:
-        func = NAVIGATION_FUNCTIONS[func_name]
-        # Inject current GPS/heading from ephemeral context if available
         ephemeral = session_manager.get_ephemeral_context(session_id)
         if func_name == "navigate_to" and ephemeral.gps:
             func_args.setdefault("origin_lat", ephemeral.gps.lat)
@@ -184,23 +198,8 @@ async def _dispatch_function_call(
         elif func_name in ("get_location_info", "nearby_search", "reverse_geocode") and ephemeral.gps:
             func_args.setdefault("lat", ephemeral.gps.lat)
             func_args.setdefault("lng", ephemeral.gps.lng)
-        return func(**func_args)
 
-    # Search tool
-    if func_name in SEARCH_FUNCTIONS:
-        func = SEARCH_FUNCTIONS[func_name]
-        return func(**func_args)
-
-    # Face identification (SILENT behavior)
-    if func_name == "identify_person":
-        return {
-            "tool": "identify_person",
-            "behavior": behavior_to_text(ToolBehavior.SILENT),
-            "note": "Face identification runs automatically via vision pipeline.",
-        }
-
-    logger.warning("Unknown function call: %s", func_name)
-    return {"error": f"Unknown function: {func_name}"}
+    return ALL_FUNCTIONS[func_name](**func_args)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +335,32 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     live_request_queue = LiveRequestQueue()
     run_config = session_manager.get_run_config(session_id, lod=session_ctx.current_lod)
 
+    # -- E-7: Initial LOD context injection at session start -----------------
+    # Inject the full dynamic system prompt so the model has LOD context
+    # immediately, rather than waiting for the first telemetry tick.
+    _initial_ephemeral = session_manager.get_ephemeral_context(session_id)
+    _initial_memories = load_relevant_memories(
+        user_id,
+        session_ctx.active_task or session_ctx.trip_purpose or "",
+        top_k=3,
+    )
+    _initial_prompt = build_full_dynamic_prompt(
+        lod=session_ctx.current_lod,
+        profile=user_profile,
+        ephemeral_semantic="",
+        session=session_ctx,
+        memories=_initial_memories if _initial_memories else None,
+    )
+    _initial_content = types.Content(
+        parts=[types.Part(text=_initial_prompt)],
+        role="user",
+    )
+    live_request_queue.send_content(_initial_content)
+    logger.info(
+        "Injected initial full dynamic prompt (LOD %d) for session %s",
+        session_ctx.current_lod, session_id,
+    )
+
     # -- LOD engine helpers --------------------------------------------------
 
     async def _send_lod_update(
@@ -366,6 +391,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # -- Per-session memory state (Phase 4) -----------------------------------
     memory_top3: list[str] = []
     memory_budget = MemoryBudgetTracker() if _memory_available else None
+    transcript_history: list[dict] = []
 
     async def _load_session_memories(context_hint: str = "") -> list[str]:
         """Load relevant memories for this user session."""
@@ -436,6 +462,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             if _vision_in_progress:
                 return
             _vision_in_progress = True
+
+        # B-5: Pre-feedback — immediate audio cue before analysis starts
+        await _safe_send_json({
+            "type": "transcript",
+            "text": "Let me look at that for you...",
+            "role": "agent",
+        })
 
         try:
             ctx_dict = {
@@ -572,6 +605,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 data={"reason": "ocr_agent_unavailable"},
             )
             return
+
+        # B-5: Pre-feedback — immediate audio cue before analysis starts
+        await _safe_send_json({
+            "type": "transcript",
+            "text": "Reading the text for you...",
+            "role": "agent",
+        })
 
         try:
             # Build context hint from session state
@@ -932,6 +972,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 # --- Input transcription (user speech-to-text) ---
                 if event.input_transcription and event.input_transcription.text:
+                    transcript_history.append({
+                        "role": "user",
+                        "text": event.input_transcription.text,
+                    })
                     if not await _safe_send_json({
                         "type": "transcript",
                         "text": event.input_transcription.text,
@@ -941,6 +985,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 # --- Output transcription (agent speech-to-text) ---
                 if event.output_transcription and event.output_transcription.text:
+                    transcript_history.append({
+                        "role": "agent",
+                        "text": event.output_transcription.text,
+                    })
                     if not await _safe_send_json({
                         "type": "transcript",
                         "text": event.output_transcription.text,
@@ -983,6 +1031,29 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     except Exception:
         logger.exception("Session error: user=%s session=%s", user_id, session_id)
     finally:
+        # Phase 5: Auto-extract memories from session transcript
+        if _memory_extractor_available and _memory_available and transcript_history:
+            try:
+                extractor = MemoryExtractor()
+                bank = MemoryBankService(user_id)
+                budget = memory_budget or MemoryBudgetTracker()
+                count = extractor.extract_and_store(
+                    user_id=user_id,
+                    session_id=session_id,
+                    transcript_history=transcript_history,
+                    memory_bank=bank,
+                    budget=budget,
+                )
+                logger.info(
+                    "Auto-extracted %d memories for user=%s session=%s",
+                    count, user_id, session_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Memory auto-extraction failed for user=%s session=%s",
+                    user_id, session_id,
+                )
+
         live_request_queue.close()
         session_manager.remove_session(session_id)
         logger.info("Session cleaned up: user=%s session=%s", user_id, session_id)

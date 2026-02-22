@@ -26,6 +26,7 @@ struct MainView: View {
     @StateObject private var telemetryAggregator = TelemetryAggregator()
     @StateObject private var mediaPermissionGate = MediaPermissionGate()
     @StateObject private var debugModel = DebugOverlayModel()
+    @StateObject private var devConsoleModel = DeveloperConsoleModel()
 
     @State private var transcript: String = ""
     @State private var isActive = false
@@ -34,6 +35,10 @@ struct MainView: View {
     @State private var isSafeMode = false
     @State private var whenIdleToolQueue: [String] = []
     @State private var showDebugOverlay = false
+    @State private var showDevConsole = false
+    @State private var isMuted = false
+    @State private var isEmergencyPaused = false
+    @State private var lastAgentTranscript = ""
 
     /// Local TTS synthesizer for disconnection alerts (no network needed).
     private let localSynthesizer = AVSpeechSynthesizer()
@@ -89,22 +94,143 @@ struct MainView: View {
                 .padding(.top, 60)
                 .transition(.opacity)
             }
-        }
-        .onTapGesture(count: 3) {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showDebugOverlay.toggle()
+
+            // Developer Console gear icon (DEBUG builds only)
+            #if DEBUG
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: { showDevConsole = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.3))
+                            .padding(10)
+                    }
+                    .accessibilityLabel("Developer Console")
+                }
+                Spacer()
             }
+            .padding(.top, 50)
+            #endif
         }
+        // MARK: - Gesture Recognizers
+        // Triple tap: repeat last agent sentence
+        .onTapGesture(count: 3) {
+            handleTripleTap()
+        }
+        // Double tap: force interrupt agent speech
+        .onTapGesture(count: 2) {
+            handleDoubleTap()
+        }
+        // Single tap: toggle mute/unmute microphone
+        .onTapGesture(count: 1) {
+            handleSingleTap()
+        }
+        // Long press (3s): emergency pause
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 3.0)
+                .onEnded { _ in
+                    handleLongPress()
+                }
+        )
+        // Swipe up/down: LOD upgrade/downgrade
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 50)
+                .onEnded { value in
+                    handleSwipe(translation: value.translation)
+                }
+        )
         .onAppear {
             #if DEBUG
             showDebugOverlay = true
             #endif
+            HapticManager.shared.prepare()
             setupPipeline()
+            devConsoleModel.bind(
+                sensorManager: sensorManager,
+                cameraManager: cameraManager,
+                debugModel: debugModel
+            )
         }
         .onDisappear {
             teardownPipeline()
         }
+        // Shake detection via NotificationCenter
+        .onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
+            handleShake()
+        }
+        .sheet(isPresented: $showDevConsole) {
+            DeveloperConsoleView(
+                model: devConsoleModel,
+                webSocketManager: webSocketManager,
+                cameraManager: cameraManager,
+                telemetryAggregator: telemetryAggregator
+            )
+        }
         .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")")
+    }
+
+    // MARK: - Gesture Handlers
+
+    private func handleSingleTap() {
+        isMuted.toggle()
+        HapticManager.shared.singleTap()
+        if isMuted {
+            audioCapture.stopCapture()
+        } else if !isEmergencyPaused {
+            audioCapture.startCapture()
+        }
+        webSocketManager.sendText(UpstreamMessage.gesture(type: "mute_toggle").toJSON())
+        logger.info("Gesture: mute_toggle (isMuted=\(isMuted))")
+    }
+
+    private func handleDoubleTap() {
+        HapticManager.shared.doubleTap()
+        audioPlayback.stopImmediately()
+        webSocketManager.sendText(UpstreamMessage.gesture(type: "interrupt").toJSON())
+        logger.info("Gesture: interrupt")
+    }
+
+    private func handleTripleTap() {
+        HapticManager.shared.tripleTap()
+        webSocketManager.sendText(UpstreamMessage.gesture(type: "repeat_last").toJSON())
+        logger.info("Gesture: repeat_last")
+    }
+
+    private func handleLongPress() {
+        isEmergencyPaused.toggle()
+        HapticManager.shared.longPress()
+        if isEmergencyPaused {
+            audioCapture.stopCapture()
+            audioPlayback.stopImmediately()
+        } else {
+            if !isMuted {
+                audioCapture.startCapture()
+            }
+        }
+        webSocketManager.sendText(UpstreamMessage.gesture(type: "emergency_pause").toJSON())
+        logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
+    }
+
+    private func handleSwipe(translation: CGSize) {
+        // Require primarily vertical movement
+        guard abs(translation.height) > abs(translation.width) else { return }
+        HapticManager.shared.swipe()
+        if translation.height < 0 {
+            // Swipe up -> LOD upgrade
+            webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_up").toJSON())
+            logger.info("Gesture: lod_up")
+        } else {
+            // Swipe down -> LOD downgrade
+            webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_down").toJSON())
+            logger.info("Gesture: lod_down")
+        }
+    }
+
+    private func handleShake() {
+        HapticManager.shared.sos()
+        webSocketManager.sendText(UpstreamMessage.gesture(type: "sos").toJSON())
+        logger.info("Gesture: sos (shake)")
     }
 
     // MARK: - LOD Background Colors
@@ -180,6 +306,9 @@ struct MainView: View {
         webSocketManager.connect(url: url)
 
         // 3. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
+        cameraManager.onCameraFailure = { reason in
+            webSocketManager.sendText("{\"type\":\"camera_failure\",\"reason\":\"\(reason)\"}")
+        }
         cameraManager.frameSelector = frameSelector
         cameraManager.onFrameCaptured = { jpegData in
             guard frameSelector.isFrameDifferent(jpegData: jpegData) else {
@@ -232,9 +361,13 @@ struct MainView: View {
             DispatchQueue.main.async {
                 startMediaCapture()
             }
-        case .transcript(let text, _):
+        case .transcript(let text, let role):
             DispatchQueue.main.async {
                 transcript = text
+                if role == "agent" {
+                    lastAgentTranscript = text
+                }
+                devConsoleModel.captureTranscript(text: text, role: role)
                 drainWhenIdleToolQueueIfPossible()
             }
         case .lodUpdate(let lod):
@@ -283,7 +416,10 @@ struct MainView: View {
             }
             logger.warning("Capability degraded: \(capability, privacy: .public) - \(reason, privacy: .public)")
         case .debugLod(let data):
+            let memoryTop3 = (data["memory_top3"] as? [String]) ?? []
             DispatchQueue.main.async {
+                // SL-77: explicit debugLod -> memory top3 injection for overlay gate.
+                debugModel.memoryTop3 = Array(memoryTop3.prefix(3))
                 debugModel.updateFromLodDebug(data)
             }
         case .panic(let message):
@@ -313,6 +449,7 @@ struct MainView: View {
         debugModel.isSafeMode = true
         debugModel.currentLOD = 1
         telemetryAggregator.pause()
+        HapticManager.shared.safeMode()
 
         // Local TTS alert (no network dependency)
         let utterance = AVSpeechUtterance(string: "Connection lost. Safe mode active.")
@@ -392,6 +529,21 @@ struct MainView: View {
         cameraManager.stopCapture()
         audioPlayback.teardown()
         webSocketManager.disconnect()
+    }
+}
+
+// MARK: - Shake Detection
+
+extension Notification.Name {
+    static let deviceDidShake = Notification.Name("deviceDidShake")
+}
+
+extension UIWindow {
+    open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        super.motionEnded(motion, with: event)
+        if motion == .motionShake {
+            NotificationCenter.default.post(name: .deviceDidShake, object: nil)
+        }
     }
 }
 

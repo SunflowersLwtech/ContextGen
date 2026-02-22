@@ -23,6 +23,7 @@ class CameraManager: NSObject, ObservableObject {
     private let context = CIContext()
 
     var onFrameCaptured: ((Data) -> Void)?  // JPEG data callback
+    var onCameraFailure: ((String) -> Void)?
     var frameSelector: FrameSelector?
 
     func startCapture() {
@@ -41,11 +42,13 @@ class CameraManager: NSObject, ObservableObject {
             position: .back
         ) else {
             Self.logger.error("Back camera not available")
+            onCameraFailure?("back_camera_not_available")
             return
         }
 
         guard let input = try? AVCaptureDeviceInput(device: camera) else {
             Self.logger.error("Failed to create camera input")
+            onCameraFailure?("camera_input_creation_failed")
             return
         }
 

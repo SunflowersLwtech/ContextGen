@@ -26,11 +26,19 @@ from tools import (
 
 # Phase 4: Memory tools (SL-71)
 try:
-    from memory.memory_tools import preload_memory
+    from memory.memory_tools import preload_memory, forget_recent_memory, forget_memory
 except ImportError:
     def preload_memory(user_id: str, context: str = "") -> dict:
         """Fallback when memory module is not available."""
         return {"memories": [], "count": 0, "user_id": user_id}
+
+    def forget_recent_memory(user_id: str, minutes: int = 30) -> dict:
+        """Fallback when memory module is not available."""
+        return {"deleted": 0, "minutes": minutes, "status": "unavailable"}
+
+    def forget_memory(user_id: str, memory_id: str) -> dict:
+        """Fallback when memory module is not available."""
+        return {"memory_id": memory_id, "deleted": False, "status": "unavailable"}
 
 VISION_SUB_AGENT_MODEL = "gemini-3.1-pro-preview"
 OCR_SUB_AGENT_MODEL = "gemini-3-flash-preview"
@@ -157,6 +165,8 @@ def create_orchestrator_agent(model_name: str) -> Agent:
             google_search,
             identify_person,
             preload_memory,
+            forget_recent_memory,
+            forget_memory,
         ],
         sub_agents=[vision_sub_agent, ocr_sub_agent],
     )
