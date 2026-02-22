@@ -6,6 +6,10 @@ for the Gemini Live API via Google ADK.
 Phase 3 additions:
 - Firestore UserProfile loading (async, with fallback to defaults)
 - Per-session face library cache tracking
+
+Phase 4 additions:
+- VertexAiSessionService migration (SL-70)
+- AGENT_ENGINE_ID configuration
 """
 
 import logging
@@ -18,6 +22,60 @@ from google.genai import types
 from lod.models import EphemeralContext, SessionContext, UserProfile
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Session service factory (SL-70)
+# ---------------------------------------------------------------------------
+
+AGENT_ENGINE_ID = os.getenv("AGENT_ENGINE_ID", "")
+
+
+def create_session_service():
+    """Create the session service, preferring VertexAiSessionService.
+
+    Falls back gracefully when Agent Engine is not configured or
+    the SDK version does not include VertexAiSessionService.
+    """
+    agent_engine_id = AGENT_ENGINE_ID
+    project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
+    location = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+
+    try:
+        from google.adk.sessions import VertexAiSessionService
+
+        if agent_engine_id:
+            svc = VertexAiSessionService(
+                project=project,
+                location=location,
+                agent_engine_id=agent_engine_id,
+            )
+            logger.info(
+                "Using VertexAiSessionService (engine=%s)", agent_engine_id
+            )
+            return svc
+        else:
+            logger.warning(
+                "AGENT_ENGINE_ID not set; VertexAiSessionService requires it. "
+                "Falling back to DatabaseSessionService."
+            )
+    except (ImportError, Exception) as exc:
+        logger.warning("VertexAiSessionService unavailable (%s); using fallback.", exc)
+
+    # Fallback: try DatabaseSessionService, then in-memory
+    try:
+        from google.adk.sessions import DatabaseSessionService
+
+        svc = DatabaseSessionService(db_url="sqlite:///sightline_sessions.db")
+        logger.info("Using DatabaseSessionService (SQLite fallback)")
+        return svc
+    except (ImportError, Exception):
+        pass
+
+    # Last resort — lightweight in-memory service
+    from google.adk.sessions import InMemorySessionService as _InMemory
+
+    logger.warning("Using in-memory session service (development only)")
+    return _InMemory()
 
 # ---------------------------------------------------------------------------
 # LOD-driven VAD presets (SL-36)

@@ -24,12 +24,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from starlette.websockets import WebSocketState
 
 from agents.orchestrator import create_orchestrator_agent
-from live_api.session_manager import SessionManager
+from live_api.session_manager import SessionManager, create_session_service
 from lod import (
     PanicHandler,
     build_lod_update_message,
@@ -68,7 +67,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-session_service = InMemorySessionService()
+session_service = create_session_service()
 session_manager = SessionManager()
 
 # Create the ADK agent and runner once at module level.
@@ -111,6 +110,21 @@ from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
+# ---------------------------------------------------------------------------
+# Memory system (Phase 4, SL-71)
+# ---------------------------------------------------------------------------
+
+_memory_available = False
+try:
+    from memory.memory_bank import load_relevant_memories, MemoryBankService
+    from memory.memory_budget import MemoryBudgetTracker, MEMORY_WRITE_BUDGET
+    _memory_available = True
+except ImportError:
+    logger.warning("Memory module not available")
+
+    def load_relevant_memories(user_id: str, context: str, top_k: int = 3) -> list[str]:
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Health check
@@ -123,7 +137,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "model": LIVE_MODEL,
-        "phase": 3,
+        "phase": 4,
         "capabilities": {
             "vision": _vision_available,
             "ocr": _ocr_available,
@@ -330,12 +344,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         reason: str,
     ) -> None:
         """Build and inject a [LOD UPDATE] message into the Live session."""
+        # SL-71: Preload relevant memories for prompt injection
+        memories = await _load_session_memories(
+            context_hint=session_ctx.active_task or session_ctx.trip_purpose or ""
+        )
         lod_message = build_lod_update_message(
             lod=new_lod,
             ephemeral=ephemeral_ctx,
             session=session_ctx,
             profile=user_profile,
             reason=reason,
+            memories=memories,
         )
         content = types.Content(
             parts=[types.Part(text=lod_message)],
@@ -344,6 +363,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         live_request_queue.send_content(content)
         logger.info("Injected [LOD UPDATE] -> LOD %d (%s)", new_lod, reason)
 
+    # -- Per-session memory state (Phase 4) -----------------------------------
+    memory_top3: list[str] = []
+    memory_budget = MemoryBudgetTracker() if _memory_available else None
+
+    async def _load_session_memories(context_hint: str = "") -> list[str]:
+        """Load relevant memories for this user session."""
+        nonlocal memory_top3
+        try:
+            memories = load_relevant_memories(user_id, context_hint, top_k=3)
+            memory_top3 = memories[:3]
+            return memories
+        except Exception:
+            logger.exception("Failed to load memories for user %s", user_id)
+            return []
+
     async def _notify_ios_lod_change(new_lod: int, reason: str, debug_dict: dict) -> None:
         """Send LOD change notification to iOS client."""
         await _safe_send_json({
@@ -351,6 +385,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             "lod": new_lod,
             "reason": reason,
         })
+        # SL-77: Include memory_top3 in debug_lod for DebugOverlay
+        debug_dict["memory_top3"] = memory_top3
         await _safe_send_json({
             "type": "debug_lod",
             "data": debug_dict,
@@ -669,6 +705,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             )
                             asyncio.create_task(_run_ocr_analysis(image_b64))
 
+                elif message.get("type") == "camera_failure":
+                    # SL-76: Camera hardware failure path
+                    camera_error = message.get("error", "camera_unavailable")
+                    logger.warning("Camera failure reported: %s", camera_error)
+                    await _emit_capability_degraded(
+                        "camera",
+                        camera_error,
+                        recoverable=message.get("recoverable", True),
+                    )
+
                 elif message.get("type") == "telemetry":
                     telemetry_data = message.get("data", {})
                     await _process_telemetry(telemetry_data)
@@ -802,7 +848,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     }):
                         break
 
-                # --- GoAway / connection lifecycle signals ---
+                # --- GoAway / connection lifecycle signals (SL-76) ---
+                if hasattr(event, "go_away") and event.go_away:
+                    retry_ms = 500
+                    if hasattr(event.go_away, "time_left"):
+                        retry_ms = int(event.go_away.time_left.total_seconds() * 1000) if event.go_away.time_left else 500
+                    await _safe_send_json({
+                        "type": "go_away",
+                        "retry_ms": retry_ms,
+                        "message": "Server requested reconnection.",
+                    })
+                    logger.warning("GoAway received, retry_ms=%d", retry_ms)
+
                 if hasattr(event, "server_content") and event.server_content:
                     sc = event.server_content
                     if hasattr(sc, "interrupted") and sc.interrupted:

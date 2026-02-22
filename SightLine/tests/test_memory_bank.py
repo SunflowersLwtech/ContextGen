@@ -1,0 +1,283 @@
+"""Tests for memory.memory_bank module.
+
+All Firestore and embedding calls are mocked so tests run offline.
+"""
+
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from memory.memory_bank import MemoryBankService, load_relevant_memories, preload_memory
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_bank(user_id: str = "test_user") -> MemoryBankService:
+    """Create a MemoryBankService with Firestore disabled (ephemeral mode)."""
+    with patch("memory.memory_bank.MemoryBankService._init_backend"):
+        bank = MemoryBankService(user_id)
+        bank._firestore = None  # ensure ephemeral mode
+        return bank
+
+
+# ---------------------------------------------------------------------------
+# MemoryBankService — ephemeral (cache) mode
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryBankEphemeral:
+    """Tests using the in-memory cache fallback (no Firestore)."""
+
+    def test_store_memory_returns_id(self):
+        bank = _make_bank()
+        memory_id = bank.store_memory("The coffee shop is on Main St")
+        assert memory_id is not None
+        assert len(memory_id) > 0
+
+    def test_store_memory_adds_to_cache(self):
+        bank = _make_bank()
+        bank.store_memory("User prefers dark roast", category="preference")
+        assert len(bank._memories_cache) == 1
+        assert bank._memories_cache[0]["content"] == "User prefers dark roast"
+        assert bank._memories_cache[0]["category"] == "preference"
+
+    def test_store_memory_default_importance(self):
+        bank = _make_bank()
+        bank.store_memory("Some fact")
+        assert bank._memories_cache[0]["importance"] == 0.5
+
+    def test_store_memory_custom_importance(self):
+        bank = _make_bank()
+        bank.store_memory("Important fact", importance=0.9)
+        assert bank._memories_cache[0]["importance"] == 0.9
+
+    def test_retrieve_memories_empty(self):
+        bank = _make_bank()
+        results = bank.retrieve_memories("anything")
+        assert results == []
+
+    def test_retrieve_memories_returns_relevant(self):
+        bank = _make_bank()
+        bank.store_memory("The pharmacy is on Oak Avenue")
+        bank.store_memory("My dog is named Buddy")
+        bank.store_memory("The pharmacy closes at 9pm")
+
+        results = bank.retrieve_memories("pharmacy", top_k=2)
+        assert len(results) == 2
+        # Both pharmacy-related memories should score higher
+        contents = [r["content"] for r in results]
+        assert any("pharmacy" in c.lower() for c in contents)
+
+    def test_retrieve_memories_respects_top_k(self):
+        bank = _make_bank()
+        for i in range(10):
+            bank.store_memory(f"Memory number {i}")
+        results = bank.retrieve_memories("memory", top_k=3)
+        assert len(results) == 3
+
+    def test_delete_memory_removes_from_cache(self):
+        bank = _make_bank()
+        mid = bank.store_memory("To be deleted")
+        assert len(bank._memories_cache) == 1
+
+        success = bank.delete_memory(mid)
+        assert success is True
+        assert len(bank._memories_cache) == 0
+
+    def test_delete_memory_nonexistent_returns_false(self):
+        bank = _make_bank()
+        assert bank.delete_memory("nonexistent_id") is False
+
+    def test_delete_recent_memories(self):
+        bank = _make_bank()
+        # Store a recent memory
+        bank.store_memory("Recent memory")
+        # Store an old memory by manipulating timestamp
+        bank.store_memory("Old memory")
+        bank._memories_cache[-1]["timestamp"] = time.time() - 7200  # 2 hours ago
+
+        deleted = bank.delete_recent_memories(minutes=60)
+        assert deleted == 1
+        assert len(bank._memories_cache) == 1
+        assert bank._memories_cache[0]["content"] == "Old memory"
+
+    def test_delete_recent_memories_none_in_range(self):
+        bank = _make_bank()
+        bank.store_memory("Old memory")
+        bank._memories_cache[0]["timestamp"] = time.time() - 7200
+
+        deleted = bank.delete_recent_memories(minutes=30)
+        assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# MemoryBankService — Firestore mode (mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryBankFirestore:
+    """Tests with mocked Firestore client."""
+
+    def test_store_memory_creates_document(self):
+        bank = _make_bank()
+        mock_fs = MagicMock()
+        bank._firestore = mock_fs
+
+        mock_doc_ref = MagicMock()
+        mock_doc_ref.id = "generated_doc_id"
+        mock_fs.collection.return_value.document.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        with patch("memory.memory_bank._compute_embedding", return_value=[0.1] * 2048):
+            result = bank.store_memory("Test memory", category="test", importance=0.7)
+
+        assert result == "generated_doc_id"
+        mock_doc_ref.set.assert_called_once()
+        call_data = mock_doc_ref.set.call_args[0][0]
+        assert call_data["content"] == "Test memory"
+        assert call_data["category"] == "test"
+        assert call_data["importance"] == 0.7
+
+    def test_delete_memory_removes_document(self):
+        bank = _make_bank()
+        mock_fs = MagicMock()
+        bank._firestore = mock_fs
+
+        mock_doc_ref = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc_ref.get.return_value = mock_doc
+        mock_fs.collection.return_value.document.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        result = bank.delete_memory("some_id")
+        assert result is True
+        mock_doc_ref.delete.assert_called_once()
+
+    def test_delete_memory_not_found(self):
+        bank = _make_bank()
+        mock_fs = MagicMock()
+        bank._firestore = mock_fs
+
+        mock_doc_ref = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = False
+        mock_doc_ref.get.return_value = mock_doc
+        mock_fs.collection.return_value.document.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        result = bank.delete_memory("nonexistent")
+        assert result is False
+
+    def test_delete_recent_memories_with_firestore(self):
+        bank = _make_bank()
+        mock_fs = MagicMock()
+        bank._firestore = mock_fs
+
+        # Mock query returning 2 documents
+        mock_doc1 = MagicMock()
+        mock_doc2 = MagicMock()
+        mock_coll = MagicMock()
+        mock_fs.collection.return_value.document.return_value.collection.return_value = mock_coll
+        mock_coll.where.return_value.stream.return_value = [mock_doc1, mock_doc2]
+
+        deleted = bank.delete_recent_memories(minutes=30)
+        assert deleted == 2
+        mock_doc1.reference.delete.assert_called_once()
+        mock_doc2.reference.delete.assert_called_once()
+
+    def test_text_fallback_retrieval(self):
+        bank = _make_bank()
+        mock_fs = MagicMock()
+        bank._firestore = mock_fs
+
+        # Make vector search fail
+        mock_coll = MagicMock()
+        mock_fs.collection.return_value.document.return_value.collection.return_value = mock_coll
+        mock_coll.find_nearest.side_effect = Exception("No vector index")
+
+        # Set up text fallback with mock documents
+        mock_doc1 = MagicMock()
+        mock_doc1.id = "doc1"
+        mock_doc1.to_dict.return_value = {
+            "content": "The pharmacy on Main Street",
+            "category": "place",
+            "importance": 0.6,
+            "timestamp": time.time(),
+        }
+        mock_doc2 = MagicMock()
+        mock_doc2.id = "doc2"
+        mock_doc2.to_dict.return_value = {
+            "content": "My dog is named Rex",
+            "category": "general",
+            "importance": 0.5,
+            "timestamp": time.time(),
+        }
+        mock_coll.order_by.return_value.limit.return_value.stream.return_value = [
+            mock_doc1, mock_doc2,
+        ]
+
+        with patch("memory.memory_bank._compute_embedding", side_effect=Exception("skip")):
+            results = bank.retrieve_memories("pharmacy street", top_k=2)
+
+        assert len(results) <= 2
+        # The pharmacy memory should rank higher due to word overlap
+        assert results[0]["content"] == "The pharmacy on Main Street"
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience functions
+# ---------------------------------------------------------------------------
+
+
+class TestConvenienceFunctions:
+    """Tests for load_relevant_memories and preload_memory."""
+
+    def test_load_relevant_memories(self):
+        with patch("memory.memory_bank._get_bank") as mock_get:
+            mock_bank = MagicMock()
+            mock_bank.retrieve_memories.return_value = [
+                {"content": "Memory A", "relevance_score": 0.9},
+                {"content": "Memory B", "relevance_score": 0.7},
+            ]
+            mock_get.return_value = mock_bank
+
+            result = load_relevant_memories("user1", "context", top_k=2)
+
+        assert result == ["Memory A", "Memory B"]
+        mock_bank.retrieve_memories.assert_called_once_with("context", top_k=2)
+
+    def test_load_relevant_memories_empty(self):
+        with patch("memory.memory_bank._get_bank") as mock_get:
+            mock_bank = MagicMock()
+            mock_bank.retrieve_memories.return_value = []
+            mock_get.return_value = mock_bank
+
+            result = load_relevant_memories("user1", "nothing")
+
+        assert result == []
+
+    def test_preload_memory_format(self):
+        with patch("memory.memory_bank.load_relevant_memories") as mock_load:
+            mock_load.return_value = ["Memory X", "Memory Y"]
+
+            result = preload_memory("user1", "test context")
+
+        assert result == {
+            "memories": ["Memory X", "Memory Y"],
+            "count": 2,
+            "user_id": "user1",
+        }
+
+    def test_preload_memory_empty(self):
+        with patch("memory.memory_bank.load_relevant_memories") as mock_load:
+            mock_load.return_value = []
+
+            result = preload_memory("user1", "")
+
+        assert result == {
+            "memories": [],
+            "count": 0,
+            "user_id": "user1",
+        }

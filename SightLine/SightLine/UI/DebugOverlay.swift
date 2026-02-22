@@ -39,6 +39,9 @@ final class DebugOverlayModel: ObservableObject {
     @Published var ocrStatus: String = "ready"
     @Published var faceStatus: String = "ready"
 
+    // Memory Top 3 (SL-77)
+    @Published var memoryTop3: [String] = []
+
     // Latency
     @Published var lastEventTime: Date?
 
@@ -57,6 +60,9 @@ final class DebugOverlayModel: ObservableObject {
         if let hr = data["hr"] as? Double { heartRate = hr }
         if let noise = data["noise_db"] as? Double { noiseDb = noise }
         if let cadence = data["cadence"] as? Double { stepCadence = cadence }
+        if let memories = data["memory_top3"] as? [String] {
+            memoryTop3 = memories
+        }
         lastEventTime = Date()
     }
 
@@ -114,6 +120,22 @@ struct DebugOverlay: View {
                 capabilityDot("Face", status: model.faceStatus)
                 Spacer()
                 label("Latency", value: model.latencyText)
+            }
+
+            // Memory Top 3 (SL-77)
+            if !model.memoryTop3.isEmpty {
+                Divider().background(Color.white.opacity(0.2))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Memory Top 3")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
+                    ForEach(model.memoryTop3.prefix(3), id: \.self) { memory in
+                        Text("• \(memory)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                            .lineLimit(2)
+                    }
+                }
             }
 
             // Rules
