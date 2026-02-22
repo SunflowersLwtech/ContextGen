@@ -24,8 +24,8 @@ Status values:
 | camera_failure | `{"type":"camera_failure","error":"...","reason":"..."}` | Reads `error` then `reason` fallback | fixed | Backward + forward compatible |
 | reload_face_library | `{"type":"reload_face_library"}` | Reloads user face library | aligned | |
 | clear_face_library | `{"type":"clear_face_library"}` | Clears user face library | aligned | |
-| activity_start | `{"type":"activity_start"}` | Logged/ignored | no-op | Native VAD replaces old flow |
-| activity_end | `{"type":"activity_end"}` | Logged/ignored | no-op | Native VAD replaces old flow |
+| activity_start | `{"type":"activity_start"}` | Forwarded to LiveRequestQueue + emits `debug_activity` + updates session activity state | fixed | Keep native VAD as primary path; explicit signal retained for observability/compat |
+| activity_end | `{"type":"activity_end"}` | Forwarded to LiveRequestQueue + emits `debug_activity` + updates session activity state | fixed | Keep native VAD as primary path; explicit signal retained for observability/compat |
 
 ## REST API
 

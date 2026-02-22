@@ -81,6 +81,11 @@ class SessionContext:
     user_requested_detail: bool = False  # user said "tell me more"
     user_said_stop: bool = False  # user said "stop"
     current_lod: int = 2  # tracks the active LOD level
+    current_activity_state: str = "idle"  # idle | user_speaking
+    last_activity_event: Optional[str] = None  # activity_start | activity_end
+    last_activity_event_ts: Optional[datetime] = None
+    last_activity_source: str = "none"  # ios_client | system
+    activity_event_count: int = 0
 
 
 # ---------------------------------------------------------------------------

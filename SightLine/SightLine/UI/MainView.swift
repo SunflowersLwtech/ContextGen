@@ -501,6 +501,10 @@ struct MainView: View {
                 debugModel.memoryTop3 = Array(memoryTop3.prefix(3))
                 debugModel.updateFromLodDebug(data)
             }
+        case .debugActivity(let data):
+            DispatchQueue.main.async {
+                debugModel.updateFromActivityDebug(data)
+            }
         case .panic(let message):
             DispatchQueue.main.async {
                 currentLOD = 1

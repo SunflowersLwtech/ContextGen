@@ -280,6 +280,21 @@ struct DownstreamMessageTests {
         }
     }
 
+    @Test("debug_activity parses activity observability payload")
+    func debugActivityParsing() {
+        let json = "{\"type\":\"debug_activity\",\"data\":{\"event\":\"activity_start\",\"state\":\"user_speaking\",\"queue_status\":\"forwarded\",\"event_count\":1}}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .debugActivity(let data) = msg {
+            #expect(data["event"] as? String == "activity_start")
+            #expect(data["state"] as? String == "user_speaking")
+            #expect(data["queue_status"] as? String == "forwarded")
+            #expect(data["event_count"] as? Int == 1)
+        } else {
+            Issue.record("Expected debugActivity message")
+        }
+    }
+
     @Test("panic message parses")
     func panicParsing() {
         let json = "{\"type\":\"panic\",\"message\":\"PANIC detected. Entering safety mode.\"}"

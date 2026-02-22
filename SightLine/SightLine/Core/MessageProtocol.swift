@@ -104,6 +104,7 @@ enum DownstreamMessage {
     case identityUpdate(name: String, matched: Bool, behavior: ToolBehaviorMode)
     case capabilityDegraded(capability: String, reason: String, recoverable: Bool)
     case debugLod(data: [String: Any])
+    case debugActivity(data: [String: Any])
     case panic(message: String)
     case interrupted
     case unknown(raw: String)
@@ -189,6 +190,9 @@ enum DownstreamMessage {
         case "debug_lod":
             let lodData = json["data"] as? [String: Any] ?? json
             return .debugLod(data: lodData)
+        case "debug_activity":
+            let activityData = json["data"] as? [String: Any] ?? json
+            return .debugActivity(data: activityData)
         case "panic":
             let message = json["message"] as? String ?? "PANIC detected"
             return .panic(message: message)

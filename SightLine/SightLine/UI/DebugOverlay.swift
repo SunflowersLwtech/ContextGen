@@ -33,6 +33,10 @@ final class DebugOverlayModel: ObservableObject {
     // Connection
     @Published var isConnected: Bool = false
     @Published var isSafeMode: Bool = false
+    @Published var activityState: String = "idle"
+    @Published var activityEvent: String = "--"
+    @Published var activityQueueStatus: String = "--"
+    @Published var activityTimestamp: String = "--"
 
     // Sub-agent capabilities
     @Published var visionStatus: String = "ready"
@@ -94,6 +98,14 @@ final class DebugOverlayModel: ObservableObject {
         default: break
         }
     }
+
+    func updateFromActivityDebug(_ data: [String: Any]) {
+        if let state = data["state"] as? String { activityState = state }
+        if let event = data["event"] as? String { activityEvent = event }
+        if let status = data["queue_status"] as? String { activityQueueStatus = status }
+        if let ts = data["timestamp"] as? String { activityTimestamp = ts }
+        lastEventTime = Date()
+    }
 }
 
 // MARK: - Debug Overlay View
@@ -148,6 +160,13 @@ struct DebugOverlay: View {
                     .foregroundColor(.white.opacity(0.6))
                 Spacer()
                 label("FPS", value: String(format: "%.1f", model.frameRate))
+            }
+
+            // Activity debug row
+            HStack(spacing: 12) {
+                label("Activity", value: model.activityState)
+                label("Event", value: model.activityEvent)
+                label("Queue", value: model.activityQueueStatus)
             }
 
             // Memory Top 3 (SL-77)

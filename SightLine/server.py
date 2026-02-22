@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -675,6 +676,35 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             "data": debug_dict,
         })
 
+    async def _emit_activity_debug_event(
+        *,
+        event_name: str,
+        queue_status: str,
+        queue_note: str = "",
+        source: str = "ios_client",
+    ) -> None:
+        """Emit an observable activity event for iOS debug overlay."""
+        ts = datetime.now(timezone.utc)
+        is_activity_start = event_name == "activity_start"
+        session_ctx.current_activity_state = "user_speaking" if is_activity_start else "idle"
+        session_ctx.last_activity_event = event_name
+        session_ctx.last_activity_event_ts = ts
+        session_ctx.last_activity_source = source
+        session_ctx.activity_event_count += 1
+
+        await _safe_send_json({
+            "type": "debug_activity",
+            "data": {
+                "event": event_name,
+                "state": session_ctx.current_activity_state,
+                "source": source,
+                "queue_status": queue_status,
+                "queue_note": queue_note,
+                "timestamp": ts.isoformat(),
+                "event_count": session_ctx.activity_event_count,
+            },
+        })
+
     async def _handle_panic(ephemeral_ctx) -> None:
         """Handle a new PANIC event: flush TTS, force LOD 1, notify iOS."""
         await _safe_send_json({
@@ -1130,10 +1160,42 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     await _process_telemetry(telemetry_data)
 
                 elif message.get("type") == "activity_start":
-                    logger.debug("Ignored activity_start (native audio VAD active)")
+                    queue_status = "forwarded"
+                    queue_note = ""
+                    try:
+                        live_request_queue.send_activity_start()
+                        logger.info("Forwarded activity_start to LiveRequestQueue")
+                    except Exception as exc:
+                        queue_status = "forward_failed"
+                        queue_note = str(exc)[:200]
+                        logger.warning(
+                            "Failed to forward activity_start to LiveRequestQueue: %s",
+                            queue_note,
+                        )
+                    await _emit_activity_debug_event(
+                        event_name="activity_start",
+                        queue_status=queue_status,
+                        queue_note=queue_note,
+                    )
 
                 elif message.get("type") == "activity_end":
-                    logger.debug("Ignored activity_end (native audio VAD active)")
+                    queue_status = "forwarded"
+                    queue_note = ""
+                    try:
+                        live_request_queue.send_activity_end()
+                        logger.info("Forwarded activity_end to LiveRequestQueue")
+                    except Exception as exc:
+                        queue_status = "forward_failed"
+                        queue_note = str(exc)[:200]
+                        logger.warning(
+                            "Failed to forward activity_end to LiveRequestQueue: %s",
+                            queue_note,
+                        )
+                    await _emit_activity_debug_event(
+                        event_name="activity_end",
+                        queue_status=queue_status,
+                        queue_note=queue_note,
+                    )
 
                 elif message.get("type") == "gesture":
                     gesture = message.get("gesture")
