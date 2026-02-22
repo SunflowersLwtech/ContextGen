@@ -89,5 +89,6 @@ struct ConfigTests {
         #expect(!SightLineConfig.defaultSessionId.isEmpty)
         // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         #expect(SightLineConfig.defaultSessionId.count == 36)
+        #expect(SightLineConfig.defaultSessionId == SightLineConfig.defaultSessionId.lowercased())
     }
 }

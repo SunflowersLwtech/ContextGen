@@ -122,14 +122,8 @@ class AudioPlaybackManager: ObservableObject {
     /// Configure the shared AVAudioSession for simultaneous recording and playback.
     /// Must be called before either AVAudioEngine starts.
     private func configureAudioSession() {
-        let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .voiceChat,
-                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
-            )
-            try session.setActive(true)
+            try AudioSessionManager.shared.configure()
             Self.logger.info("AVAudioSession configured: playAndRecord + defaultToSpeaker")
         } catch {
             Self.logger.error("AVAudioSession configuration failed: \(error)")

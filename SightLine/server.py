@@ -433,6 +433,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     tools (navigation, search), and Firestore UserProfile loading.
     """
     await websocket.accept()
+    raw_session_id = session_id
+    session_id = session_id.strip().lower()
+    if session_id != raw_session_id:
+        logger.info(
+            "Normalized session id for backend compatibility: %s -> %s",
+            raw_session_id,
+            session_id,
+        )
     logger.info("WebSocket connected: user=%s session=%s", user_id, session_id)
 
     stop_downstream = asyncio.Event()
@@ -1694,7 +1702,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             stop_downstream.set()
             logger.info("Client disconnected (downstream): user=%s session=%s", user_id, session_id)
         except Exception:
+            stop_downstream.set()
             logger.exception("Error in downstream handler: user=%s session=%s", user_id, session_id)
+            await _safe_send_json({
+                "type": "error",
+                "error": "Live session failed. Reconnecting...",
+            })
+            try:
+                await websocket.close(code=1011, reason="downstream_error")
+            except Exception:
+                pass
 
     try:
         await asyncio.gather(_upstream(), _downstream())

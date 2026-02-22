@@ -155,11 +155,6 @@ final class DeveloperConsoleModel: ObservableObject {
             .sink { [weak self] v in self?.motionState = v }
             .store(in: &cancellables)
 
-        debugModel.$heartRate
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] v in self?.heartRate = v }
-            .store(in: &cancellables)
-
         debugModel.$noiseDb
             .receive(on: DispatchQueue.main)
             .sink { [weak self] v in self?.noiseDb = v }
@@ -222,7 +217,13 @@ final class DeveloperConsoleModel: ObservableObject {
         // Time context
         sensorManager.$currentTelemetry
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] data in self?.timeContext = data.timeContext }
+            .sink { [weak self] data in
+                self?.timeContext = data.timeContext
+                self?.heartRate = data.heartRate
+                self?.motionState = data.motionState
+                self?.stepCadence = Double(data.stepCadence)
+                self?.noiseDb = data.ambientNoiseDb
+            }
             .store(in: &cancellables)
 
         // LOD history tracking

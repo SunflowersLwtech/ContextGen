@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 AGENT_ENGINE_ID = os.getenv("AGENT_ENGINE_ID", "")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse bool-like environment values."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_session_service():
     """Create the session service, preferring VertexAiSessionService.
 
@@ -39,28 +47,40 @@ def create_session_service():
     agent_engine_id = os.getenv("AGENT_ENGINE_ID", "").strip() or None
     project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
     location = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+    use_vertex = _env_flag("GOOGLE_GENAI_USE_VERTEXAI", default=False)
 
-    try:
-        from google.adk.sessions import VertexAiSessionService
+    if use_vertex:
+        try:
+            from google.adk.sessions import VertexAiSessionService
 
-        svc = VertexAiSessionService(
-            project=project,
-            location=location,
-            agent_engine_id=agent_engine_id,
-        )
+            svc = VertexAiSessionService(
+                project=project,
+                location=location,
+                agent_engine_id=agent_engine_id,
+            )
+            if agent_engine_id:
+                logger.info(
+                    "Using VertexAiSessionService (engine=%s)", agent_engine_id
+                )
+            else:
+                logger.info(
+                    "Using VertexAiSessionService (engine unset, project=%s, location=%s)",
+                    project,
+                    location,
+                )
+            return svc
+        except (ImportError, Exception) as exc:
+            logger.warning("VertexAiSessionService unavailable (%s); using fallback.", exc)
+    else:
         if agent_engine_id:
             logger.info(
-                "Using VertexAiSessionService (engine=%s)", agent_engine_id
+                "GOOGLE_GENAI_USE_VERTEXAI is FALSE; ignoring AGENT_ENGINE_ID=%s and using local session service",
+                agent_engine_id,
             )
         else:
             logger.info(
-                "Using VertexAiSessionService (engine unset, project=%s, location=%s)",
-                project,
-                location,
+                "GOOGLE_GENAI_USE_VERTEXAI is FALSE; using local session service"
             )
-        return svc
-    except (ImportError, Exception) as exc:
-        logger.warning("VertexAiSessionService unavailable (%s); using fallback.", exc)
 
     # Fallback: try DatabaseSessionService, then in-memory
     try:

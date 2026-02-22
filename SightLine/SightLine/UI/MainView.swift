@@ -389,6 +389,7 @@ struct MainView: View {
         cameraManager.frameSelector = frameSelector
         cameraManager.onFrameCaptured = { jpegData in
             guard frameSelector.isFrameDifferent(jpegData: jpegData) else {
+                frameSelector.markFrameSkipped()
                 logger.debug("Frame skipped (pixel-diff below threshold)")
                 return
             }
@@ -465,8 +466,11 @@ struct MainView: View {
             logger.info("Face library cleared: \(deletedCount)")
         case .error(let message):
             DispatchQueue.main.async {
+                connectionStatus = "Server error"
                 transcript = "Server error: \(message)"
                 devConsoleModel.captureTranscript(text: "Server error: \(message)", role: "system")
+                audioCapture.stopCapture()
+                cameraManager.stopCapture()
             }
             logger.error("Server error message: \(message, privacy: .public)")
         case .transcript(let text, let role):
@@ -489,11 +493,25 @@ struct MainView: View {
                 telemetryAggregator.updateLOD(lod)
                 debugModel.currentLOD = lod
             }
-        case .toolEvent(let tool, let behavior, _):
-            handleToolMessage(
-                text: "Tool update: \(tool)",
-                behavior: behavior
-            )
+        case .toolEvent(let tool, let behavior, let payload):
+            let status = (payload["status"] as? String)?.lowercased() ?? ""
+            if !status.isEmpty {
+                DispatchQueue.main.async {
+                    devConsoleModel.captureTranscript(text: "Tool \(tool): \(status)", role: "system")
+                }
+            }
+            switch status {
+            case "queued", "invoked", "completed":
+                // Keep these in dev console only; avoid freezing user-facing transcript on tool progress text.
+                return
+            case "error", "unavailable":
+                handleToolMessage(text: "Tool \(tool) is unavailable.", behavior: .INTERRUPT)
+            default:
+                handleToolMessage(
+                    text: "Tool update: \(tool)",
+                    behavior: behavior
+                )
+            }
         case .visionResult(let summary, let behavior):
             DispatchQueue.main.async { debugModel.markCapabilityReady("vision") }
             handleToolMessage(
@@ -576,6 +594,14 @@ struct MainView: View {
             }
             UserDefaults.standard.set(handle, forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
             logger.info("Session resumption handle updated: \(handle.prefix(20))...")
+        case .unknown(let raw):
+            logger.debug("Unknown downstream message: \(String(raw.prefix(200)), privacy: .public)")
+            DispatchQueue.main.async {
+                devConsoleModel.captureTranscript(
+                    text: "Unknown downstream: \(String(raw.prefix(160)))",
+                    role: "system"
+                )
+            }
         default:
             break
         }

@@ -93,6 +93,13 @@ class FrameSelector: ObservableObject {
         }
     }
 
+    /// Mark a frame as evaluated-but-skipped to keep throttle cadence stable.
+    /// Without this, static scenes can trigger diff checks at capture FPS (30fps),
+    /// creating noisy logs and unnecessary CPU usage.
+    func markFrameSkipped() {
+        lastFrameTime = Date()
+    }
+
     func updateLOD(_ lod: Int) {
         DispatchQueue.main.async {
             self.currentLOD = lod

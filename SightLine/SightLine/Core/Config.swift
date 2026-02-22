@@ -36,5 +36,5 @@ enum SightLineConfig {
 
     // User defaults
     static let defaultUserId = "default_user"
-    static let defaultSessionId: String = UUID().uuidString
+    static let defaultSessionId: String = UUID().uuidString.lowercased()
 }

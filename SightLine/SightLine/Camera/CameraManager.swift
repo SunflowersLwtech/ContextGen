@@ -29,7 +29,11 @@ class CameraManager: NSObject, ObservableObject {
 
     func startCapture() {
         sessionQueue.async { [weak self] in
-            self?.setupCaptureSession()
+            guard let self = self else { return }
+            if self.captureSession?.isRunning == true {
+                return
+            }
+            self.setupCaptureSession()
         }
     }
 
@@ -80,11 +84,12 @@ class CameraManager: NSObject, ObservableObject {
 
     func stopCapture() {
         sessionQueue.async { [weak self] in
-            self?.captureSession?.stopRunning()
-            self?.captureSession = nil
+            guard let self = self else { return }
+            self.captureSession?.stopRunning()
+            self.captureSession = nil
             DispatchQueue.main.async {
-                self?.isRunning = false
-                self?.previewSession = nil
+                self.isRunning = false
+                self.previewSession = nil
             }
             Self.logger.info("Camera capture stopped")
         }
