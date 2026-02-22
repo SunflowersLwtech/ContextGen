@@ -35,6 +35,7 @@ from lod import (
     decide_lod,
     on_lod_change,
 )
+from lod.telemetry_aggregator import TelemetryAggregator
 from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephemeral
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # -- Per-session LOD state -----------------------------------------------
     panic_handler = PanicHandler()
+    telemetry_agg = TelemetryAggregator()
     session_ctx = session_manager.get_session_context(session_id)
     user_profile = session_manager.get_user_profile(user_id)
 
@@ -149,14 +151,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     live_request_queue = LiveRequestQueue()
     run_config = session_manager.get_run_config(session_id, lod=session_ctx.current_lod)
-
-    # Start the ADK live session
-    live_events = runner.run_live(
-        session_id=session_id,
-        user_id=user_id,
-        live_request_queue=live_request_queue,
-        run_config=run_config,
-    )
 
     # -- LOD engine helpers --------------------------------------------------
 
@@ -208,11 +202,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         # Handle narrative snapshot on LOD downgrade
         on_lod_change(session_ctx, old_lod, 1)
 
-        # Inject PANIC-level LOD update into Live session
         panic_reason = "PANIC: safety mode activated"
-        await _send_lod_update(1, ephemeral_ctx, panic_reason)
-
-        # Notify iOS immediately for local degradation UX / E2E contract.
+        # Notify iOS first to guarantee sub-500ms LOD degradation path.
         await _notify_ios_lod_change(
             1,
             panic_reason,
@@ -224,6 +215,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "panic": True,
             },
         )
+
+        # Inject PANIC-level LOD update into Live session afterwards.
+        await _send_lod_update(1, ephemeral_ctx, panic_reason)
 
         logger.warning(
             "PANIC activated for session %s: LOD %d → 1",
@@ -307,30 +301,45 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
         Dual-path processing:
         1. Parse into semantic text → inject as [TELEMETRY UPDATE] for Gemini
-        2. Parse into EphemeralContext → run LOD decision engine
-        """
-        # Path 1: Semantic text for Gemini context
-        semantic_text = parse_telemetry(telemetry_data)
-        content = types.Content(
-            parts=[types.Part(text=semantic_text)],
-            role="user",
-        )
-        live_request_queue.send_content(content)
+           (gated by LOD-aware TelemetryAggregator to avoid flooding context)
+        2. Parse into EphemeralContext → run LOD decision engine (always runs)
 
-        # Path 2: EphemeralContext for LOD engine
+        PANIC and ImmediateTriggers bypass the throttle and always inject.
+        """
+        import time as _time
+
+        # Path 2 first: EphemeralContext for LOD engine (always)
         ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
 
-        # Check PANIC first (takes absolute priority)
+        # Check PANIC first (takes absolute priority, bypasses throttle)
         is_panic = panic_handler.evaluate(
             heart_rate=ephemeral_ctx.heart_rate,
             panic_flag=ephemeral_ctx.panic,
         )
         if is_panic:
+            # Always inject telemetry on PANIC
+            semantic_text = parse_telemetry(telemetry_data)
+            content = types.Content(
+                parts=[types.Part(text=semantic_text)],
+                role="user",
+            )
+            live_request_queue.send_content(content)
             await _handle_panic(ephemeral_ctx)
             return  # PANIC overrides normal LOD processing
 
-        # Run LOD decision
+        # Path 1: Semantic text injection (LOD-aware throttle)
+        now = _time.monotonic()
+        if telemetry_agg.should_send(now):
+            semantic_text = parse_telemetry(telemetry_data)
+            content = types.Content(
+                parts=[types.Part(text=semantic_text)],
+                role="user",
+            )
+            live_request_queue.send_content(content)
+            telemetry_agg.mark_sent(now)
+
+        # Run LOD decision (always, regardless of throttle)
         await _process_lod_decision(ephemeral_ctx)
 
     async def _process_lod_decision(ephemeral_ctx) -> None:
@@ -359,6 +368,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             # Update session state
             session_ctx.current_lod = new_lod
 
+            # Sync telemetry aggregator with new LOD level
+            telemetry_agg.update_lod(new_lod)
+
             # Inject [LOD UPDATE] into Live session
             await _send_lod_update(new_lod, ephemeral_ctx, decision_log.reason)
 
@@ -386,6 +398,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Processes session_resumption_update events, transcriptions, and
         content parts (audio binary / text JSON).
         """
+        # Lazily initialise live events so upstream telemetry processing
+        # is not blocked by any synchronous setup latency in run_live().
+        live_events = await asyncio.to_thread(
+            runner.run_live,
+            session_id=session_id,
+            user_id=user_id,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+        )
         try:
             async for event in live_events:
                 if stop_downstream.is_set():
@@ -401,6 +422,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         "handle": update.newHandle,
                     }):
                         break
+
+                # --- GoAway / connection lifecycle signals ---
+                # ADK may signal upcoming disconnection through the event stream.
+                # Forward to iOS so it can prepare proactive reconnection.
+                if hasattr(event, "server_content") and event.server_content:
+                    sc = event.server_content
+                    if hasattr(sc, "turn_complete") and sc.turn_complete:
+                        # Server signalling turn complete — optional tracking
+                        pass
+                    if hasattr(sc, "interrupted") and sc.interrupted:
+                        await _safe_send_json({
+                            "type": "interrupted",
+                            "message": "Model output was interrupted.",
+                        })
 
                 # --- Input transcription (user speech-to-text) ---
                 if event.input_transcription and event.input_transcription.text:

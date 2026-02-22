@@ -22,20 +22,34 @@ logger = logging.getLogger(__name__)
 # LOD-driven VAD presets (SL-36)
 # Native-audio models handle VAD internally; these presets influence
 # the model's sensitivity to voice activity detection.
+#
+# From Final Spec §4.1 and Voice UX Research §2.2:
+#   LOD 1: HIGH sensitivity, short silence → fast response for safety
+#   LOD 2: MEDIUM sensitivity, balanced silence → exploration
+#   LOD 3: MEDIUM/LOW sensitivity, long silence → patient, complex queries
 # ---------------------------------------------------------------------------
 
 LOD_VAD_PRESETS: dict[int, dict] = {
     1: {
         "voice_name": "Aoede",
-        # LOD 1: fast response, high sensitivity (walking/danger)
+        "start_sensitivity": "START_SENSITIVITY_HIGH",
+        "end_sensitivity": "END_SENSITIVITY_HIGH",
+        "silence_duration_ms": 400,
+        "prefix_padding_ms": 100,
     },
     2: {
         "voice_name": "Aoede",
-        # LOD 2: balanced (exploration)
+        "start_sensitivity": "START_SENSITIVITY_MEDIUM",
+        "end_sensitivity": "END_SENSITIVITY_MEDIUM",
+        "silence_duration_ms": 800,
+        "prefix_padding_ms": 200,
     },
     3: {
         "voice_name": "Aoede",
-        # LOD 3: patient, allows complex questions (seated)
+        "start_sensitivity": "START_SENSITIVITY_MEDIUM",
+        "end_sensitivity": "END_SENSITIVITY_LOW",
+        "silence_duration_ms": 1300,
+        "prefix_padding_ms": 300,
     },
 }
 
@@ -98,6 +112,14 @@ class SessionManager:
             context_window_compression=types.ContextWindowCompressionConfig(
                 trigger_tokens=100_000,
                 sliding_window=types.SlidingWindow(target_tokens=80_000),
+            ),
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    start_of_speech_sensitivity=vad_preset.get("start_sensitivity"),
+                    end_of_speech_sensitivity=vad_preset.get("end_sensitivity"),
+                    prefix_padding_ms=vad_preset.get("prefix_padding_ms", 200),
+                    silence_duration_ms=vad_preset.get("silence_duration_ms", 800),
+                )
             ),
         )
 

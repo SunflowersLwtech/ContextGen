@@ -93,33 +93,33 @@
 
 | ID | Subtask | Priority | Status | Depends | Deliverable | Acceptance |
 |---|---|---|---|---|---|---|
-| SL-10 | 建立后端目录骨架（`agents/`, `live_api/`, `lod/`, `telemetry/`, `tools/`） | P0 | TODO | SL-00 | 清晰模块结构 | 目录与模块可导入 |
-| SL-11 | 实现 `FastAPI` WebSocket 入口 `/ws/{user_id}/{session_id}` | P0 | TODO | SL-10 | 可持续连接通道 | 能收发 JSON/bytes |
-| SL-12 | 接入 ADK `Runner.run_live()` + `LiveRequestQueue` | P0 | TODO | SL-11 | 后端到 Gemini Live 通路 | 能收到 Live 事件流 |
-| SL-13 | 实现 `RunConfig` 基线（BIDI/AUDIO/transcription/proactive/affective） | P0 | TODO | SL-12 | 正确配置 Live 会话 | 语音首包返回 < 3s |
-| SL-14 | 启用 `SessionResumptionConfig` + handle 缓存 | P0 | TODO | SL-13 | 10 分钟连接可续接 | 人工断线后可恢复上下文 |
-| SL-15 | 启用 `ContextWindowCompression` + SlidingWindow | P0 | TODO | SL-13 | 音视频会话不在 2 分钟硬断 | 连续会话 > 5 分钟 |
-| SL-16 | 实现上行协议解析（audio/image/telemetry/activity_start/end） | P0 | TODO | SL-11 | 统一消息协议 | 5 类消息全通过 |
-| SL-17 | 实现下行事件转发（audio bytes + transcription text） | P0 | TODO | SL-12 | 前端可实时播放与显示字幕 | 音频连续播放无阻塞 |
-| SL-18 | iOS `WebSocketManager`（NWConnection）实现 | P0 | TODO | SL-11 | iOS 到后端稳定连接 | 连续 10 分钟不掉线 |
-| SL-19 | iOS 音频链路（`AVAudioEngine` 采集 16k + `AVAudioPlayerNode` 播放 24k） | P0 | TODO | SL-18 | 实时双向语音 | 用户可对话 |
-| SL-20 | iOS 视频链路（`AVCaptureSession` -> JPEG 768x768） | P0 | TODO | SL-18 | 1 FPS 帧上传 | 后端收到图像帧 |
-| SL-21 | Cloud Run 首次部署（`min_instance_count=1`） | P0 | TODO | SL-12 | 云端可访问服务 | 远端真机可连通 |
+| SL-10 | 建立后端目录骨架（`agents/`, `live_api/`, `lod/`, `telemetry/`, `tools/`） | P0 | DONE | SL-00 | 清晰模块结构 | 目录与模块可导入 |
+| SL-11 | 实现 `FastAPI` WebSocket 入口 `/ws/{user_id}/{session_id}` | P0 | DONE | SL-10 | 可持续连接通道 | 能收发 JSON/bytes |
+| SL-12 | 接入 ADK `Runner.run_live()` + `LiveRequestQueue` | P0 | DONE | SL-11 | 后端到 Gemini Live 通路 | 能收到 Live 事件流 |
+| SL-13 | 实现 `RunConfig` 基线（BIDI/AUDIO/transcription/proactive/affective） | P0 | DONE | SL-12 | 正确配置 Live 会话 | 语音首包返回 < 3s |
+| SL-14 | 启用 `SessionResumptionConfig` + handle 缓存 | P0 | DONE | SL-13 | 10 分钟连接可续接 | 人工断线后可恢复上下文 |
+| SL-15 | 启用 `ContextWindowCompression` + SlidingWindow | P0 | DONE | SL-13 | 音视频会话不在 2 分钟硬断 | 连续会话 > 5 分钟 |
+| SL-16 | 实现上行协议解析（audio/image/telemetry/activity_start/end） | P0 | DONE | SL-11 | 统一消息协议 | 5 类消息全通过 |
+| SL-17 | 实现下行事件转发（audio bytes + transcription text） | P0 | DONE | SL-12 | 前端可实时播放与显示字幕 | 音频连续播放无阻塞 |
+| SL-18 | iOS `WebSocketManager`（NWConnection）实现 | P0 | DONE | SL-11 | iOS 到后端稳定连接 | 连续 10 分钟不掉线 |
+| SL-19 | iOS 音频链路（`AVAudioEngine` 采集 16k + `AVAudioPlayerNode` 播放 24k） | P0 | DONE | SL-18 | 实时双向语音 | 用户可对话 |
+| SL-20 | iOS 视频链路（`AVCaptureSession` -> JPEG 768x768） | P0 | DONE | SL-18 | 1 FPS 帧上传 | 后端收到图像帧 |
+| SL-21 | Cloud Run 首次部署（`min_instance_count=1`） | P0 | DONE | SL-12 | 云端可访问服务 | 远端真机可连通 |
 
 ### Phase 2 - LOD & Context Engine (M2)
 
 | ID | Subtask | Priority | Status | Depends | Deliverable | Acceptance |
 |---|---|---|---|---|---|---|
-| SL-30 | iOS 传感器聚合（motion/cadence/noise/gps/time/hr） | P0 | TODO | SL-18 | 标准 telemetry payload | 字段完整率 > 95% |
-| SL-31 | LOD-aware Telemetry 节流（LOD1:3-4s / LOD2:2-3s / LOD3:5-10s） | P0 | TODO | SL-30 | 发送策略稳定 | 高频抖动可控 |
-| SL-32 | 后端 Telemetry 语义化解析与标准化 | P0 | TODO | SL-16 | Ephemeral Context 输入 | 可供 LOD 引擎直接消费 |
-| SL-33 | 规则式 LOD 决策引擎（panic/motion/noise/context） | P0 | TODO | SL-32 | LOD 1/2/3 稳定决策 | 单元测试覆盖关键分支 |
-| SL-34 | PANIC 中断机制（清空播放队列 + 强制 LOD1） | P0 | TODO | SL-33 | 安全优先中断 | 触发后 < 500ms 生效 |
-| SL-35 | Dynamic System Prompt 构建器（persona->rules->guardrails） | P0 | TODO | SL-33 | LOD 感知 prompt | 输出结构固定可审计 |
-| SL-36 | LOD 驱动 VAD 参数动态切换 | P1 | TODO | SL-33 | LOD 级别下交互差异化 | 误打断率下降 |
-| SL-37 | Narrative Snapshot（降级保存、恢复续读） | P1 | TODO | SL-33 | 打断恢复能力 | 恢复点偏差 <= 1 段 |
-| SL-38 | 断线本地降级（iOS force LOD1 + 触觉 + 本地语音提示） | P1 | TODO | SL-18 | 网络异常安全回退 | 断网即时提示 |
-| SL-39 | LOD Decision Log（可解释日志） | P0 | TODO | SL-33 | 每次决策可追踪 | 日志含输入/规则/结果 |
+| SL-30 | iOS 传感器聚合（motion/cadence/noise/gps/time/hr） | P0 | DONE | SL-18 | 标准 telemetry payload | 字段完整率 > 95% |
+| SL-31 | LOD-aware Telemetry 节流（LOD1:3-4s / LOD2:2-3s / LOD3:5-10s） | P0 | DONE | SL-30 | 发送策略稳定 | 高频抖动可控 |
+| SL-32 | 后端 Telemetry 语义化解析与标准化 | P0 | DONE | SL-16 | Ephemeral Context 输入 | 可供 LOD 引擎直接消费 |
+| SL-33 | 规则式 LOD 决策引擎（panic/motion/noise/context） | P0 | DONE | SL-32 | LOD 1/2/3 稳定决策 | 单元测试覆盖关键分支 |
+| SL-34 | PANIC 中断机制（清空播放队列 + 强制 LOD1） | P0 | DONE | SL-33 | 安全优先中断 | 触发后 < 500ms 生效 |
+| SL-35 | Dynamic System Prompt 构建器（persona->rules->guardrails） | P0 | DONE | SL-33 | LOD 感知 prompt | 输出结构固定可审计 |
+| SL-36 | LOD 驱动 VAD 参数动态切换 | P1 | DONE | SL-33 | LOD 级别下交互差异化 | 误打断率下降 |
+| SL-37 | Narrative Snapshot（降级保存、恢复续读） | P1 | DONE | SL-33 | 打断恢复能力 | 恢复点偏差 <= 1 段 |
+| SL-38 | 断线本地降级（iOS force LOD1 + 触觉 + 本地语音提示） | P1 | DONE | SL-18 | 网络异常安全回退 | 断网即时提示 |
+| SL-39 | LOD Decision Log（可解释日志） | P0 | DONE | SL-33 | 每次决策可追踪 | 日志含输入/规则/结果 |
 
 ### Phase 3 - Agent Capabilities & Tools (M3)
 
