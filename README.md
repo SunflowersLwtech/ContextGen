@@ -1,128 +1,162 @@
 <div align="center">
-  <img src="docs/assets/sightline_icon.png" alt="SightLine Logo" width="128" height="128">
+  <img src="docs/assets/sightline_icon.png" alt="SightLine Logo" width="128" height="128" />
   <h1>SightLine</h1>
-  <h3>A Hardware-Agnostic Cloud OS for Accessibility</h3>
-  <p>
-    <em>Empowering visually impaired users with real-time, context-aware auditory guidance.</em>
-  </p>
+  <h3>Context-Aware Live Agent for Blind & Low-Vision Users</h3>
+  <p><em>在正确的时机，用正确的信息密度，给出真正有用的语音引导。</em></p>
 </div>
 
 ---
 
-## 👁️ Vision
+## ✨ 项目概览（最新）
 
-When building for accessibility, creating another siloed smartphone App is the wrong approach. Visually impaired users don't want to hold a phone out in front of them; they want to use their smartwatches, their hearing aids, and emerging smart glasses. 
+**SightLine** 是一个面向视障用户的实时语义辅助系统：
 
-That's why we built **SightLine**—not just an App, but a **hardware-agnostic Cloud Operating System for accessibility**. 
+- **端侧（iOS + watchOS）**：采集视频、音频、运动状态、步频、噪声与心率。
+- **云端（FastAPI + Google ADK）**：通过单 WebSocket 处理多模态流，并驱动多 Agent 协作。
+- **核心能力（Adaptive LOD）**：根据用户状态动态调整语音密度，做到“知趣地闭嘴”。
 
-By decoupling the architecture into three unified channels (Vision, Audio, and Telemetry), any hardware manufacturer can connect to our central API gateway using the **SightLine Edge Protocol (SEP)**. If a Sony earbud streams audio and an Apple Watch streams heart-rate telemetry, our ADK Orchestrator fuses them in the cloud. We interpret the world so our users can experience it seamlessly.
+> 当前代码状态（2026-02-23）：Swift Native 客户端 + FastAPI 实时后端 + Cloud Run 部署链路 + Firestore 记忆系统 + InsightFace 人脸识别管线已集成。
 
-## 🏗️ System Architecture
+## 🎯 核心价值
 
-SightLine operates on a robust **Server-to-Server** architecture, entirely decoupling the client (sensors and outputs) from the cloud processing brain. 
+1. **Adaptive LOD（三级细节）**
+   - **LOD 1**：15–40 词，安全优先，移动/高噪声/恐慌心率触发。
+   - **LOD 2**：80–150 词，标准导航与空间理解。
+   - **LOD 3**：400–800 词，驻足时的细节叙述与 OCR 阅读。
+2. **Context Awareness（三层上下文）**
+   - Ephemeral（毫秒~秒）/ Session（分钟~小时）/ Long-term（跨会话）。
+3. **Hardware-Agnostic 架构**
+   - 通过 SEP 抽象视觉/音频/遥测三通道，当前以 iPhone + Apple Watch 为主入口。
 
-Our current implementation uses a **Swift Native iOS App** paired with a **watchOS App** as the sensory edge devices:
-- **iPhone** acts as the primary sensor hub (Video, Audio, CoreMotion, GPS).
-- **Apple Watch** transmits real-time telemetry (Heart Rate via `HKWorkoutSession` / `WCSession`).
-- **Cloud Run Backend** processes the sensory inputs using Google's generative AI models.
-
-Communication is handled via a single, highly-optimized **WebSocket (`NWConnection`)**, unified to carry audio, video frames, and telemetry JSON payloads.
+## 🏗️ 架构速览
 
 ```mermaid
 graph TD
-    subgraph Edge["Edge Devices (Hardware Agnostic)"]
-        A[Smart Glasses / iPhone Camera] -->|SEP-Vision: JPEG Streams| D{SightLine API Gateway}
-        B[Hearing Aids / AirPods] <-->|SEP-Audio: PCM 16kHz| D
-        C[Apple Watch / Sensors] -->|SEP-Telemetry: JSON| D
+    subgraph Edge[Edge Devices]
+        A[iPhone Camera/Mic] -->|Vision + Audio| D{Unified WebSocket Gateway}
+        B[Apple Watch Telemetry] -->|HR / Motion / State| D
     end
-    
-    D -->|Unified WebSocket| E[Cloud Run ADK Backend]
-    
-    subgraph Cloud["SightLine Cloud Brain"]
-        E --> F(Context Parser)
-        F --> G(ADK Orchestrator Agent)
-        G <--> H[Adaptive LOD Engine]
-        G <--> I[Gemini 2.5 Flash Live API]
-        G <--> J[Specialized Sub-Agents]
-    end
-    
-    I -->|Adaptive TTS Audio| E
-    E -->|Route to Edge| B
+
+    D --> E[FastAPI Backend]
+    E --> F[ADK Orchestrator]
+    F <--> G[Vision Agent]
+    F <--> H[OCR Agent]
+    F <--> I[Face Agent]
+    F <--> J[Memory Service]
+    F <--> K[Gemini Live API]
+    J <--> L[(Firestore)]
 ```
 
-## 🧠 The Adaptive LOD Engine
+## 🤖 Agent 编排（当前实现）
 
-The core innovation of SightLine is the **Level of Detail (LOD) Engine**. It decides *how much* to say and *when* to say it, adopting the UX philosophy of "tactfully keeping quiet." It dynamically builds the System Prompt fusing Ephemeral Context (sensors), Session Context (routing), and Long-Term Memory.
+- **Orchestrator Agent**：统一决策与响应出口。
+- **Vision Agent**：场景理解 + LOD 自适应视觉摘要。
+- **OCR Agent**：菜单、标识、文档文本抽取。
+- **Face Agent**：InsightFace `buffalo_l` 512-D embedding + 余弦匹配（默认阈值 `0.4`）。
+- **Memory Service**：长期偏好与会话记忆写入 Firestore（向量检索）。
+- **工具调用**：Google Maps（导航/地点）+ Grounding（检索增强）。
 
-* **LOD 1 (Safety & Alert - 15~40 words)**: Triggered during fast movement, high ambient noise (>80dB), or a heart-rate spike (>120 BPM - **PANIC mode**). Focuses entirely on immediate safety threats.
-* **LOD 2 (Standard Navigation - 80~150 words)**: Triggered during slow exploration or entering new spaces. Describes layout and key obstacles.
-* **LOD 3 (Narrative & Rich Description - 400~800 words)**: Triggered when stationary or upon explicit user request. Delivers rich, atmospheric descriptions and reads text.
+## 📁 仓库结构（重点）
 
-### Stability Hardening
-To guarantee a safe and seamless experience, the engine employs:
-1. **LOD-Aware Telemetry Throttling**: Reduces data overhead based on the current LOD.
-2. **PANIC Interrupt**: Instantly flushes the TTS queue and switches to LOD 1 upon detecting stress metrics.
-3. **Local Fallback**: Drops to a local LOD 1 state ("Safe Mode") with haptic feedback if the WebSocket unexpectedly disconnects.
-4. **DebugOverlay**: Exposes advanced real-time metrics (LOD status, triggers, HR Sparkline, Memory top-3, WS Latency) for rigorous engineering testing.
+```text
+ContextGen/
+├── README.md
+├── docs/                                # 规范、研究、架构文档
+└── SightLine/
+    ├── server.py                        # FastAPI + WebSocket 实时后端入口
+    ├── agents/                          # orchestrator / vision / ocr / face
+    ├── live_api/                        # 会话管理与流式桥接
+    ├── lod/                             # LOD 引擎、panic、telemetry 聚合
+    ├── memory/                          # 长期记忆系统
+    ├── telemetry/                       # 传感器数据解析
+    ├── scripts/run_watch_device_tests.sh
+    ├── cloudbuild.yaml                  # Cloud Build -> Cloud Run
+    ├── Dockerfile
+    ├── requirements.txt
+    └── SightLine.xcodeproj/             # iOS + watchOS 工程
+```
 
-## 🤖 Multi-Agent Orchestration
+## 🚀 本地快速启动（Backend）
 
-SightLine uses **Google ADK (Agent Development Kit)** to orchestrate multiple specialized agents. The **Orchestrator Agent**, powered by the `gemini-2.5-flash-native-audio` Live API, is the sole voice the user hears, coordinating tasks silently among sub-agents:
+### 1) 环境准备
 
-* **Vision Sub-Agent** (`gemini-3.1-pro-preview`): Performs proactive visual extraction. It doesn't just answer "What do you see?"—it determines "How does this impact the visually impaired user's action?" dynamically scaling down token usage on LOD 1 to save costs.
-* **OCR Sub-Agent** (`gemini-3-flash-preview`): Reads menus, signs, and documents when looking at text-heavy scenes.
-* **Face ID Sub-Agent**: A local ONNX-based `InsightFace buffalo_l` module generating 512-D embeddings. It matches detected faces against the user’s personal `face_library` via cosine similarity >0.4 to discreetly whisper names of approaching friends.
-* **Memory Sub-Agent** (`MemoryBankService`): Extracts implicit preferences and habits, manages the memory write budget (Top 5 per session), and handles forgetting requests.
-
-### Tool Call Integration (Function Calling)
-* **Google Maps Navigation**: Real-time routing (`navigate_to`, `nearby_search`) using Places and Routes APIs.
-* **Grounding (Google Search)**: Eliminates hallucinations by pulling real-time information from Google Search. 
-
-## 💾 Memory Deepening
-
-SightLine manages a robust 3-layer memory architecture:
-1. **Ephemeral**: ms-to-sec sensor snapshots (e.g., "HR 115", "Walking").
-2. **Session**: Short-term state tracking spatial transitions and immediate goals using `VertexAiSessionService`.
-3. **Long-Term Firestore Memory Bank**: We built a custom Memory Bank utilizing Firestore's native vector search. It stores 2048-D embeddings from `gemini-embedding-001`. Memories are weighted by a combination of semantic relevance, importance, and recency (exponential 24-hour decay). 
-
-## 🚀 Cloud Deployment & Infrastructure
-
-Designed for low latency and zero maintenance:
-- **Google Cloud Run**: Min_instances set to 1 with CPU Boost enabled to eliminate cold starts.
-- **Firestore (Native Mode)**: Serves as the backbone database handling User Profiles, Face ID libraries, and the robust Long-Term Memory.
-- **Secret Manager**: Securely injects Gemini and Maps API keys.
-
-### ⚙️ Terraform Bonus
-The entire infrastructure is modeled as code using **Terraform**. This automates the provisioning of:
-- Google Cloud Run services
-- Firestore Composite Vector Indexes
-- IAM Identity Access & Service Accounts
-- Secret Manager injections
-
-Run the automated deploy script:
 ```bash
-cd infrastructure 
-./deploy.sh
+cd SightLine
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## 🧪 Watch Device Test Command
+按 `.env` 填写最少配置：
 
-Use the dedicated script for physical Apple Watch testing. It performs a lock-state preflight, forces a stable `arm64` destination, and retries once if watchOS blocks navigation away from the clock UI state.
+- `GOOGLE_CLOUD_PROJECT`
+- `GOOGLE_API_KEY`
+- `GOOGLE_MAPS_API_KEY`
+- `GOOGLE_GENAI_USE_VERTEXAI`（本地通常为 `TRUE`，Cloud Run 为 `FALSE`）
+
+### 2) 启动服务
+
+```bash
+cd SightLine
+python -m uvicorn server:app --host 0.0.0.0 --port 8080
+```
+
+健康检查：
+
+```bash
+curl http://localhost:8080/health
+```
+
+## 🍎 iOS / Watch 测试
+
+物理 Apple Watch 测试脚本（包含锁屏预检与一次自动重试）：
 
 ```bash
 cd SightLine
 ./scripts/run_watch_device_tests.sh
 ```
 
-Optional overrides:
+可选参数：
+
 ```bash
-SIGHTLINE_WATCH_DESTINATION_ID=00008310-0018C3A80A7B601E \
+SIGHTLINE_WATCH_DESTINATION_ID=<watch-device-id> \
 SIGHTLINE_WATCH_ARCH=arm64 \
 ./scripts/run_watch_device_tests.sh
 ```
 
+## ☁️ 部署（Cloud Run）
+
+项目已提供 `cloudbuild.yaml`，默认部署配置包括：
+
+- `--min-instances=1`（降低冷启动）
+- `--cpu-boost` + `--no-cpu-throttling`
+- `--memory=2Gi` / `--cpu=2`
+- Secret Manager 注入 Gemini / Maps Key
+
+触发构建示例：
+
+```bash
+cd SightLine
+gcloud builds submit --config cloudbuild.yaml
+```
+
+## 📚 关键文档入口
+
+- 产品与技术定稿：`docs/SightLine_Final_Specification.md`
+- 开发参考汇总：`docs/SightLine_Consolidated_Development_Reference.md`
+- Agent 编排与上下文建模：`docs/SightLine 核心架构_ Agent编排与上下文建模.md`
+- iOS 与后端协议对齐：`docs/SightLine_iOS_Backend_Protocol_Alignment_Matrix.md`
+
+## 🧭 Roadmap（短期）
+
+- 完成端到端稳定性压测（长连接 + 高频遥测 + 语音打断场景）
+- 继续收敛 LOD 切换阈值，减少误触发与重复播报
+- 打磨 Face Library 与 Memory Forgetting 的产品闭环
+- 补齐关键模块自动化测试覆盖
+
 ---
 
 <div align="center">
-  <p><em>Built with ❤️ for a more accessible world.</em></p>
+  <p><em>Built for accessibility-first real-world assistance.</em></p>
 </div>
