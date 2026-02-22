@@ -142,9 +142,9 @@
 |---|---|---|---|---|---|---|
 | SL-70 | SessionService 迁移到 VertexAiSessionService | P1 | DONE | SL-12 | 会话持久化 | Agent Engine ID: 8731647347169165312，重启后会话可恢复 |
 | SL-71 | 自建 Firestore MemoryBankService（`memory/memory_bank.py`）| P1 | DONE | SL-70 | 长期记忆基础链路 | top-K 记忆可注入 prompt，支持 auto-extract/forget/budget |
-| SL-72 | Memory 提取策略 + 写入预算（max 5/session） | P1 | TODO | SL-71 | 记忆膨胀受控 | 每会话写入上限生效 |
-| SL-73 | Memory 检索排序（relevance/recency/importance） | P2 | TODO | SL-71 | 相关记忆优先 | 检索结果质量可解释 |
-| SL-74 | `forget_recent_memory()` 预留接口 | P2 | TODO | SL-71 | 用户可撤销近期记忆 | 删除后不可检索 |
+| SL-72 | Memory 提取策略 + 写入预算（max 5/session） | P1 | DONE | SL-71 | 记忆膨胀受控 | 每会话写入上限生效 |
+| SL-73 | Memory 检索排序（relevance/recency/importance） | P2 | DONE | SL-71 | 相关记忆优先 | 检索结果质量可解释 |
+| SL-74 | `forget_recent_memory()` 预留接口 | P2 | DONE | SL-71 | 用户可撤销近期记忆 | 删除后不可检索 |
 | SL-75 | 性能优化：帧去重、预反馈、流式播放细化 | P0 | TODO | SL-20 | 感知延迟优化 | 首响应体验明显改善 |
 | SL-76 | 稳定性矩阵：断网/GoAway/API异常/摄像头失败 | P0 | TODO | SL-14 | 可预期降级路径 | 关键异常全可恢复 |
 | SL-77 | DebugOverlay（LOD/Telemetry/Latency/Memory Top3） | P1 | TODO | SL-39 | 演示可观测面板 | 评委可见因果链路 |

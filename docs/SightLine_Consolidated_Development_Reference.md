@@ -181,15 +181,15 @@ bank.store_memory(content, category="preference", importance=0.8)
 | 类型 | 来源 | 示例 |
 |------|------|------|
 | **Explicit Profile** | 用户主动填写 | vision_status, blindness_onset, has_guide_dog, tts_speed, verbosity_preference, om_level |
-| **Implicit Episodic** | 系统自动提取 | preference, location, person, behavior, stress_trigger, routine |
+| **Implicit Episodic** | 系统自动提取 | preference, experience, person, location, routine, general |
 
-**记忆提取时机**：Session 结束时（非实时，避免延迟影响）。Gemini Flash 提取 → 冲突检测（cosine_similarity > 0.85 更新，否则新建）→ confidence < 0.7 不存储。**写入预算**：`MAX_NEW_MEMORIES_PER_SESSION = 5`（按 confidence 排序，超额截断），防止长会话记忆膨胀。
+**记忆提取时机**：Session 结束时（非实时，避免延迟影响）。Gemini Flash 提取 → 冲突检测（cosine_similarity > 0.85 更新，否则新建）→ confidence < 0.75 不存储（person/stress_trigger 类别要求 > 0.9）。**写入预算**：`MEMORY_WRITE_BUDGET = 5`（按 confidence 排序，超额截断），防止长会话记忆膨胀。
 
 **检索策略**：
 ```
 relevance = 0.5 * query_similarity + 0.3 * recency_score + 0.2 * importance_score
 ```
-importance 权重：stress_trigger > routine > preference。衰减机制：`decay_factor=0.95`。
+importance 权重：person > routine > preference。衰减机制：指数半衰期 24 小时（`recency = 2^(-age_hours/24)`）。
 
 ### 2.3 短时记忆（Session Context）
 
@@ -463,24 +463,25 @@ WebRTC 用 UDP 处理"最后一公里"，消除 TCP 队头阻塞（移动 4G 下
 | 行为 | 用途 | 示例 |
 |------|------|------|
 | `INTERRUPT` | 安全警报，立即打断 | 检测到危险 |
-| `WHEN_IDLE` | 模型说完后交付 | 导航结果、人脸识别 |
+| `WHEN_IDLE` | 模型说完后交付 | 导航结果、搜索结果 |
 | `SILENT` | 后台静默存入 context | Telemetry 更新 |
 
 **已定义的 Function 列表**：
 
-| Function | 用途 | 所属 Agent |
+| Function | 用途 | 行为模式 |
 |----------|------|-----------|
-| `navigate_to(destination)` | 步行导航 | Orchestrator |
-| `google_search()` | 实时信息查询（Grounding） | Orchestrator |
-| `identify_person()` | 触发人脸识别（behavior=SILENT） | Orchestrator |
-| `get_location_info(lat, lng)` | 位置信息 | Navigation |
-| `nearby_search(lat, lng, radius, types)` | 附近地点 | Navigation |
-| `reverse_geocode(lat, lng)` | 反向地理编码 | Navigation |
-| `get_walking_directions(origin, dest)` | 步行路线 | Navigation |
-| `register_face(image_path)` | 注册人脸嵌入 | Face ID |
-| `match_face(embedding, known_persons)` | 匹配人脸 | Face ID |
-| `store_user_memory(user_id, text, type)` | 存储记忆 | Memory |
-| `retrieve_memories(user_id, query)` | 检索记忆 | Memory |
+| `navigate_to(destination, origin_lat, origin_lng, user_heading)` | 步行导航（时钟方位） | WHEN_IDLE / LOD1:INTERRUPT |
+| `get_location_info(lat, lng)` | 位置信息 + 附近 POI | WHEN_IDLE |
+| `nearby_search(lat, lng, radius, types, keyword)` | 附近地点搜索 | WHEN_IDLE |
+| `reverse_geocode(lat, lng)` | 反向地理编码 | WHEN_IDLE |
+| `get_walking_directions(origin, destination)` | 文本地址步行路线 | WHEN_IDLE |
+| `google_search(query)` | 实时信息查询（Grounding） | WHEN_IDLE |
+| `identify_person(description)` | 人脸识别（静默注入 context） | SILENT |
+| `register_face(user_id, person_name, relationship, image_base64)` | 注册人脸嵌入（3-5 样本） | REST API |
+| `load_face_library(user_id)` | 加载人脸库用于实时匹配 | Internal |
+| `preload_memory(user_id, context)` | 预加载相关长期记忆 | Internal |
+| `forget_recent_memory(user_id, minutes)` | 删除近 N 分钟记忆 | Function Calling |
+| `forget_memory(user_id, memory_id)` | 删除指定记忆 | Function Calling |
 
 **Gemini 3 注意事项**：Thought Signatures（加密签名令牌）必须按原序返回。使用官方 SDK 自动处理。
 
@@ -513,7 +514,7 @@ WebRTC 用 UDP 处理"最后一公里"，消除 TCP 队头阻塞（移动 4G 下
 | 嵌入维度 | 512-D |
 | CPU 延迟 | 100-250ms |
 | 推理框架 | ONNX Runtime |
-| Docker 镜像 | ~1.2GB (`python:3.11-slim-bookworm`) |
+| Docker 镜像 | ~1.2GB (`python:3.12-slim`) |
 | 部署 | 独立 Cloud Run 服务 |
 
 **注册流程**：用户拍照 → InsightFace 检测人脸 → 生成 512-D 嵌入 → L2 归一化 → 存入 Firestore `Vector` 字段

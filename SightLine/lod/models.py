@@ -108,6 +108,7 @@ class UserProfile:
     color_description: bool = True
     om_level: str = "intermediate"  # beginner | intermediate | advanced
     travel_frequency: str = "weekly"  # daily | weekly | rarely
+    preferred_name: str = ""
 
     @classmethod
     def default(cls) -> UserProfile:
@@ -131,4 +132,5 @@ class UserProfile:
             color_description=doc.get("color_description", True),
             om_level=doc.get("om_level", "intermediate"),
             travel_frequency=doc.get("travel_frequency", "weekly"),
+            preferred_name=doc.get("preferred_name", ""),
         )
