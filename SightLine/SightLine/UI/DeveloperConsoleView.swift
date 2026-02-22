@@ -381,18 +381,34 @@ final class DeveloperConsoleModel: ObservableObject {
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
 
+    final class PreviewContainerView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+
+        var previewLayer: AVCaptureVideoPreviewLayer {
+            // Safe by construction: layerClass is AVCaptureVideoPreviewLayer.
+            layer as! AVCaptureVideoPreviewLayer
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            previewLayer.frame = bounds
+        }
+    }
+
     func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(previewLayer)
+        let view = PreviewContainerView(frame: .zero)
+        view.backgroundColor = .black
+        view.previewLayer.videoGravity = .resizeAspectFill
+        view.previewLayer.session = session
         return view
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        if let previewLayer = uiView.layer.sublayers?.first as? AVCaptureVideoPreviewLayer {
-            previewLayer.frame = uiView.bounds
+        guard let previewView = uiView as? PreviewContainerView else { return }
+        if previewView.previewLayer.session !== session {
+            previewView.previewLayer.session = session
         }
+        previewView.previewLayer.frame = previewView.bounds
     }
 }
 
@@ -791,6 +807,16 @@ struct DeveloperConsoleView: View {
             dataRow("Vision Boxes", value: "\(model.visionBoxes.count)", color: .green)
             dataRow("OCR Boxes", value: "\(model.ocrBoxes.count)", color: .yellow)
             dataRow("Face Boxes", value: "\(model.faceBoxes.count)", color: .cyan)
+            dataRow(
+                "Camera Running",
+                value: model.isCameraRunning ? "YES" : "NO",
+                color: model.isCameraRunning ? .green : .red
+            )
+            dataRow(
+                "Preview Session",
+                value: previewSessionStatus,
+                color: previewSessionColor
+            )
             dataRow("Last Frame Ack", value: model.lastFrameAckId >= 0 ? "#\(model.lastFrameAckId)" : "--")
             dataRow(
                 "Queued Agents",
@@ -954,6 +980,22 @@ struct DeveloperConsoleView: View {
     // MARK: - Helpers
 
     private var lodColor: Color { lodColorFor(model.currentLOD) }
+
+    private var previewSessionStatus: String {
+        guard let session = cameraManager.previewSession else { return "nil" }
+        return session.isRunning ? "running" : "stopped"
+    }
+
+    private var previewSessionColor: Color {
+        switch previewSessionStatus {
+        case "running":
+            return .green
+        case "stopped":
+            return .yellow
+        default:
+            return .red
+        }
+    }
 
     private func lodColorFor(_ lod: Int) -> Color {
         switch lod {

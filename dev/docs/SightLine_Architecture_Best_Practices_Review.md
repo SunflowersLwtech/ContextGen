@@ -87,9 +87,29 @@
 
 ---
 
-## 💡 最终结论：是否【必须】进行更改？
+## 🗺️ 5. 附录：Post-Hackathon "Edge Hub" 重构蓝图 (Execution Blueprint)
 
-如果 SightLine 仅仅是停留在 Hackathon 参赛阶段（比赛结束就归档），**完全没有必要改**，因为现在的系统已经能向评委闭环展示理念了，改动不仅费时而且极大增加 Demo 瘫痪的风险。
+当项目度过现在的演示阶段，准备走向真正的生产环境 (Production) 时，请遵循以下四个阶段进行无痛重构：
 
-但是，如果这是一个要在未来半年内 **发布到 App Store、真正交到视障用户手里、并作为一个创业项目去拿融资的生产级产品 (Production)**：
-**【这个更改是不可避免且极其必要的】。必须进行切割。**它也是解决网络延迟、大规模并发成本和系统复杂度的唯一通路。
+### Phase 1: 核心引擎端侧化 (LOD Engine Shift)
+**目标**：消除“状态撕裂”，在 iOS 本地完成所有规则计算。
+1. **Swift 化 `lod_engine.py`**：在 `SightLine/Sensors` 下新建 `LODDecisionEngine.swift`，完全对齐 Python 版的优先级规则（Panic > 运动 > 噪音 > 空间 > 偏好）。
+2. **Swift 化 `telemetry_parser.py`**：将 JSON 数据直接在端侧拼接为语义字符串（例如 `"The user is walking. Heart rate: 85 bpm."`）。
+3. **本地代理测试**：此时不要断开 Cloud Run，而是让 iOS 自己算出的 LOD 直接打印在日志里，与 Cloud Run 下发的 LOD 对比，确保 0 误差（双轨运行）。
+
+### Phase 2: 直连大模型 (SDK Integration)
+**目标**：消灭那数百毫秒的网络跳跃延迟，利用原生 SDK 建立安全加密通道。
+1. **集成并替换网络层**：引入 `FirebaseVertexAI` (或最新的官方 iOS SDK)，利用 App Check / DeviceCheck 实现免 API Key 直连 Gemini Live API。
+2. **重写 WebSocket 管理器**：移除现有的 `SightLine/Core/WebSocketManager.swift` 中针对 Cloud Run 自定义协议的封包逻辑，使用原生 SDK 的 `.startStream()` 处理音视频流。
+3. **本地拼接 System Prompt**：在建立连接前，通过 Phase 1 中的 `LODDecisionEngine.swift` 和本地获取的 Session/Profile 数据，拼接出原本由 Python `orchestrator.py` 负责初始化的完整提示词。
+
+### Phase 3: 工具拦截与本地执行 (Client-side Function Calling)
+**目标**：极大化利用端侧闲置算力，降低云端费用。
+1. **注册工具**：在 iOS 端初始化大模型时，注册轻量级工具声明（如 `navigate_to`, `get_location_info`）。
+2. **本地解决**：大模型抛出 `navigate_to` 的 Tool Call 时，iOS 利用本机的 CoreLocation 或 MapKit SDK 直接拿到结果，组装成 Function Response 然后送回大模型。不再需要向后请求云端。
+
+### Phase 4: 云端瘦身 (Cloud Run Serverless Degradation)
+**目标**：释放 Cloud Run 的长连接资源压力，将其转变为纯无状态微服务集群。
+1. **删除 `server.py` 的 WS 路由**：彻底废弃基于 FastAPI 的 `/ws/{user_id}/{session_id}` 长连接路由。
+2. **暴露核心计算 API**：只保留如 `/api/face-id`、`/api/memory/search` 这样的 REST 接口。
+3. **调用闭环**：当 iOS 拦截到类似 `identify_person` 的复杂 Tool Call 时，由 iOS 发起普通的 HTTP POST 请求到 Cloud Run，云端跑完 ONNX 模型后返回 JSON 结果，iOS 最终将此结果提交给大模型。
