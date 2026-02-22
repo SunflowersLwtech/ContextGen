@@ -28,8 +28,9 @@ def resolve_tool_behavior(
 
     Rules:
     - identify_person is always SILENT to avoid hard interruption.
-    - Navigation/search default to WHEN_IDLE during active speech.
-    - LOD1 safety mode can escalate navigation to INTERRUPT.
+    - LOD1 safety mode can escalate critical navigation to INTERRUPT.
+    - All non-critical tool outputs default to WHEN_IDLE to prevent truncating
+      in-flight speech.
     """
     name = (tool_name or "").strip().lower()
 
@@ -39,18 +40,9 @@ def resolve_tool_behavior(
     if name in {"navigate_to", "navigate_location"} and lod <= 1:
         return ToolBehavior.INTERRUPT
 
-    if name in {
-        "navigate_to",
-        "navigate_location",
-        "get_location_info",
-        "nearby_search",
-        "reverse_geocode",
-        "get_walking_directions",
-        "google_search",
-    }:
-        return ToolBehavior.WHEN_IDLE if is_user_speaking else ToolBehavior.INTERRUPT
-
-    return ToolBehavior.WHEN_IDLE if is_user_speaking else ToolBehavior.INTERRUPT
+    # Keep API shape stable even though current policy defaults to WHEN_IDLE.
+    _ = is_user_speaking
+    return ToolBehavior.WHEN_IDLE
 
 
 def behavior_to_text(behavior: ToolBehavior | str) -> str:

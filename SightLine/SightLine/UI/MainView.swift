@@ -506,7 +506,7 @@ struct MainView: View {
                 // Keep these in dev console only; avoid freezing user-facing transcript on tool progress text.
                 return
             case "error", "unavailable":
-                handleToolMessage(text: "Tool \(tool) is unavailable.", behavior: .INTERRUPT)
+                handleToolMessage(text: "Tool \(tool) is unavailable.", behavior: .WHEN_IDLE)
             default:
                 handleToolMessage(
                     text: "Tool update: \(tool)",
@@ -544,7 +544,8 @@ struct MainView: View {
         case .navigationResult(let summary, let behavior):
             handleToolMessage(
                 text: summary.isEmpty ? "Navigation result received." : summary,
-                behavior: behavior
+                behavior: behavior,
+                isUrgent: currentLOD <= 1
             )
         case .searchResult(let summary, let behavior):
             handleToolMessage(
@@ -647,11 +648,24 @@ struct MainView: View {
 
     // MARK: - Tool Behavior Routing (SL-55)
 
-    private func handleToolMessage(text: String, behavior: ToolBehaviorMode) {
+    private func handleToolMessage(
+        text: String,
+        behavior: ToolBehaviorMode,
+        isUrgent: Bool = false
+    ) {
         DispatchQueue.main.async {
-            switch behavior {
+            let effectiveBehavior: ToolBehaviorMode
+            if behavior == .INTERRUPT && audioPlayback.isPlaying && !isUrgent {
+                // Guardrail: non-urgent tool events should not cut an utterance in half.
+                effectiveBehavior = .WHEN_IDLE
+                logger.info("Downgraded non-urgent INTERRUPT to WHEN_IDLE while audio is playing")
+            } else {
+                effectiveBehavior = behavior
+            }
+
+            switch effectiveBehavior {
             case .INTERRUPT:
-                // INTERRUPT must stop ongoing playback immediately.
+                // Urgent INTERRUPT must stop ongoing playback immediately.
                 audioPlayback.stopImmediately()
                 transcript = text
             case .WHEN_IDLE:

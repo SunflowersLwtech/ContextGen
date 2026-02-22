@@ -1863,10 +1863,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 function_calls = _extract_function_calls(event)
                 if function_calls:
                     for fc in function_calls:
+                        user_speaking = session_ctx.current_activity_state == "user_speaking"
                         behavior = resolve_tool_behavior(
                             tool_name=fc.name,
                             lod=session_ctx.current_lod,
-                            is_user_speaking=False,
+                            is_user_speaking=user_speaking,
                         )
                         await _emit_tool_event(
                             fc.name,
