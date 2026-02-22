@@ -26,6 +26,7 @@ struct WebSocketManagerTests {
         // Verify callback properties exist and are settable
         manager.onAudioReceived = { _ in }
         manager.onTextReceived = { _ in }
+        manager.onTextSent = { _ in }
         manager.onConnectionStateChanged = { _ in }
         manager.onDisconnectionDegraded = { }
         manager.onConnectionRestored = { }

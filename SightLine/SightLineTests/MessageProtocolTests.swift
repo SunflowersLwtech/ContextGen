@@ -129,6 +129,42 @@ struct DownstreamMessageTests {
         }
     }
 
+    @Test("face_library_reloaded parses count")
+    func faceLibraryReloadedParsing() {
+        let json = "{\"type\":\"face_library_reloaded\",\"count\":4}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .faceLibraryReloaded(let count) = msg {
+            #expect(count == 4)
+        } else {
+            Issue.record("Expected faceLibraryReloaded message")
+        }
+    }
+
+    @Test("face_library_cleared parses deleted_count")
+    func faceLibraryClearedParsing() {
+        let json = "{\"type\":\"face_library_cleared\",\"deleted_count\":2}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .faceLibraryCleared(let deletedCount) = msg {
+            #expect(deletedCount == 2)
+        } else {
+            Issue.record("Expected faceLibraryCleared message")
+        }
+    }
+
+    @Test("error parses message")
+    func errorParsing() {
+        let json = "{\"type\":\"error\",\"error\":\"Face recognition unavailable\"}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .error(let message) = msg {
+            #expect(message == "Face recognition unavailable")
+        } else {
+            Issue.record("Expected error message")
+        }
+    }
+
     @Test("vision_result parses summary and behavior")
     func visionResultParsing() {
         let json = "{\"type\":\"vision_result\",\"summary\":\"Crosswalk ahead\",\"behavior\":\"INTERRUPT\"}"
@@ -152,6 +188,32 @@ struct DownstreamMessageTests {
             #expect(behavior == .WHEN_IDLE)
         } else {
             Issue.record("Expected ocrResult message")
+        }
+    }
+
+    @Test("vision_debug parses data payload")
+    func visionDebugParsing() {
+        let json = "{\"type\":\"vision_debug\",\"data\":{\"bounding_boxes\":[{\"box_2d\":[100,200,500,700],\"label\":\"stairs\"}]}}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .visionDebug(let data) = msg {
+            let boxes = data["bounding_boxes"] as? [[String: Any]]
+            #expect(boxes?.count == 1)
+        } else {
+            Issue.record("Expected visionDebug message")
+        }
+    }
+
+    @Test("frame_ack parses frame id and queued agents")
+    func frameAckParsing() {
+        let json = "{\"type\":\"frame_ack\",\"frame_id\":42,\"queued_agents\":[\"vision\",\"ocr\"]}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .frameAck(let frameId, let queuedAgents) = msg {
+            #expect(frameId == 42)
+            #expect(queuedAgents == ["vision", "ocr"])
+        } else {
+            Issue.record("Expected frameAck message")
         }
     }
 

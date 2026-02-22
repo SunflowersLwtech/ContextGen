@@ -41,6 +41,9 @@ struct MainView: View {
     @State private var isMuted = false
     @State private var isEmergencyPaused = false
     @State private var lastAgentTranscript = ""
+    @State private var sessionResumptionHandle = UserDefaults.standard.string(
+        forKey: SightLineConfig.sessionResumptionHandleDefaultsKey
+    ) ?? ""
 
     /// Local TTS synthesizer for disconnection alerts (no network needed).
     private let localSynthesizer = AVSpeechSynthesizer()
@@ -328,14 +331,24 @@ struct MainView: View {
         // 2. Build WebSocket URL and wire callbacks
         let url = SightLineConfig.wsURL(
             userId: SightLineConfig.defaultUserId,
-            sessionId: SightLineConfig.defaultSessionId
+            sessionId: SightLineConfig.defaultSessionId,
+            resumeHandle: sessionResumptionHandle.isEmpty ? nil : sessionResumptionHandle
         )
+
+        webSocketManager.onTextSent = { text in
+            DispatchQueue.main.async {
+                devConsoleModel.captureNetworkMessage(direction: "UP", payload: text)
+            }
+        }
 
         webSocketManager.onAudioReceived = { [weak audioPlayback] data in
             audioPlayback?.playAudioData(data)
         }
 
         webSocketManager.onTextReceived = { text in
+            DispatchQueue.main.async {
+                devConsoleModel.captureNetworkMessage(direction: "DOWN", payload: text)
+            }
             if let msg = DownstreamMessage.parse(text: text) {
                 handleDownstreamMessage(msg)
             }
@@ -436,6 +449,26 @@ struct MainView: View {
             DispatchQueue.main.async {
                 startMediaCapture()
             }
+        case .faceLibraryReloaded(let count):
+            DispatchQueue.main.async {
+                let message = "Face library reloaded (\(count) faces)."
+                transcript = message
+                devConsoleModel.captureTranscript(text: message, role: "system")
+            }
+            logger.info("Face library reloaded: \(count)")
+        case .faceLibraryCleared(let deletedCount):
+            DispatchQueue.main.async {
+                let message = "Face library cleared (\(deletedCount) deleted)."
+                transcript = message
+                devConsoleModel.captureTranscript(text: message, role: "system")
+            }
+            logger.info("Face library cleared: \(deletedCount)")
+        case .error(let message):
+            DispatchQueue.main.async {
+                transcript = "Server error: \(message)"
+                devConsoleModel.captureTranscript(text: "Server error: \(message)", role: "system")
+            }
+            logger.error("Server error message: \(message, privacy: .public)")
         case .transcript(let text, let role):
             DispatchQueue.main.async {
                 transcript = text
@@ -473,6 +506,22 @@ struct MainView: View {
                 text: summary.isEmpty ? "OCR result received." : summary,
                 behavior: behavior
             )
+        case .visionDebug(let data):
+            DispatchQueue.main.async {
+                devConsoleModel.captureVisionDebug(data)
+            }
+        case .ocrDebug(let data):
+            DispatchQueue.main.async {
+                devConsoleModel.captureOCRDebug(data)
+            }
+        case .faceDebug(let data):
+            DispatchQueue.main.async {
+                devConsoleModel.captureFaceDebug(data)
+            }
+        case .frameAck(let frameId, let queuedAgents):
+            DispatchQueue.main.async {
+                devConsoleModel.captureFrameAck(frameId: frameId, queuedAgents: queuedAgents)
+            }
         case .navigationResult(let summary, let behavior):
             handleToolMessage(
                 text: summary.isEmpty ? "Navigation result received." : summary,
@@ -516,8 +565,17 @@ struct MainView: View {
             logger.info("Model output interrupted")
         case .goAway(let retryMs):
             logger.info("GoAway received, reconnecting in \(retryMs)ms")
+            DispatchQueue.main.async {
+                connectionStatus = "Reconnecting..."
+            }
+            webSocketManager.reconnect(afterMs: retryMs)
         case .sessionResumption(let handle):
-            logger.info("Session resumption handle: \(handle.prefix(20))...")
+            guard !handle.isEmpty else { return }
+            DispatchQueue.main.async {
+                sessionResumptionHandle = handle
+            }
+            UserDefaults.standard.set(handle, forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
+            logger.info("Session resumption handle updated: \(handle.prefix(20))...")
         default:
             break
         }

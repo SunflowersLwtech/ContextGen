@@ -19,6 +19,18 @@ struct ConfigTests {
         #expect(url.scheme == "wss")
     }
 
+    @Test("wsURL includes resume handle query item")
+    func wsURLIncludesResumeHandle() {
+        let url = SightLineConfig.wsURL(
+            userId: "user123",
+            sessionId: "sess456",
+            resumeHandle: "resume-token-123"
+        )
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let resumeHandle = components?.queryItems?.first(where: { $0.name == "resume_handle" })?.value
+        #expect(resumeHandle == "resume-token-123")
+    }
+
     @Test("server base URL uses wss scheme")
     func serverBaseUrlScheme() {
         #expect(SightLineConfig.serverBaseURL.hasPrefix("wss://"))

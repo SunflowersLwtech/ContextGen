@@ -683,7 +683,7 @@ struct DeveloperConsoleView: View {
                 Divider().background(Color.white.opacity(0.1))
 
                 sectionHeader("TELEMETRY")
-                controlButton("Send Test Telemetry", color: .blue) {
+                controlButton("Send Connectivity Telemetry", color: .blue) {
                     telemetryAggregator.sendGesture("dev_console_test")
                 }
 
@@ -714,9 +714,13 @@ struct DeveloperConsoleView: View {
 
                 sectionHeader("WEBSOCKET")
                 controlButton("Reconnect", color: .orange) {
+                    let resumeHandle = UserDefaults.standard.string(
+                        forKey: SightLineConfig.sessionResumptionHandleDefaultsKey
+                    )
                     let url = SightLineConfig.wsURL(
                         userId: SightLineConfig.defaultUserId,
-                        sessionId: SightLineConfig.defaultSessionId
+                        sessionId: SightLineConfig.defaultSessionId,
+                        resumeHandle: resumeHandle
                     )
                     webSocketManager.disconnect()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -745,6 +749,107 @@ struct DeveloperConsoleView: View {
             }
             .padding(8)
         }
+    }
+
+    // MARK: - Tab 4: Video Debug
+
+    private var videoDebugTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("LIVE PREVIEW + OVERLAYS")
+
+            if let session = cameraManager.previewSession {
+                ZStack(alignment: .topLeading) {
+                    CameraPreviewView(session: session)
+                        .clipShape(.rect(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        )
+
+                    geometryOverlay(boxes: model.visionBoxes, color: .green)
+                    geometryOverlay(boxes: model.ocrBoxes, color: .yellow)
+                    geometryOverlay(boxes: model.faceBoxes, color: .cyan)
+                }
+                .frame(maxWidth: .infinity, maxHeight: 420)
+            } else {
+                VStack(spacing: 12) {
+                    Text("Camera preview unavailable")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.7))
+                    controlButton("Start Camera", color: .green) {
+                        cameraManager.startCapture()
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 220)
+                .background(Color.white.opacity(0.04))
+                .clipShape(.rect(cornerRadius: 10))
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            dataRow("Vision Boxes", value: "\(model.visionBoxes.count)", color: .green)
+            dataRow("OCR Boxes", value: "\(model.ocrBoxes.count)", color: .yellow)
+            dataRow("Face Boxes", value: "\(model.faceBoxes.count)", color: .cyan)
+            dataRow("Last Frame Ack", value: model.lastFrameAckId >= 0 ? "#\(model.lastFrameAckId)" : "--")
+            dataRow(
+                "Queued Agents",
+                value: model.lastFrameQueuedAgents.isEmpty ? "--" : model.lastFrameQueuedAgents.joined(separator: ", ")
+            )
+        }
+        .padding(8)
+    }
+
+    // MARK: - Tab 5: Network Debug
+
+    private var networkTab: some View {
+        VStack(spacing: 8) {
+            HStack {
+                sectionHeader("WEBSOCKET JSON FLOW")
+                Spacer()
+                controlButton("Clear", color: .yellow) {
+                    model.clearNetworkEvents()
+                }
+                .frame(width: 96)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(model.networkEvents) { event in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(formatTime(event.timestamp))
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.35))
+                                    Text(event.direction)
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundColor(event.direction == "UP" ? .cyan : .green)
+                                }
+                                Text(event.payload)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.78))
+                                    .textSelection(.enabled)
+                            }
+                            .id(event.id)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .background(Color.white.opacity(0.04))
+                            .clipShape(.rect(cornerRadius: 6))
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 8)
+                }
+                .onChange(of: model.networkEvents.count) { _, _ in
+                    if let last = model.networkEvents.last {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(8)
     }
 
     // MARK: - Subviews
@@ -783,9 +888,41 @@ struct DeveloperConsoleView: View {
         }
     }
 
+    private func geometryOverlay(boxes: [DeveloperConsoleModel.DebugBoundingBox], color: Color) -> some View {
+        GeometryReader { geometry in
+            ForEach(Array(boxes.enumerated()), id: \.element.id) { _, box in
+                let rect = box.normalizedRect
+                let x = rect.minX * geometry.size.width
+                let y = rect.minY * geometry.size.height
+                let width = rect.width * geometry.size.width
+                let height = rect.height * geometry.size.height
+                let labelText = box.confidence > 0
+                    ? "\(box.label) \(String(format: "%.2f", box.confidence))"
+                    : box.label
+
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(color, lineWidth: 2)
+                        .frame(width: max(width, 2), height: max(height, 2))
+
+                    Text(labelText)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(color.opacity(0.9))
+                        .clipShape(.rect(cornerRadius: 3))
+                        .offset(x: 0, y: -14)
+                }
+                .position(x: x + (width / 2), y: y + (height / 2))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
     private func lodButton(_ lod: Int) -> some View {
         Button(action: {
-            telemetryAggregator.sendGesture("force_lod_\(lod)")
+            webSocketManager.sendText(UpstreamMessage.gesture(type: "force_lod_\(lod)").toJSON())
         }) {
             Text("LOD \(lod)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))

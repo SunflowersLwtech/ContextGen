@@ -436,6 +436,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     logger.info("WebSocket connected: user=%s session=%s", user_id, session_id)
 
     stop_downstream = asyncio.Event()
+    resume_handle = (websocket.query_params.get("resume_handle") or "").strip()
+    if resume_handle:
+        session_manager.update_handle(session_id, resume_handle)
+        logger.info("Received resume handle from client for session %s", session_id)
 
     # -- Per-session LOD state -----------------------------------------------
     panic_handler = PanicHandler()
@@ -458,6 +462,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _vision_lock = asyncio.Lock()
     _vision_in_progress = False
     _last_vision_time = 0.0
+    _frame_seq = 0
     _is_client_muted = False
 
     def _is_websocket_open() -> bool:
@@ -774,6 +779,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
                 "data": _json_safe(result),
             })
+            await _safe_send_json({
+                "type": "vision_debug",
+                "data": {
+                    "bounding_boxes": _json_safe(result.get("bounding_boxes", [])),
+                    "confidence": float(result.get("confidence", 0.0)),
+                    "lod": session_ctx.current_lod,
+                },
+            })
             await _emit_tool_event(
                 "analyze_scene",
                 ToolBehavior.WHEN_IDLE,
@@ -846,6 +859,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 face_library,
                 ToolBehavior.SILENT,
             )
+            await _safe_send_json({
+                "type": "face_debug",
+                "data": {
+                    "face_boxes": _json_safe([
+                        {
+                            "bbox": item.get("bbox", []),
+                            "label": item.get("person_name", "unknown"),
+                            "score": float(item.get("score", 0.0)),
+                            "similarity": float(item.get("similarity", 0.0)),
+                        }
+                        for item in results
+                    ]),
+                },
+            })
             known = [r for r in results if r["person_name"] != "unknown"]
             await _emit_tool_event(
                 "identify_person",
@@ -943,6 +970,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
                 "data": _json_safe(result),
             })
+            await _safe_send_json({
+                "type": "ocr_debug",
+                "data": {
+                    "text_regions": _json_safe(result.get("text_regions", [])),
+                    "text_type": result.get("text_type", "unknown"),
+                    "confidence": float(result.get("confidence", 0.0)),
+                },
+            })
             await _emit_tool_event(
                 "extract_text",
                 ToolBehavior.WHEN_IDLE,
@@ -996,7 +1031,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Handles upstream message types: audio, image, telemetry,
         activity_start, activity_end, gesture.
         """
-        nonlocal _last_vision_time
+        nonlocal _last_vision_time, _frame_seq
 
         try:
             while True:
@@ -1026,18 +1061,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             mime_type="image/jpeg",
                         )
                         live_request_queue.send_realtime(blob)
+                        _frame_seq += 1
 
                         # Trigger async sub-agents (same logic as JSON path)
                         import time as _time
                         now = _time.monotonic()
                         lod = session_ctx.current_lod
                         vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                        queued_agents: list[str] = []
                         if now - _last_vision_time >= vision_interval:
                             _last_vision_time = now
                             image_b64 = base64.b64encode(payload).decode("ascii")
                             await _emit_tool_event(
                                 "analyze_scene", ToolBehavior.WHEN_IDLE, status="queued",
                             )
+                            queued_agents.append("vision")
                             asyncio.create_task(_run_vision_analysis(image_b64))
 
                             # Face recognition: only at LOD 2/3 (match JSON path)
@@ -1045,6 +1083,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 await _emit_tool_event(
                                     "identify_person", ToolBehavior.SILENT, status="queued",
                                 )
+                                queued_agents.append("face")
                                 await _emit_identity_event(
                                     person_name="unknown",
                                     matched=False,
@@ -1058,7 +1097,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 await _emit_tool_event(
                                     "extract_text", ToolBehavior.WHEN_IDLE, status="queued",
                                 )
+                                queued_agents.append("ocr")
                                 asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
+                        await _safe_send_json({
+                            "type": "frame_ack",
+                            "frame_id": _frame_seq,
+                            "queued_agents": queued_agents,
+                        })
                         continue
 
                     else:
@@ -1096,6 +1141,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     )
                     # Send raw frame to Gemini Live API
                     live_request_queue.send_realtime(blob)
+                    _frame_seq += 1
 
                     # Phase 3: Trigger async sub-agents on image frames
                     import time as _time
@@ -1105,6 +1151,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     # Vision analysis: LOD-aware frequency
                     # LOD 1: every 5s, LOD 2: every 3s, LOD 3: every 2s
                     vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                    queued_agents: list[str] = []
                     if now - _last_vision_time >= vision_interval:
                         _last_vision_time = now
                         image_b64 = message["data"]
@@ -1113,6 +1160,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             ToolBehavior.WHEN_IDLE,
                             status="queued",
                         )
+                        queued_agents.append("vision")
                         # Fire-and-forget async tasks
                         asyncio.create_task(_run_vision_analysis(image_b64))
 
@@ -1123,6 +1171,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 ToolBehavior.SILENT,
                                 status="queued",
                             )
+                            queued_agents.append("face")
                             # Emit an early SILENT identity update for edge contracts.
                             await _emit_identity_event(
                                 person_name="unknown",
@@ -1139,7 +1188,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 ToolBehavior.WHEN_IDLE,
                                 status="queued",
                             )
+                            queued_agents.append("ocr")
                             asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
+                    await _safe_send_json({
+                        "type": "frame_ack",
+                        "frame_id": _frame_seq,
+                        "queued_agents": queued_agents,
+                    })
 
                 elif message.get("type") == "camera_failure":
                     # SL-76: Camera hardware failure path
@@ -1205,6 +1260,58 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         await _process_lod_decision(ephemeral_ctx)
                         ephemeral_ctx.user_gesture = None
                         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
+
+                    elif isinstance(gesture, str) and gesture.startswith("force_lod_"):
+                        try:
+                            forced_lod = int(gesture.rsplit("_", 1)[-1])
+                        except (TypeError, ValueError):
+                            logger.warning("Invalid force_lod gesture payload: %s", gesture)
+                            continue
+
+                        if forced_lod not in (1, 2, 3):
+                            logger.warning("force_lod gesture out of range: %s", gesture)
+                            continue
+
+                        old_lod = session_ctx.current_lod
+                        if forced_lod == old_lod:
+                            await _safe_send_json({
+                                "type": "lod_update",
+                                "lod": forced_lod,
+                                "reason": "force_lod_no_change",
+                            })
+                            continue
+
+                        reason = f"manual_force_lod_{forced_lod}"
+                        logger.info("Force LOD gesture received: %d -> %d", old_lod, forced_lod)
+                        resume_prompt = on_lod_change(session_ctx, old_lod, forced_lod)
+                        session_ctx.current_lod = forced_lod
+                        telemetry_agg.update_lod(forced_lod)
+
+                        vad_update = await _sync_runtime_vad_update(forced_lod)
+                        await _send_lod_update(
+                            forced_lod,
+                            session_manager.get_ephemeral_context(session_id),
+                            reason,
+                        )
+                        await _notify_ios_lod_change(
+                            forced_lod,
+                            reason,
+                            {
+                                "lod": forced_lod,
+                                "prev": old_lod,
+                                "reason": reason,
+                                "rules": [f"manual:{gesture}"],
+                                "forced": True,
+                            },
+                            vad_update=vad_update,
+                        )
+
+                        if resume_prompt:
+                            resume_content = types.Content(
+                                parts=[types.Part(text=resume_prompt)],
+                                role="user",
+                            )
+                            live_request_queue.send_content(resume_content)
 
                     elif gesture == "interrupt":
                         logger.info("User interrupt gesture received")
