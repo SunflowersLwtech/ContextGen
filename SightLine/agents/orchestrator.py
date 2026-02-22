@@ -14,6 +14,18 @@ Phase 3 additions:
 """
 
 from google.adk.agents import Agent
+from tools import (
+    identify_person,
+    get_location_info,
+    get_walking_directions,
+    google_search,
+    navigate_to,
+    nearby_search,
+    reverse_geocode,
+)
+
+VISION_SUB_AGENT_MODEL = "gemini-3.1-pro-preview"
+OCR_SUB_AGENT_MODEL = "gemini-3-flash-preview"
 
 SYSTEM_PROMPT = """\
 You are SightLine, a warm and patient AI companion for blind and low-vision users.
@@ -106,8 +118,35 @@ def create_orchestrator_agent(model_name: str) -> Agent:
     Returns:
         Configured ADK Agent instance.
     """
+    vision_sub_agent = Agent(
+        model=VISION_SUB_AGENT_MODEL,
+        name="vision_sub_agent",
+        instruction=(
+            "Analyze scene frames for safety hazards and navigation context. "
+            "Prioritize hazards first and output concise, structured findings."
+        ),
+    )
+    ocr_sub_agent = Agent(
+        model=OCR_SUB_AGENT_MODEL,
+        name="ocr_sub_agent",
+        instruction=(
+            "Extract all visible text accurately from frames and preserve reading order. "
+            "Return menu/sign/document text in an accessibility-friendly format."
+        ),
+    )
+
     return Agent(
         model=model_name,
         name="sightline_orchestrator",
         instruction=SYSTEM_PROMPT,
+        tools=[
+            navigate_to,
+            get_location_info,
+            nearby_search,
+            reverse_geocode,
+            get_walking_directions,
+            google_search,
+            identify_person,
+        ],
+        sub_agents=[vision_sub_agent, ocr_sub_agent],
     )

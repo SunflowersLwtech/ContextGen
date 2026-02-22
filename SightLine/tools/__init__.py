@@ -6,7 +6,14 @@ Tools available to the Orchestrator agent via Gemini Function Calling:
 - identify_person: Face ID matching (SILENT behavior)
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 from tools.face_tools import (
+    MAX_FACE_SAMPLES,
+    MIN_FACE_SAMPLES,
+    clear_face_library,
     delete_all_faces,
     delete_face,
     list_faces,
@@ -30,6 +37,29 @@ from tools.search import (
     SEARCH_TOOL_DECLARATIONS,
     google_search,
 )
+from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
+
+
+def identify_person(
+    description: str,
+    user_id: str = "",
+    image_base64: str | None = None,
+    behavior: ToolBehavior = ToolBehavior.SILENT,
+) -> dict[str, Any]:
+    """SILENT face-ID tool contract entry for Phase 3.
+
+    This function is intentionally lightweight for function-calling contracts.
+    The realtime frame matching pipeline is executed in ``server.py`` via
+    ``agents.face_agent.identify_persons_in_frame``.
+    """
+    return {
+        "tool": "identify_person",
+        "description": description,
+        "user_id": user_id,
+        "has_image": bool(image_base64),
+        "behavior": behavior_to_text(behavior),
+        "note": "Face ID is processed asynchronously from camera frames.",
+    }
 
 # Face tool declarations for Gemini Live API function calling
 FACE_TOOL_DECLARATIONS = [
@@ -55,7 +85,7 @@ FACE_TOOL_DECLARATIONS = [
 ]
 
 FACE_FUNCTIONS = {
-    "identify_person": None,  # Handled directly in server.py via face_agent
+    "identify_person": identify_person,
 }
 
 # Aggregate all tool declarations and function maps
@@ -91,8 +121,14 @@ __all__ = [
     "register_face",
     "delete_face",
     "delete_all_faces",
+    "clear_face_library",
     "list_faces",
     "load_face_library",
+    "MIN_FACE_SAMPLES",
+    "MAX_FACE_SAMPLES",
+    "identify_person",
+    "ToolBehavior",
+    "resolve_tool_behavior",
     "FACE_TOOL_DECLARATIONS",
     "FACE_FUNCTIONS",
     # Aggregated

@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
 
+# Phase 3 SL-57 registration contract: enroll using 3-5 samples.
+MIN_FACE_SAMPLES = 3
+MAX_FACE_SAMPLES = 5
+
 _db_client: Optional[firestore.Client] = None
 
 
@@ -122,16 +126,38 @@ def delete_face(user_id: str, face_id: str) -> bool:
     return True
 
 
-def delete_all_faces(user_id: str, person_name: str) -> int:
-    """Delete all face entries for a specific person.
+def clear_face_library(user_id: str) -> int:
+    """One-click delete for all face entries under a user.
 
     Args:
         user_id: The user who owns this face library.
-        person_name: Name of the person whose faces to delete.
 
     Returns:
         Number of documents deleted.
     """
+    docs = _face_collection(user_id).stream()
+    count = 0
+    for doc in docs:
+        doc.reference.delete()
+        count += 1
+
+    logger.info("Cleared %d face(s) from library for user %s", count, user_id)
+    return count
+
+
+def delete_all_faces(user_id: str, person_name: str | None = None) -> int:
+    """Delete all face entries for a specific person, or clear all when omitted.
+
+    Args:
+        user_id: The user who owns this face library.
+        person_name: Optional name filter. If omitted, clear the full library.
+
+    Returns:
+        Number of documents deleted.
+    """
+    if not person_name:
+        return clear_face_library(user_id)
+
     query = _face_collection(user_id).where("person_name", "==", person_name)
     docs = query.stream()
 

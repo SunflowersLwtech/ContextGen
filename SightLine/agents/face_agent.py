@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 import os
+from tools.tool_behavior import ToolBehavior, behavior_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ def identify_persons_in_frame(
     image_base64: str,
     user_id: str,
     face_library: Optional[list[dict]] = None,
+    behavior: ToolBehavior | str = ToolBehavior.SILENT,
 ) -> list[dict]:
     """End-to-end pipeline: detect faces -> embed -> match against library.
 
@@ -154,6 +156,8 @@ def identify_persons_in_frame(
                       'embedding', 'person_name', etc.). If None, an empty
                       list is used (caller should pre-load via
                       face_tools.load_face_library).
+        behavior: Delivery policy for downstream integration. Defaults to
+                  SILENT to avoid hard interruption during dialogue.
 
     Returns:
         List of dicts, one per detected face, with keys:
@@ -187,6 +191,9 @@ def identify_persons_in_frame(
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info(
-        "identify_persons_in_frame: %d faces, %.0f ms", len(results), elapsed_ms
+        "identify_persons_in_frame: %d faces, %.0f ms, behavior=%s",
+        len(results),
+        elapsed_ms,
+        behavior_to_text(behavior),
     )
     return results

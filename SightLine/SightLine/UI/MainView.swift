@@ -29,6 +29,7 @@ struct MainView: View {
     @State private var currentLOD: Int = 2
     @State private var connectionStatus: String = "Connecting..."
     @State private var isSafeMode = false
+    @State private var whenIdleToolQueue: [String] = []
 
     /// Local TTS synthesizer for disconnection alerts (no network needed).
     private let localSynthesizer = AVSpeechSynthesizer()
@@ -182,6 +183,7 @@ struct MainView: View {
         case .transcript(let text, _):
             DispatchQueue.main.async {
                 transcript = text
+                drainWhenIdleToolQueueIfPossible()
             }
         case .lodUpdate(let lod):
             DispatchQueue.main.async {
@@ -189,6 +191,35 @@ struct MainView: View {
                 frameSelector.updateLOD(lod)
                 telemetryAggregator.updateLOD(lod)
             }
+        case .toolEvent(let tool, let behavior, _):
+            handleToolMessage(
+                text: "Tool update: \(tool)",
+                behavior: behavior
+            )
+        case .visionResult(let summary, let behavior):
+            handleToolMessage(
+                text: summary.isEmpty ? "Vision analysis updated." : summary,
+                behavior: behavior
+            )
+        case .ocrResult(let summary, let behavior):
+            handleToolMessage(
+                text: summary.isEmpty ? "OCR result received." : summary,
+                behavior: behavior
+            )
+        case .navigationResult(let summary, let behavior):
+            handleToolMessage(
+                text: summary.isEmpty ? "Navigation result received." : summary,
+                behavior: behavior
+            )
+        case .searchResult(let summary, let behavior):
+            handleToolMessage(
+                text: summary.isEmpty ? "Search result received." : summary,
+                behavior: behavior
+            )
+        case .personIdentified(let name, let behavior):
+            handleIdentityMessage(name: name, matched: true, behavior: behavior)
+        case .identityUpdate(let name, let matched, let behavior):
+            handleIdentityMessage(name: name, matched: matched, behavior: behavior)
         case .goAway(let retryMs):
             logger.info("GoAway received, reconnecting in \(retryMs)ms")
         case .sessionResumption(let handle):
@@ -227,6 +258,51 @@ struct MainView: View {
         localSynthesizer.speak(utterance)
 
         logger.info("Exited safe mode")
+    }
+
+    // MARK: - Tool Behavior Routing (SL-55)
+
+    private func handleToolMessage(text: String, behavior: ToolBehaviorMode) {
+        DispatchQueue.main.async {
+            switch behavior {
+            case .INTERRUPT:
+                // INTERRUPT must stop ongoing playback immediately.
+                audioPlayback.stopImmediately()
+                transcript = text
+            case .WHEN_IDLE:
+                // WHEN_IDLE respects current playback state and queues updates.
+                if audioPlayback.isPlaying {
+                    whenIdleToolQueue.append(text)
+                } else {
+                    transcript = text
+                }
+            case .SILENT:
+                logger.debug("SILENT tool update received")
+            }
+            drainWhenIdleToolQueueIfPossible()
+        }
+    }
+
+    private func handleIdentityMessage(name: String, matched: Bool, behavior: ToolBehaviorMode) {
+        let personText = matched ? "Person identified: \(name)" : "Identity update available."
+        if behavior == .SILENT {
+            // identify_person must support SILENT path and avoid hard interruption.
+            logger.debug("identity SILENT update for \(name, privacy: .public)")
+            return
+        }
+        handleToolMessage(text: personText, behavior: behavior)
+    }
+
+    private func drainWhenIdleToolQueueIfPossible() {
+        guard !audioPlayback.isPlaying else { return }
+        guard !whenIdleToolQueue.isEmpty else { return }
+        transcript = whenIdleToolQueue.removeFirst()
+    }
+
+    // MARK: - Face Privacy Action (SL-59)
+
+    private func clearFaceLibrary() {
+        webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
     }
 
     // MARK: - Teardown

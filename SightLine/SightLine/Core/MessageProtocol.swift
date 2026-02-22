@@ -37,6 +37,25 @@ enum UpstreamMessage {
 
 // MARK: - Downstream Messages (Server -> iOS)
 
+enum ToolBehaviorMode: String {
+    case INTERRUPT
+    case WHEN_IDLE
+    case SILENT
+
+    static func parse(from json: [String: Any]) -> ToolBehaviorMode {
+        if let behavior = json["behavior"] as? String,
+           let mode = ToolBehaviorMode(rawValue: behavior.uppercased()) {
+            return mode
+        }
+        if let data = json["data"] as? [String: Any],
+           let behavior = data["behavior"] as? String,
+           let mode = ToolBehaviorMode(rawValue: behavior.uppercased()) {
+            return mode
+        }
+        return .WHEN_IDLE
+    }
+}
+
 enum DownstreamMessage {
     case audio(data: Data)                          // PCM 24kHz
     case transcript(text: String, role: String)     // "user" or "agent"
@@ -44,6 +63,13 @@ enum DownstreamMessage {
     case goAway(retryMs: Int)
     case sessionResumption(handle: String)
     case sessionReady                               // Gemini Live API ready
+    case toolEvent(tool: String, behavior: ToolBehaviorMode, payload: [String: Any])
+    case visionResult(summary: String, behavior: ToolBehaviorMode)
+    case ocrResult(summary: String, behavior: ToolBehaviorMode)
+    case navigationResult(summary: String, behavior: ToolBehaviorMode)
+    case searchResult(summary: String, behavior: ToolBehaviorMode)
+    case personIdentified(name: String, behavior: ToolBehaviorMode)
+    case identityUpdate(name: String, matched: Bool, behavior: ToolBehaviorMode)
     case unknown(raw: String)
 
     static func parse(text: String) -> DownstreamMessage? {
@@ -51,6 +77,35 @@ enum DownstreamMessage {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else {
             return .unknown(raw: text)
+        }
+
+        let behavior = ToolBehaviorMode.parse(from: json)
+        let dataPayload = json["data"] as? [String: Any] ?? [:]
+
+        func extractSummary() -> String {
+            if let summary = json["summary"] as? String, !summary.isEmpty {
+                return summary
+            }
+            if let summary = dataPayload["summary"] as? String, !summary.isEmpty {
+                return summary
+            }
+            if let text = dataPayload["text"] as? String, !text.isEmpty {
+                return text
+            }
+            return ""
+        }
+
+        func extractPersonName() -> String {
+            if let name = json["person_name"] as? String, !name.isEmpty {
+                return name
+            }
+            if let name = dataPayload["person_name"] as? String, !name.isEmpty {
+                return name
+            }
+            if let name = json["name"] as? String, !name.isEmpty {
+                return name
+            }
+            return "unknown"
         }
 
         switch type {
@@ -69,6 +124,27 @@ enum DownstreamMessage {
             return .sessionResumption(handle: handle)
         case "session_ready":
             return .sessionReady
+        case "tool_event", "tool_result", "tool_status":
+            let tool = (json["tool"] as? String)
+                ?? (json["name"] as? String)
+                ?? (dataPayload["tool"] as? String)
+                ?? "unknown_tool"
+            return .toolEvent(tool: tool, behavior: behavior, payload: dataPayload)
+        case "vision_result":
+            return .visionResult(summary: extractSummary(), behavior: behavior)
+        case "ocr_result":
+            return .ocrResult(summary: extractSummary(), behavior: behavior)
+        case "navigation_result", "navigate_result":
+            return .navigationResult(summary: extractSummary(), behavior: behavior)
+        case "search_result", "grounding_result":
+            return .searchResult(summary: extractSummary(), behavior: behavior)
+        case "person_identified":
+            return .personIdentified(name: extractPersonName(), behavior: behavior)
+        case "identity_update":
+            let matched = (json["matched"] as? Bool)
+                ?? (dataPayload["matched"] as? Bool)
+                ?? false
+            return .identityUpdate(name: extractPersonName(), matched: matched, behavior: behavior)
         default:
             return .unknown(raw: text)
         }

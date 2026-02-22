@@ -108,6 +108,7 @@ except ImportError:
 
 from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
+from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,15 @@ async def health() -> dict:
 # ---------------------------------------------------------------------------
 # Function calling dispatcher
 # ---------------------------------------------------------------------------
+
+
+def _json_safe(value):
+    """Best-effort conversion for JSON payloads sent over WebSocket."""
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return json.loads(json.dumps(value, default=str))
 
 
 async def _dispatch_function_call(
@@ -168,7 +178,11 @@ async def _dispatch_function_call(
 
     # Face identification (SILENT behavior)
     if func_name == "identify_person":
-        return {"note": "Face identification runs automatically via vision pipeline."}
+        return {
+            "tool": "identify_person",
+            "behavior": behavior_to_text(ToolBehavior.SILENT),
+            "note": "Face identification runs automatically via vision pipeline.",
+        }
 
     logger.warning("Unknown function call: %s", func_name)
     return {"error": f"Unknown function: {func_name}"}
@@ -242,6 +256,48 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         except (WebSocketDisconnect, RuntimeError):
             stop_downstream.set()
             return False
+
+    async def _emit_tool_event(
+        tool: str,
+        behavior: ToolBehavior | str,
+        *,
+        status: str,
+        data: dict | None = None,
+    ) -> None:
+        payload: dict = {
+            "type": "tool_event",
+            "tool": tool,
+            "behavior": behavior_to_text(behavior),
+            "status": status,
+        }
+        if data:
+            payload["data"] = _json_safe(data)
+        await _safe_send_json(payload)
+
+    async def _emit_identity_event(
+        *,
+        person_name: str,
+        matched: bool,
+        similarity: float = 0.0,
+        source: str = "face_pipeline",
+    ) -> None:
+        payload = {
+            "type": "identity_update",
+            "person_name": person_name,
+            "matched": matched,
+            "similarity": similarity,
+            "source": source,
+            "behavior": behavior_to_text(ToolBehavior.SILENT),
+        }
+        await _safe_send_json(payload)
+        if matched:
+            await _safe_send_json({
+                "type": "person_identified",
+                "person_name": person_name,
+                "similarity": similarity,
+                "source": source,
+                "behavior": behavior_to_text(ToolBehavior.SILENT),
+            })
 
     # Notify client immediately so the iOS layer knows the
     # WebSocket is live before the Gemini connection is ready.
@@ -318,6 +374,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         """Run async vision analysis and inject results into Live session."""
         nonlocal _vision_in_progress
         if not _vision_available:
+            await _emit_tool_event(
+                "analyze_scene",
+                ToolBehavior.WHEN_IDLE,
+                status="unavailable",
+                data={"reason": "vision_agent_unavailable"},
+            )
             return
 
         async with _vision_lock:
@@ -333,6 +395,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "motion_state": session_manager.get_ephemeral_context(session_id).motion_state,
             }
             result = await analyze_scene(image_base64, session_ctx.current_lod, ctx_dict)
+            summary = result.get("scene_description", "")
+            await _safe_send_json({
+                "type": "vision_result",
+                "summary": summary,
+                "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
+                "data": _json_safe(result),
+            })
+            await _emit_tool_event(
+                "analyze_scene",
+                ToolBehavior.WHEN_IDLE,
+                status="completed",
+                data={"confidence": float(result.get("confidence", 0.0))},
+            )
 
             if result.get("confidence", 0) > 0:
                 # Inject vision result into Gemini context
@@ -346,18 +421,41 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             session_ctx.current_lod, result.get("confidence", 0))
         except Exception:
             logger.exception("Vision analysis failed")
+            await _emit_tool_event(
+                "analyze_scene",
+                ToolBehavior.WHEN_IDLE,
+                status="error",
+                data={"reason": "vision_analysis_failed"},
+            )
         finally:
             async with _vision_lock:
                 _vision_in_progress = False
 
     async def _run_face_recognition(image_base64: str) -> None:
         """Run face recognition and inject results as SILENT context."""
-        if not _face_available or not face_library:
+        if not _face_available:
+            await _emit_tool_event(
+                "identify_person",
+                ToolBehavior.SILENT,
+                status="unavailable",
+                data={"reason": "face_agent_unavailable"},
+            )
             return
 
         try:
-            results = identify_persons_in_frame(image_base64, user_id, face_library)
+            results = identify_persons_in_frame(
+                image_base64,
+                user_id,
+                face_library,
+                behavior=ToolBehavior.SILENT,
+            )
             known = [r for r in results if r["person_name"] != "unknown"]
+            await _emit_tool_event(
+                "identify_person",
+                ToolBehavior.SILENT,
+                status="completed",
+                data={"detections": len(results), "known": len(known)},
+            )
             if known:
                 face_text = _format_face_results(known)
                 content = types.Content(
@@ -367,12 +465,38 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 live_request_queue.send_content(content)
                 logger.info("Injected [FACE ID]: %s",
                             ", ".join(r["person_name"] for r in known))
+                best = max(known, key=lambda item: float(item.get("similarity", 0.0)))
+                await _emit_identity_event(
+                    person_name=str(best.get("person_name", "unknown")),
+                    matched=True,
+                    similarity=float(best.get("similarity", 0.0)),
+                    source="face_match",
+                )
+            elif results:
+                await _emit_identity_event(
+                    person_name="unknown",
+                    matched=False,
+                    similarity=0.0,
+                    source="face_detected_no_match",
+                )
         except Exception:
             logger.exception("Face recognition failed")
+            await _emit_tool_event(
+                "identify_person",
+                ToolBehavior.SILENT,
+                status="error",
+                data={"reason": "face_recognition_failed"},
+            )
 
     async def _run_ocr_analysis(image_base64: str) -> None:
         """Run OCR and inject results into Live session context."""
         if not _ocr_available:
+            await _emit_tool_event(
+                "extract_text",
+                ToolBehavior.WHEN_IDLE,
+                status="unavailable",
+                data={"reason": "ocr_agent_unavailable"},
+            )
             return
 
         try:
@@ -384,6 +508,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 hint += f" Currently: {session_ctx.active_task}."
 
             result = await extract_text(image_base64, context_hint=hint)
+            await _safe_send_json({
+                "type": "ocr_result",
+                "summary": result.get("text", ""),
+                "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
+                "data": _json_safe(result),
+            })
+            await _emit_tool_event(
+                "extract_text",
+                ToolBehavior.WHEN_IDLE,
+                status="completed",
+                data={"confidence": float(result.get("confidence", 0.0))},
+            )
 
             if result.get("confidence", 0) > 0.3 and result.get("text"):
                 ocr_text = _format_ocr_result(result)
@@ -396,6 +532,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             result.get("text_type", "unknown"), result.get("confidence", 0))
         except Exception:
             logger.exception("OCR analysis failed")
+            await _emit_tool_event(
+                "extract_text",
+                ToolBehavior.WHEN_IDLE,
+                status="error",
+                data={"reason": "ocr_analysis_failed"},
+            )
 
     # -- Upstream handler ----------------------------------------------------
 
@@ -416,9 +558,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     logger.warning("Received non-JSON text message, ignoring")
                     continue
 
-                msg_type = message.get("type")
-
-                if msg_type == "audio":
+                if message.get("type") == "audio":
                     audio_bytes = base64.b64decode(message["data"])
                     blob = types.Blob(
                         data=audio_bytes,
@@ -426,7 +566,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     )
                     live_request_queue.send_realtime(blob)
 
-                elif msg_type == "image":
+                elif message.get("type") == "image":
                     image_bytes = base64.b64decode(message["data"])
                     mime_type = message.get("mimeType", "image/jpeg")
                     blob = types.Blob(
@@ -447,28 +587,50 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if now - _last_vision_time >= vision_interval:
                         _last_vision_time = now
                         image_b64 = message["data"]
+                        await _emit_tool_event(
+                            "analyze_scene",
+                            ToolBehavior.WHEN_IDLE,
+                            status="queued",
+                        )
                         # Fire-and-forget async tasks
                         asyncio.create_task(_run_vision_analysis(image_b64))
 
-                        # Face recognition: only at LOD 2/3 and if library exists
-                        if lod >= 2 and face_library:
+                        # Face recognition: only at LOD 2/3
+                        if lod >= 2:
+                            await _emit_tool_event(
+                                "identify_person",
+                                ToolBehavior.SILENT,
+                                status="queued",
+                            )
+                            # Emit an early SILENT identity update for edge contracts.
+                            await _emit_identity_event(
+                                person_name="unknown",
+                                matched=False,
+                                similarity=0.0,
+                                source="queued",
+                            )
                             asyncio.create_task(_run_face_recognition(image_b64))
 
                         # OCR: only at LOD 3 (detailed mode)
                         if lod == 3:
+                            await _emit_tool_event(
+                                "extract_text",
+                                ToolBehavior.WHEN_IDLE,
+                                status="queued",
+                            )
                             asyncio.create_task(_run_ocr_analysis(image_b64))
 
-                elif msg_type == "telemetry":
+                elif message.get("type") == "telemetry":
                     telemetry_data = message.get("data", {})
                     await _process_telemetry(telemetry_data)
 
-                elif msg_type == "activity_start":
+                elif message.get("type") == "activity_start":
                     logger.debug("Ignored activity_start (native audio VAD active)")
 
-                elif msg_type == "activity_end":
+                elif message.get("type") == "activity_end":
                     logger.debug("Ignored activity_end (native audio VAD active)")
 
-                elif msg_type == "gesture":
+                elif message.get("type") == "gesture":
                     gesture = message.get("gesture")
                     if gesture in ("lod_up", "lod_down"):
                         ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
@@ -478,7 +640,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
 
                 else:
-                    logger.warning("Unknown upstream message type: %s", msg_type)
+                    logger.warning("Unknown upstream message type: %s", message.get("type"))
 
         except WebSocketDisconnect:
             stop_downstream.set()
@@ -566,13 +728,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Processes session_resumption_update events, transcriptions,
         function calls, and content parts (audio binary / text JSON).
         """
-        live_events = await asyncio.to_thread(
-            runner.run_live,
-            session_id=session_id,
-            user_id=user_id,
-            live_request_queue=live_request_queue,
-            run_config=run_config,
-        )
+        def _start_live_events():
+            return runner.run_live(
+                session_id=session_id,
+                user_id=user_id,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
+            )
+
+        live_events = await asyncio.to_thread(_start_live_events)
         try:
             async for event in live_events:
                 if stop_downstream.is_set():
@@ -601,12 +765,52 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 # --- Function calls from Gemini (Phase 3) ---
                 if hasattr(event, "actions") and event.actions and event.actions.function_calls:
                     for fc in event.actions.function_calls:
+                        behavior = resolve_tool_behavior(
+                            tool_name=fc.name,
+                            lod=session_ctx.current_lod,
+                            is_user_speaking=False,
+                        )
+                        await _emit_tool_event(
+                            fc.name,
+                            behavior,
+                            status="invoked",
+                            data={"args": _json_safe(dict(fc.args) if fc.args else {})},
+                        )
                         result = await _dispatch_function_call(
                             fc.name,
                             dict(fc.args) if fc.args else {},
                             session_id,
                             user_id,
                         )
+                        await _safe_send_json({
+                            "type": "tool_result",
+                            "tool": fc.name,
+                            "behavior": behavior_to_text(behavior),
+                            "data": _json_safe(result),
+                        })
+
+                        if fc.name in NAVIGATION_FUNCTIONS:
+                            await _safe_send_json({
+                                "type": "navigation_result",
+                                "summary": str(result.get("destination_direction") or result.get("destination") or ""),
+                                "behavior": behavior_to_text(behavior),
+                                "data": _json_safe(result),
+                            })
+                        elif fc.name == "google_search":
+                            await _safe_send_json({
+                                "type": "search_result",
+                                "summary": str(result.get("answer") or ""),
+                                "behavior": behavior_to_text(behavior),
+                                "data": _json_safe(result),
+                            })
+                        elif fc.name == "identify_person":
+                            await _emit_identity_event(
+                                person_name=str(result.get("person_name", "unknown")),
+                                matched=bool(result.get("matched", False)),
+                                similarity=float(result.get("similarity", 0.0)),
+                                source="tool_call",
+                            )
+
                         # Send function response back to the model
                         from google.genai.types import FunctionResponse
                         fr = FunctionResponse(
