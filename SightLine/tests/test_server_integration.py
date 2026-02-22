@@ -46,7 +46,7 @@ class TestHealthEndpoint:
     def test_health_reports_phase(self, client):
         response = client.get("/health")
         data = response.json()
-        assert data["phase"] == 2
+        assert data["phase"] == 3
 
 
 # ---------------------------------------------------------------------------

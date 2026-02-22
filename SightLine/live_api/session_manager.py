@@ -3,12 +3,13 @@
 Manages session state, resumption handles, and RunConfig construction
 for the Gemini Live API via Google ADK.
 
-Phase 2 additions:
-- LOD-driven VAD parameter presets
-- Per-session LOD + context state tracking
+Phase 3 additions:
+- Firestore UserProfile loading (async, with fallback to defaults)
+- Per-session face library cache tracking
 """
 
 import logging
+import os
 from typing import Optional
 
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -20,38 +21,51 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # LOD-driven VAD presets (SL-36)
-# Native-audio models handle VAD internally; these presets influence
-# the model's sensitivity to voice activity detection.
-#
-# From Final Spec §4.1 and Voice UX Research §2.2:
-#   LOD 1: HIGH sensitivity, short silence → fast response for safety
-#   LOD 2: MEDIUM sensitivity, balanced silence → exploration
-#   LOD 3: MEDIUM/LOW sensitivity, long silence → patient, complex queries
 # ---------------------------------------------------------------------------
 
 LOD_VAD_PRESETS: dict[int, dict] = {
     1: {
         "voice_name": "Aoede",
-        "start_sensitivity": "START_SENSITIVITY_HIGH",
-        "end_sensitivity": "END_SENSITIVITY_HIGH",
+        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
         "silence_duration_ms": 400,
         "prefix_padding_ms": 100,
     },
     2: {
         "voice_name": "Aoede",
-        "start_sensitivity": "START_SENSITIVITY_MEDIUM",
-        "end_sensitivity": "END_SENSITIVITY_MEDIUM",
+        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
         "silence_duration_ms": 800,
         "prefix_padding_ms": 200,
     },
     3: {
         "voice_name": "Aoede",
-        "start_sensitivity": "START_SENSITIVITY_MEDIUM",
-        "end_sensitivity": "END_SENSITIVITY_LOW",
+        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
         "silence_duration_ms": 1300,
         "prefix_padding_ms": 300,
     },
 }
+
+# ---------------------------------------------------------------------------
+# Firestore client (lazy)
+# ---------------------------------------------------------------------------
+
+_firestore_client = None
+
+
+def _get_firestore():
+    """Lazily initialize the Firestore client."""
+    global _firestore_client
+    if _firestore_client is None:
+        try:
+            from google.cloud import firestore
+            project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
+            _firestore_client = firestore.Client(project=project)
+        except Exception:
+            logger.warning("Firestore client unavailable; using default profiles")
+            _firestore_client = False  # Sentinel to avoid retrying
+    return _firestore_client if _firestore_client else None
 
 
 class SessionManager:
@@ -70,18 +84,7 @@ class SessionManager:
     # -- RunConfig ----------------------------------------------------------
 
     def get_run_config(self, session_id: str, lod: int = 2) -> RunConfig:
-        """Build a RunConfig for the given session.
-
-        Includes all baseline settings plus session resumption if a
-        cached handle exists for this session.
-
-        Args:
-            session_id: The session identifier.
-            lod: Current LOD level (affects VAD preset).
-
-        Returns:
-            Fully configured RunConfig for runner.run_live().
-        """
+        """Build a RunConfig for the given session."""
         cached_handle = self._session_handles.get(session_id)
 
         session_resumption = types.SessionResumptionConfig(
@@ -96,7 +99,7 @@ class SessionManager:
 
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
-            response_modalities=["AUDIO"],
+            response_modalities=[types.Modality.AUDIO],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -144,12 +147,35 @@ class SessionManager:
             self._session_contexts[session_id] = SessionContext()
         return self._session_contexts[session_id]
 
-    def get_user_profile(self, user_id: str) -> UserProfile:
-        """Get or create the UserProfile for this user.
+    async def load_user_profile(self, user_id: str) -> UserProfile:
+        """Load UserProfile from Firestore, falling back to defaults.
 
-        In production this would load from Firestore.  Currently returns
-        sensible defaults.
+        Caches the result so subsequent calls for the same user_id
+        return the cached profile without hitting Firestore again.
         """
+        if user_id in self._user_profiles:
+            return self._user_profiles[user_id]
+
+        profile = UserProfile.default()
+        profile.user_id = user_id
+
+        db = _get_firestore()
+        if db:
+            try:
+                doc = db.collection("users").document(user_id).get()
+                if doc.exists:
+                    profile = UserProfile.from_firestore(doc.to_dict(), user_id=user_id)
+                    logger.info("Loaded UserProfile from Firestore for user %s", user_id)
+                else:
+                    logger.info("No Firestore profile for user %s; using defaults", user_id)
+            except Exception:
+                logger.exception("Failed to load profile for user %s; using defaults", user_id)
+
+        self._user_profiles[user_id] = profile
+        return profile
+
+    def get_user_profile(self, user_id: str) -> UserProfile:
+        """Get cached UserProfile (sync). Use load_user_profile for initial load."""
         if user_id not in self._user_profiles:
             self._user_profiles[user_id] = UserProfile.default()
             self._user_profiles[user_id].user_id = user_id

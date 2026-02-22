@@ -105,6 +105,7 @@ extension PhoneConnector: WCSessionDelegate {
         }
     }
 
+#if os(iOS)
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {
         Self.logger.info("WCSession became inactive")
     }
@@ -113,4 +114,6 @@ extension PhoneConnector: WCSessionDelegate {
         Self.logger.info("WCSession deactivated, reactivating")
         WCSession.default.activate()
     }
+#endif
+
 }

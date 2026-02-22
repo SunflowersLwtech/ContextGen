@@ -1,6 +1,5 @@
 .git
 .env
-*.json
 __pycache__
 *.pyc
 dev/
@@ -13,3 +12,7 @@ tests/
 .pytest_cache
 .mypy_cache
 sightline-backend-sa.json
+gen-lang-client-*.json
+cloudbuild.yaml
+*.md
+.dockerignore

@@ -3,12 +3,13 @@
 FastAPI application with WebSocket endpoint for real-time bidirectional
 communication between the iOS client and the Gemini Live API via Google ADK.
 
-Phase 2 additions:
-- LOD engine integration (decide_lod on every telemetry tick)
-- PANIC handler with TTS flush
-- Dynamic system prompt injection via [LOD UPDATE] messages
-- Narrative snapshot save/restore on LOD transitions
-- LOD debug events for iOS DebugOverlay
+Phase 3 additions:
+- Vision Sub-Agent (async scene analysis with LOD-adaptive prompting)
+- OCR Sub-Agent (async text extraction)
+- Face recognition pipeline (InsightFace + Firestore face library)
+- Function calling tools (navigation, search, face ID)
+- Tool behavior strategy (INTERRUPT / WHEN_IDLE / SILENT)
+- Firestore UserProfile loading on session start
 """
 
 import asyncio
@@ -57,7 +58,7 @@ logger = logging.getLogger("sightline.server")
 LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
 PORT = int(os.getenv("PORT", "8080"))
 
-app = FastAPI(title="SightLine Backend", version="0.2.0")
+app = FastAPI(title="SightLine Backend", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +80,37 @@ runner = Runner(
 )
 
 # ---------------------------------------------------------------------------
+# Sub-agent & tool imports (lazy to handle missing deps gracefully)
+# ---------------------------------------------------------------------------
+
+_vision_available = False
+_ocr_available = False
+_face_available = False
+
+try:
+    from agents.vision_agent import analyze_scene
+    _vision_available = True
+except ImportError:
+    logger.warning("Vision agent not available (missing dependencies)")
+
+try:
+    from agents.ocr_agent import extract_text
+    _ocr_available = True
+except ImportError:
+    logger.warning("OCR agent not available (missing dependencies)")
+
+try:
+    from agents.face_agent import identify_persons_in_frame
+    from tools.face_tools import load_face_library
+    _face_available = True
+except ImportError:
+    logger.warning("Face agent not available (missing dependencies)")
+
+from tools.navigation import NAVIGATION_FUNCTIONS
+from tools.search import SEARCH_FUNCTIONS
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
@@ -86,7 +118,60 @@ runner = Runner(
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint for Cloud Run readiness probes."""
-    return {"status": "ok", "model": LIVE_MODEL, "phase": 2}
+    return {
+        "status": "ok",
+        "model": LIVE_MODEL,
+        "phase": 3,
+        "capabilities": {
+            "vision": _vision_available,
+            "ocr": _ocr_available,
+            "face": _face_available,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Function calling dispatcher
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch_function_call(
+    func_name: str,
+    func_args: dict,
+    session_id: str,
+    user_id: str,
+) -> dict:
+    """Dispatch a function call from Gemini to the appropriate tool.
+
+    Returns the tool result as a dict to be sent back as function response.
+    """
+    logger.info("Function call: %s(%s)", func_name, func_args)
+
+    # Navigation tools
+    if func_name in NAVIGATION_FUNCTIONS:
+        func = NAVIGATION_FUNCTIONS[func_name]
+        # Inject current GPS/heading from ephemeral context if available
+        ephemeral = session_manager.get_ephemeral_context(session_id)
+        if func_name == "navigate_to" and ephemeral.gps:
+            func_args.setdefault("origin_lat", ephemeral.gps.lat)
+            func_args.setdefault("origin_lng", ephemeral.gps.lng)
+            func_args.setdefault("user_heading", ephemeral.heading)
+        elif func_name in ("get_location_info", "nearby_search", "reverse_geocode") and ephemeral.gps:
+            func_args.setdefault("lat", ephemeral.gps.lat)
+            func_args.setdefault("lng", ephemeral.gps.lng)
+        return func(**func_args)
+
+    # Search tool
+    if func_name in SEARCH_FUNCTIONS:
+        func = SEARCH_FUNCTIONS[func_name]
+        return func(**func_args)
+
+    # Face identification (SILENT behavior)
+    if func_name == "identify_person":
+        return {"note": "Face identification runs automatically via vision pipeline."}
+
+    logger.warning("Unknown function call: %s", func_name)
+    return {"error": f"Unknown function: {func_name}"}
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +187,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     forwarding upstream messages from the iOS client and downstream events
     from the model.
 
-    Phase 2: Integrates LOD engine, PANIC handler, and dynamic prompt injection.
+    Phase 3: Integrates sub-agents (vision, OCR, face), function calling
+    tools (navigation, search), and Firestore UserProfile loading.
     """
     await websocket.accept()
     logger.info("WebSocket connected: user=%s session=%s", user_id, session_id)
@@ -113,7 +199,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     panic_handler = PanicHandler()
     telemetry_agg = TelemetryAggregator()
     session_ctx = session_manager.get_session_context(session_id)
-    user_profile = session_manager.get_user_profile(user_id)
+    user_profile = await session_manager.load_user_profile(user_id)
+
+    # -- Per-session face library cache (Phase 3) ----------------------------
+    face_library: list[dict] = []
+    if _face_available:
+        try:
+            face_library = load_face_library(user_id)
+            logger.info("Loaded %d face(s) for user %s", len(face_library), user_id)
+        except Exception:
+            logger.exception("Failed to load face library for user %s", user_id)
+
+    # -- Vision analysis state -----------------------------------------------
+    _vision_lock = asyncio.Lock()
+    _vision_in_progress = False
+    _last_vision_time = 0.0
 
     def _is_websocket_open() -> bool:
         return (
@@ -172,7 +272,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             role="user",
         )
         live_request_queue.send_content(content)
-        logger.info("Injected [LOD UPDATE] → LOD %d (%s)", new_lod, reason)
+        logger.info("Injected [LOD UPDATE] -> LOD %d (%s)", new_lod, reason)
 
     async def _notify_ios_lod_change(new_lod: int, reason: str, debug_dict: dict) -> None:
         """Send LOD change notification to iOS client."""
@@ -181,7 +281,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             "lod": new_lod,
             "reason": reason,
         })
-        # Debug overlay event (separate message for optional consumption)
         await _safe_send_json({
             "type": "debug_lod",
             "data": debug_dict,
@@ -189,21 +288,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     async def _handle_panic(ephemeral_ctx) -> None:
         """Handle a new PANIC event: flush TTS, force LOD 1, notify iOS."""
-        # Notify iOS to flush audio queue and enter PANIC mode
         await _safe_send_json({
             "type": "panic",
             "message": "PANIC detected. Entering safety mode.",
         })
 
-        # Force LOD 1 in session context
         old_lod = session_ctx.current_lod
         session_ctx.current_lod = 1
-
-        # Handle narrative snapshot on LOD downgrade
         on_lod_change(session_ctx, old_lod, 1)
 
         panic_reason = "PANIC: safety mode activated"
-        # Notify iOS first to guarantee sub-500ms LOD degradation path.
         await _notify_ios_lod_change(
             1,
             panic_reason,
@@ -211,19 +305,97 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "lod": 1,
                 "prev": old_lod,
                 "reason": panic_reason,
-                "rules": ["Rule0:PANIC_flag→LOD1"],
+                "rules": ["Rule0:PANIC_flag->LOD1"],
                 "panic": True,
             },
         )
-
-        # Inject PANIC-level LOD update into Live session afterwards.
         await _send_lod_update(1, ephemeral_ctx, panic_reason)
+        logger.warning("PANIC activated for session %s: LOD %d -> 1", session_id, old_lod)
 
-        logger.warning(
-            "PANIC activated for session %s: LOD %d → 1",
-            session_id,
-            old_lod,
-        )
+    # -- Sub-agent helpers (Phase 3) -----------------------------------------
+
+    async def _run_vision_analysis(image_base64: str) -> None:
+        """Run async vision analysis and inject results into Live session."""
+        nonlocal _vision_in_progress
+        if not _vision_available:
+            return
+
+        async with _vision_lock:
+            if _vision_in_progress:
+                return
+            _vision_in_progress = True
+
+        try:
+            ctx_dict = {
+                "space_type": session_ctx.space_type,
+                "trip_purpose": session_ctx.trip_purpose,
+                "active_task": session_ctx.active_task,
+                "motion_state": session_manager.get_ephemeral_context(session_id).motion_state,
+            }
+            result = await analyze_scene(image_base64, session_ctx.current_lod, ctx_dict)
+
+            if result.get("confidence", 0) > 0:
+                # Inject vision result into Gemini context
+                vision_text = _format_vision_result(result, session_ctx.current_lod)
+                content = types.Content(
+                    parts=[types.Part(text=vision_text)],
+                    role="user",
+                )
+                live_request_queue.send_content(content)
+                logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f)",
+                            session_ctx.current_lod, result.get("confidence", 0))
+        except Exception:
+            logger.exception("Vision analysis failed")
+        finally:
+            async with _vision_lock:
+                _vision_in_progress = False
+
+    async def _run_face_recognition(image_base64: str) -> None:
+        """Run face recognition and inject results as SILENT context."""
+        if not _face_available or not face_library:
+            return
+
+        try:
+            results = identify_persons_in_frame(image_base64, user_id, face_library)
+            known = [r for r in results if r["person_name"] != "unknown"]
+            if known:
+                face_text = _format_face_results(known)
+                content = types.Content(
+                    parts=[types.Part(text=face_text)],
+                    role="user",
+                )
+                live_request_queue.send_content(content)
+                logger.info("Injected [FACE ID]: %s",
+                            ", ".join(r["person_name"] for r in known))
+        except Exception:
+            logger.exception("Face recognition failed")
+
+    async def _run_ocr_analysis(image_base64: str) -> None:
+        """Run OCR and inject results into Live session context."""
+        if not _ocr_available:
+            return
+
+        try:
+            # Build context hint from session state
+            hint = ""
+            if session_ctx.space_type:
+                hint = f"User is in a {session_ctx.space_type} environment."
+            if session_ctx.active_task:
+                hint += f" Currently: {session_ctx.active_task}."
+
+            result = await extract_text(image_base64, context_hint=hint)
+
+            if result.get("confidence", 0) > 0.3 and result.get("text"):
+                ocr_text = _format_ocr_result(result)
+                content = types.Content(
+                    parts=[types.Part(text=ocr_text)],
+                    role="user",
+                )
+                live_request_queue.send_content(content)
+                logger.info("Injected [OCR RESULT] (%s, confidence %.2f)",
+                            result.get("text_type", "unknown"), result.get("confidence", 0))
+        except Exception:
+            logger.exception("OCR analysis failed")
 
     # -- Upstream handler ----------------------------------------------------
 
@@ -233,6 +405,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Handles upstream message types: audio, image, telemetry,
         activity_start, activity_end, gesture.
         """
+        nonlocal _last_vision_time
+
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -259,28 +433,47 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         data=image_bytes,
                         mime_type=mime_type,
                     )
+                    # Send raw frame to Gemini Live API
                     live_request_queue.send_realtime(blob)
+
+                    # Phase 3: Trigger async sub-agents on image frames
+                    import time as _time
+                    now = _time.monotonic()
+                    lod = session_ctx.current_lod
+
+                    # Vision analysis: LOD-aware frequency
+                    # LOD 1: every 5s, LOD 2: every 3s, LOD 3: every 2s
+                    vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                    if now - _last_vision_time >= vision_interval:
+                        _last_vision_time = now
+                        image_b64 = message["data"]
+                        # Fire-and-forget async tasks
+                        asyncio.create_task(_run_vision_analysis(image_b64))
+
+                        # Face recognition: only at LOD 2/3 and if library exists
+                        if lod >= 2 and face_library:
+                            asyncio.create_task(_run_face_recognition(image_b64))
+
+                        # OCR: only at LOD 3 (detailed mode)
+                        if lod == 3:
+                            asyncio.create_task(_run_ocr_analysis(image_b64))
 
                 elif msg_type == "telemetry":
                     telemetry_data = message.get("data", {})
                     await _process_telemetry(telemetry_data)
 
                 elif msg_type == "activity_start":
-                    # Native audio models use automatic VAD; skip explicit
-                    # activity signals to avoid 1007 errors.
                     logger.debug("Ignored activity_start (native audio VAD active)")
 
                 elif msg_type == "activity_end":
                     logger.debug("Ignored activity_end (native audio VAD active)")
 
                 elif msg_type == "gesture":
-                    # Direct LOD gesture from iOS (lod_up / lod_down)
                     gesture = message.get("gesture")
                     if gesture in ("lod_up", "lod_down"):
                         ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
                         ephemeral_ctx.user_gesture = gesture
                         await _process_lod_decision(ephemeral_ctx)
-                        # Clear gesture after processing
                         ephemeral_ctx.user_gesture = None
                         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
 
@@ -297,28 +490,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # -- Telemetry processing ------------------------------------------------
 
     async def _process_telemetry(telemetry_data: dict) -> None:
-        """Process a telemetry tick: semantic text + LOD decision.
-
-        Dual-path processing:
-        1. Parse into semantic text → inject as [TELEMETRY UPDATE] for Gemini
-           (gated by LOD-aware TelemetryAggregator to avoid flooding context)
-        2. Parse into EphemeralContext → run LOD decision engine (always runs)
-
-        PANIC and ImmediateTriggers bypass the throttle and always inject.
-        """
+        """Process a telemetry tick: semantic text + LOD decision."""
         import time as _time
 
-        # Path 2 first: EphemeralContext for LOD engine (always)
         ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
 
-        # Check PANIC first (takes absolute priority, bypasses throttle)
+        # Check PANIC first
         is_panic = panic_handler.evaluate(
             heart_rate=ephemeral_ctx.heart_rate,
             panic_flag=ephemeral_ctx.panic,
         )
         if is_panic:
-            # Always inject telemetry on PANIC
             semantic_text = parse_telemetry(telemetry_data)
             content = types.Content(
                 parts=[types.Part(text=semantic_text)],
@@ -326,9 +509,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             live_request_queue.send_content(content)
             await _handle_panic(ephemeral_ctx)
-            return  # PANIC overrides normal LOD processing
+            return
 
-        # Path 1: Semantic text injection (LOD-aware throttle)
+        # Semantic text injection (LOD-aware throttle)
         now = _time.monotonic()
         if telemetry_agg.should_send(now):
             semantic_text = parse_telemetry(telemetry_data)
@@ -339,7 +522,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             live_request_queue.send_content(content)
             telemetry_agg.mark_sent(now)
 
-        # Run LOD decision (always, regardless of throttle)
         await _process_lod_decision(ephemeral_ctx)
 
     async def _process_lod_decision(ephemeral_ctx) -> None:
@@ -353,28 +535,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         old_lod = session_ctx.current_lod
 
         if new_lod != old_lod:
-            # LOD changed — handle transition
             logger.info(
-                "LOD transition: %d → %d (%s) session=%s",
-                old_lod,
-                new_lod,
-                decision_log.reason,
-                session_id,
+                "LOD transition: %d -> %d (%s) session=%s",
+                old_lod, new_lod, decision_log.reason, session_id,
             )
 
-            # Handle narrative snapshot (save on downgrade, restore on upgrade)
             resume_prompt = on_lod_change(session_ctx, old_lod, new_lod)
-
-            # Update session state
             session_ctx.current_lod = new_lod
-
-            # Sync telemetry aggregator with new LOD level
             telemetry_agg.update_lod(new_lod)
 
-            # Inject [LOD UPDATE] into Live session
             await _send_lod_update(new_lod, ephemeral_ctx, decision_log.reason)
 
-            # If there's a resume prompt from narrative snapshot, inject it
             if resume_prompt:
                 resume_content = types.Content(
                     parts=[types.Part(text=resume_prompt)],
@@ -383,11 +554,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 live_request_queue.send_content(resume_content)
                 logger.info("Injected [RESUME] prompt for session %s", session_id)
 
-            # Notify iOS client of LOD change
             await _notify_ios_lod_change(
-                new_lod,
-                decision_log.reason,
-                decision_log.to_debug_dict(),
+                new_lod, decision_log.reason, decision_log.to_debug_dict(),
             )
 
     # -- Downstream handler --------------------------------------------------
@@ -395,11 +563,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     async def _downstream() -> None:
         """Read events from the Live API and forward to the iOS client.
 
-        Processes session_resumption_update events, transcriptions, and
-        content parts (audio binary / text JSON).
+        Processes session_resumption_update events, transcriptions,
+        function calls, and content parts (audio binary / text JSON).
         """
-        # Lazily initialise live events so upstream telemetry processing
-        # is not blocked by any synchronous setup latency in run_live().
         live_events = await asyncio.to_thread(
             runner.run_live,
             session_id=session_id,
@@ -412,7 +578,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 if stop_downstream.is_set():
                     break
 
-                # --- Session resumption update (cache handle for reconnection) ---
+                # --- Session resumption update ---
                 if event.live_session_resumption_update:
                     update = event.live_session_resumption_update
                     if update.newHandle:
@@ -424,18 +590,35 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         break
 
                 # --- GoAway / connection lifecycle signals ---
-                # ADK may signal upcoming disconnection through the event stream.
-                # Forward to iOS so it can prepare proactive reconnection.
                 if hasattr(event, "server_content") and event.server_content:
                     sc = event.server_content
-                    if hasattr(sc, "turn_complete") and sc.turn_complete:
-                        # Server signalling turn complete — optional tracking
-                        pass
                     if hasattr(sc, "interrupted") and sc.interrupted:
                         await _safe_send_json({
                             "type": "interrupted",
                             "message": "Model output was interrupted.",
                         })
+
+                # --- Function calls from Gemini (Phase 3) ---
+                if hasattr(event, "actions") and event.actions and event.actions.function_calls:
+                    for fc in event.actions.function_calls:
+                        result = await _dispatch_function_call(
+                            fc.name,
+                            dict(fc.args) if fc.args else {},
+                            session_id,
+                            user_id,
+                        )
+                        # Send function response back to the model
+                        from google.genai.types import FunctionResponse
+                        fr = FunctionResponse(
+                            name=fc.name,
+                            response=result,
+                        )
+                        content = types.Content(
+                            parts=[types.Part(function_response=fr)],
+                            role="user",
+                        )
+                        live_request_queue.send_content(content)
+                        logger.info("Sent function response for %s", fc.name)
 
                 # --- Input transcription (user speech-to-text) ---
                 if event.input_transcription and event.input_transcription.text:
@@ -462,7 +645,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             break
 
                         if part.inline_data and part.inline_data.data:
-                            # Audio data - send as binary bytes to iOS
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
@@ -487,7 +669,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             logger.exception("Error in downstream handler: user=%s session=%s", user_id, session_id)
 
     try:
-        # Run upstream and downstream concurrently
         await asyncio.gather(_upstream(), _downstream())
     except Exception:
         logger.exception("Session error: user=%s session=%s", user_id, session_id)
@@ -495,6 +676,82 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         live_request_queue.close()
         session_manager.remove_session(session_id)
         logger.info("Session cleaned up: user=%s session=%s", user_id, session_id)
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent result formatters
+# ---------------------------------------------------------------------------
+
+
+def _format_vision_result(result: dict, lod: int) -> str:
+    """Format vision analysis result for Gemini context injection."""
+    parts = ["[VISION ANALYSIS]"]
+
+    warnings = result.get("safety_warnings", [])
+    if warnings:
+        parts.append("SAFETY WARNINGS: " + "; ".join(warnings))
+
+    nav = result.get("navigation_info", {})
+    if lod >= 2:
+        entrances = nav.get("entrances", [])
+        if entrances:
+            parts.append("Entrances: " + ", ".join(entrances))
+        paths = nav.get("paths", [])
+        if paths:
+            parts.append("Paths: " + ", ".join(paths))
+        landmarks = nav.get("landmarks", [])
+        if landmarks:
+            parts.append("Landmarks: " + ", ".join(landmarks))
+
+    desc = result.get("scene_description", "")
+    if desc:
+        parts.append(f"Scene: {desc}")
+
+    text = result.get("detected_text")
+    if text and lod >= 2:
+        parts.append(f"Visible text: {text}")
+
+    count = result.get("people_count", 0)
+    if count > 0 and lod >= 2:
+        parts.append(f"People visible: {count}")
+
+    return "\n".join(parts)
+
+
+def _format_face_results(known_faces: list[dict]) -> str:
+    """Format face recognition results for SILENT context injection."""
+    parts = ["[FACE ID]"]
+    for face in known_faces:
+        name = face["person_name"]
+        rel = face.get("relationship", "")
+        sim = face.get("similarity", 0)
+        position = face.get("bbox", [])
+        desc = f"{name}"
+        if rel:
+            desc += f" ({rel})"
+        desc += f" (confidence: {sim:.0%})"
+        parts.append(desc)
+    return "\n".join(parts)
+
+
+def _format_ocr_result(result: dict) -> str:
+    """Format OCR result for Gemini context injection."""
+    parts = ["[OCR RESULT]"]
+
+    text_type = result.get("text_type", "unknown")
+    parts.append(f"Type: {text_type}")
+
+    items = result.get("items", [])
+    if items:
+        parts.append("Items:")
+        for item in items:
+            parts.append(f"  - {item}")
+    else:
+        text = result.get("text", "")
+        if text:
+            parts.append(f"Text: {text}")
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
