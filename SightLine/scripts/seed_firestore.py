@@ -20,7 +20,10 @@ import sys
 # Ensure the project root is on sys.path so `lod.models` can be imported.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
+from datetime import datetime, timezone
 from google.cloud import firestore
+from google.cloud.firestore_v1.vector import Vector
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
 
@@ -92,6 +95,25 @@ DEMO_USERS = [
             "updated_at": firestore.SERVER_TIMESTAMP,
         },
     },
+    {
+        "doc_id": "demo_user_004",
+        "data": {
+            "vision_status": "low_vision",
+            "blindness_onset": "acquired",
+            "onset_age": 35,
+            "has_guide_dog": False,
+            "has_white_cane": True,
+            "tts_speed": 1.3,
+            "verbosity_preference": "standard",
+            "language": "zh-CN",
+            "description_priority": "spatial",
+            "color_description": True,
+            "om_level": "intermediate",
+            "travel_frequency": "weekly",
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+    },
 ]
 
 
@@ -122,6 +144,64 @@ def seed_session_meta(db: firestore.Client) -> None:
     print("  [OK] users/demo_user_001/sessions_meta/demo_session_001")
 
 
+# ---------------------------------------------------------------------------
+# Demo face library (synthetic 512-D embeddings for face recognition testing)
+# ---------------------------------------------------------------------------
+
+DEMO_FACES = [
+    {"person_name": "Alice Chen", "relationship": "friend", "num_samples": 3},
+    {"person_name": "Bob Martinez", "relationship": "coworker", "num_samples": 3},
+    {"person_name": "Mom", "relationship": "family", "num_samples": 3},
+]
+
+
+def _make_synthetic_embedding(seed: int) -> list[float]:
+    """Generate a deterministic synthetic 512-D L2-normalized embedding.
+
+    Uses a fixed seed so re-running the script produces identical embeddings,
+    enabling repeatable demo matching.
+    """
+    rng = np.random.RandomState(seed)
+    vec = rng.randn(512).astype(np.float32)
+    vec /= np.linalg.norm(vec)  # L2 normalize
+    return vec.tolist()
+
+
+def seed_face_library(db: firestore.Client, user_id: str = "demo_user_001") -> None:
+    """Seed synthetic face embeddings for the demo user.
+
+    Creates multiple photo samples per person, each with a slightly different
+    embedding (simulating different angles/lighting) but from the same seed
+    cluster so cosine similarity between samples of the same person is high.
+    """
+    now = datetime.now(timezone.utc)
+    face_coll = db.collection("users").document(user_id).collection("face_library")
+
+    total = 0
+    for person_idx, person in enumerate(DEMO_FACES):
+        base_seed = (person_idx + 1) * 1000
+        for photo_idx in range(person["num_samples"]):
+            # Same-person samples use close seeds for high intra-person similarity
+            seed = base_seed + photo_idx
+            embedding = _make_synthetic_embedding(seed)
+
+            doc_data = {
+                "person_name": person["person_name"],
+                "relationship": person["relationship"],
+                "embedding": Vector(embedding),
+                "photo_index": photo_idx,
+                "registered_by": user_id,
+                "created_at": now,
+            }
+            face_coll.add(doc_data)
+            total += 1
+
+        print(f"  [OK] {person['person_name']} ({person['relationship']}) "
+              f"— {person['num_samples']} samples")
+
+    print(f"  Total face entries seeded: {total}")
+
+
 def verify_indexes(db: firestore.Client) -> None:
     """Check that vector indexes exist (informational only)."""
     print("\n--- Vector Index Status ---")
@@ -141,10 +221,14 @@ def main() -> None:
     print("\n--- Session Metadata ---")
     seed_session_meta(db)
 
+    print("\n--- Face Library (demo_user_001) ---")
+    seed_face_library(db)
+
     verify_indexes(db)
 
     print("\n--- Done! ---")
     print(f"  Total users seeded: {len(DEMO_USERS)}")
+    print(f"  Total face entries: {sum(f['num_samples'] for f in DEMO_FACES)}")
     print("  Run `gcloud firestore documents list users --limit=5` to verify.")
 
 

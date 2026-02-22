@@ -36,6 +36,7 @@ from lod import (
     decide_lod,
     on_lod_change,
 )
+from lod.lod_engine import should_speak
 from lod.telemetry_aggregator import TelemetryAggregator
 from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephemeral
 
@@ -274,6 +275,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             payload["data"] = _json_safe(data)
         await _safe_send_json(payload)
 
+    async def _emit_capability_degraded(
+        capability: str,
+        reason: str,
+        recoverable: bool = True,
+    ) -> None:
+        """Notify iOS client that a sub-agent capability is degraded."""
+        await _safe_send_json({
+            "type": "capability_degraded",
+            "capability": capability,
+            "reason": reason,
+            "recoverable": recoverable,
+        })
+
     async def _emit_identity_event(
         *,
         person_name: str,
@@ -410,16 +424,28 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
 
             if result.get("confidence", 0) > 0:
-                # Inject vision result into Gemini context
+                # Determine info_type for should_speak gate
+                warnings = result.get("safety_warnings", [])
+                info_type = "safety_warning" if warnings else "spatial_description"
+                ephemeral = session_manager.get_ephemeral_context(session_id)
+                speak = should_speak(
+                    info_type=info_type,
+                    current_lod=session_ctx.current_lod,
+                    step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
+                    ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
+                )
+
                 vision_text = _format_vision_result(result, session_ctx.current_lod)
+                if not speak:
+                    vision_text = "[SILENT - context only, do not speak aloud]\n" + vision_text
                 content = types.Content(
                     parts=[types.Part(text=vision_text)],
                     role="user",
                 )
                 live_request_queue.send_content(content)
-                logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f)",
-                            session_ctx.current_lod, result.get("confidence", 0))
-        except Exception:
+                logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f, speak=%s)",
+                            session_ctx.current_lod, result.get("confidence", 0), speak)
+        except Exception as exc:
             logger.exception("Vision analysis failed")
             await _emit_tool_event(
                 "analyze_scene",
@@ -427,6 +453,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 status="error",
                 data={"reason": "vision_analysis_failed"},
             )
+            await _emit_capability_degraded("vision", str(exc)[:200])
         finally:
             async with _vision_lock:
                 _vision_in_progress = False
@@ -457,14 +484,24 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 data={"detections": len(results), "known": len(known)},
             )
             if known:
+                ephemeral = session_manager.get_ephemeral_context(session_id)
+                speak = should_speak(
+                    info_type="face_recognition",
+                    current_lod=session_ctx.current_lod,
+                    step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
+                    ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
+                )
+
                 face_text = _format_face_results(known)
+                if not speak:
+                    face_text = "[SILENT - context only, do not speak aloud]\n" + face_text
                 content = types.Content(
                     parts=[types.Part(text=face_text)],
                     role="user",
                 )
                 live_request_queue.send_content(content)
-                logger.info("Injected [FACE ID]: %s",
-                            ", ".join(r["person_name"] for r in known))
+                logger.info("Injected [FACE ID] (speak=%s): %s",
+                            speak, ", ".join(r["person_name"] for r in known))
                 best = max(known, key=lambda item: float(item.get("similarity", 0.0)))
                 await _emit_identity_event(
                     person_name=str(best.get("person_name", "unknown")),
@@ -479,7 +516,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     similarity=0.0,
                     source="face_detected_no_match",
                 )
-        except Exception:
+        except Exception as exc:
             logger.exception("Face recognition failed")
             await _emit_tool_event(
                 "identify_person",
@@ -487,6 +524,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 status="error",
                 data={"reason": "face_recognition_failed"},
             )
+            await _emit_capability_degraded("face", str(exc)[:200])
 
     async def _run_ocr_analysis(image_base64: str) -> None:
         """Run OCR and inject results into Live session context."""
@@ -522,15 +560,25 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
 
             if result.get("confidence", 0) > 0.3 and result.get("text"):
+                ephemeral = session_manager.get_ephemeral_context(session_id)
+                speak = should_speak(
+                    info_type="object_enumeration",
+                    current_lod=session_ctx.current_lod,
+                    step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
+                    ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
+                )
+
                 ocr_text = _format_ocr_result(result)
+                if not speak:
+                    ocr_text = "[SILENT - context only, do not speak aloud]\n" + ocr_text
                 content = types.Content(
                     parts=[types.Part(text=ocr_text)],
                     role="user",
                 )
                 live_request_queue.send_content(content)
-                logger.info("Injected [OCR RESULT] (%s, confidence %.2f)",
-                            result.get("text_type", "unknown"), result.get("confidence", 0))
-        except Exception:
+                logger.info("Injected [OCR RESULT] (%s, confidence %.2f, speak=%s)",
+                            result.get("text_type", "unknown"), result.get("confidence", 0), speak)
+        except Exception as exc:
             logger.exception("OCR analysis failed")
             await _emit_tool_event(
                 "extract_text",
@@ -538,6 +586,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 status="error",
                 data={"reason": "ocr_analysis_failed"},
             )
+            await _emit_capability_degraded("ocr", str(exc)[:200])
 
     # -- Upstream handler ----------------------------------------------------
 

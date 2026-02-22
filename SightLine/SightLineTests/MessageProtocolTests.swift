@@ -240,6 +240,69 @@ struct DownstreamMessageTests {
             Issue.record("Expected lodUpdate with default value")
         }
     }
+
+    @Test("capability_degraded parses capability and reason")
+    func capabilityDegradedParsing() {
+        let json = "{\"type\":\"capability_degraded\",\"capability\":\"vision\",\"reason\":\"model timeout\",\"recoverable\":true}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .capabilityDegraded(let capability, let reason, let recoverable) = msg {
+            #expect(capability == "vision")
+            #expect(reason == "model timeout")
+            #expect(recoverable == true)
+        } else {
+            Issue.record("Expected capabilityDegraded message")
+        }
+    }
+
+    @Test("capability_degraded defaults recoverable to true")
+    func capabilityDegradedDefaultRecoverable() {
+        let json = "{\"type\":\"capability_degraded\",\"capability\":\"ocr\",\"reason\":\"error\"}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .capabilityDegraded(_, _, let recoverable) = msg {
+            #expect(recoverable == true)
+        } else {
+            Issue.record("Expected capabilityDegraded message")
+        }
+    }
+
+    @Test("debug_lod parses LOD debug data")
+    func debugLodParsing() {
+        let json = "{\"type\":\"debug_lod\",\"data\":{\"lod\":2,\"prev\":1,\"reason\":\"Rule2:stationary→LOD3\",\"rules\":[\"Rule2\"]}}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .debugLod(let data) = msg {
+            #expect(data["lod"] as? Int == 2)
+            #expect(data["prev"] as? Int == 1)
+        } else {
+            Issue.record("Expected debugLod message")
+        }
+    }
+
+    @Test("panic message parses")
+    func panicParsing() {
+        let json = "{\"type\":\"panic\",\"message\":\"PANIC detected. Entering safety mode.\"}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .panic(let message) = msg {
+            #expect(message == "PANIC detected. Entering safety mode.")
+        } else {
+            Issue.record("Expected panic message")
+        }
+    }
+
+    @Test("interrupted message parses")
+    func interruptedParsing() {
+        let json = "{\"type\":\"interrupted\",\"message\":\"Model output was interrupted.\"}"
+        let msg = DownstreamMessage.parse(text: json)
+
+        if case .interrupted = msg {
+            // pass
+        } else {
+            Issue.record("Expected interrupted message")
+        }
+    }
 }
 
 @Suite("ToolBehaviorMode")

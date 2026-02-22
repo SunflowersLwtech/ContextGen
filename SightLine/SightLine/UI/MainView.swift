@@ -11,6 +11,7 @@
 
 import SwiftUI
 import AVFoundation
+import Combine
 import os
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "MainView")
@@ -23,6 +24,8 @@ struct MainView: View {
     @StateObject private var frameSelector = FrameSelector()
     @StateObject private var sensorManager = SensorManager()
     @StateObject private var telemetryAggregator = TelemetryAggregator()
+    @StateObject private var mediaPermissionGate = MediaPermissionGate()
+    @StateObject private var debugModel = DebugOverlayModel()
 
     @State private var transcript: String = ""
     @State private var isActive = false
@@ -30,6 +33,7 @@ struct MainView: View {
     @State private var connectionStatus: String = "Connecting..."
     @State private var isSafeMode = false
     @State private var whenIdleToolQueue: [String] = []
+    @State private var showDebugOverlay = false
 
     /// Local TTS synthesizer for disconnection alerts (no network needed).
     private let localSynthesizer = AVSpeechSynthesizer()
@@ -75,8 +79,26 @@ struct MainView: View {
                         .accessibilityLabel("Last message: \(transcript)")
                 }
             }
+
+            // Debug overlay (SL-77) - top-aligned
+            if showDebugOverlay {
+                VStack {
+                    DebugOverlay(model: debugModel)
+                    Spacer()
+                }
+                .padding(.top, 60)
+                .transition(.opacity)
+            }
+        }
+        .onTapGesture(count: 3) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showDebugOverlay.toggle()
+            }
         }
         .onAppear {
+            #if DEBUG
+            showDebugOverlay = true
+            #endif
             setupPipeline()
         }
         .onDisappear {
@@ -99,6 +121,17 @@ struct MainView: View {
     // MARK: - Pipeline Setup
 
     private func setupPipeline() {
+        // Prompt camera/mic early so the app does not look "stuck" before session_ready.
+        Task {
+            let granted = await mediaPermissionGate.preflightMediaPermissions()
+            if !granted {
+                await MainActor.run {
+                    connectionStatus = "Camera/Microphone permission required"
+                }
+                logger.error("Media permissions missing at startup")
+            }
+        }
+
         // 1. Setup audio playback engine
         audioPlayback.setup()
 
@@ -121,6 +154,7 @@ struct MainView: View {
         webSocketManager.onConnectionStateChanged = { connected in
             DispatchQueue.main.async {
                 isActive = connected
+                debugModel.isConnected = connected
                 if connected {
                     connectionStatus = "Connected"
                 } else {
@@ -145,9 +179,13 @@ struct MainView: View {
 
         webSocketManager.connect(url: url)
 
-        // 3. Setup camera with LOD-based frame selector
+        // 3. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
         cameraManager.frameSelector = frameSelector
         cameraManager.onFrameCaptured = { jpegData in
+            guard frameSelector.isFrameDifferent(jpegData: jpegData) else {
+                logger.debug("Frame skipped (pixel-diff below threshold)")
+                return
+            }
             let msg = UpstreamMessage.image(data: jpegData, mimeType: "image/jpeg")
             webSocketManager.sendText(msg.toJSON())
         }
@@ -169,8 +207,22 @@ struct MainView: View {
     }
 
     private func startMediaCapture() {
-        audioCapture.startCapture()
-        cameraManager.startCapture()
+        Task {
+            let granted = await mediaPermissionGate.preflightMediaPermissions()
+            guard granted else {
+                await MainActor.run {
+                    connectionStatus = "Enable camera and microphone in Settings"
+                    transcript = "Please enable camera and microphone permissions."
+                }
+                logger.error("Media capture blocked: camera/microphone permission denied")
+                return
+            }
+
+            await MainActor.run {
+                audioCapture.startCapture()
+                cameraManager.startCapture()
+            }
+        }
     }
 
     private func handleDownstreamMessage(_ msg: DownstreamMessage) {
@@ -190,6 +242,7 @@ struct MainView: View {
                 currentLOD = lod
                 frameSelector.updateLOD(lod)
                 telemetryAggregator.updateLOD(lod)
+                debugModel.currentLOD = lod
             }
         case .toolEvent(let tool, let behavior, _):
             handleToolMessage(
@@ -197,11 +250,13 @@ struct MainView: View {
                 behavior: behavior
             )
         case .visionResult(let summary, let behavior):
+            DispatchQueue.main.async { debugModel.markCapabilityReady("vision") }
             handleToolMessage(
                 text: summary.isEmpty ? "Vision analysis updated." : summary,
                 behavior: behavior
             )
         case .ocrResult(let summary, let behavior):
+            DispatchQueue.main.async { debugModel.markCapabilityReady("ocr") }
             handleToolMessage(
                 text: summary.isEmpty ? "OCR result received." : summary,
                 behavior: behavior
@@ -217,9 +272,29 @@ struct MainView: View {
                 behavior: behavior
             )
         case .personIdentified(let name, let behavior):
+            DispatchQueue.main.async { debugModel.markCapabilityReady("face") }
             handleIdentityMessage(name: name, matched: true, behavior: behavior)
         case .identityUpdate(let name, let matched, let behavior):
+            DispatchQueue.main.async { debugModel.markCapabilityReady("face") }
             handleIdentityMessage(name: name, matched: matched, behavior: behavior)
+        case .capabilityDegraded(let capability, let reason, _):
+            DispatchQueue.main.async {
+                debugModel.markCapabilityDegraded(capability)
+            }
+            logger.warning("Capability degraded: \(capability, privacy: .public) - \(reason, privacy: .public)")
+        case .debugLod(let data):
+            DispatchQueue.main.async {
+                debugModel.updateFromLodDebug(data)
+            }
+        case .panic(let message):
+            DispatchQueue.main.async {
+                currentLOD = 1
+                debugModel.currentLOD = 1
+                transcript = message
+            }
+            logger.warning("PANIC: \(message, privacy: .public)")
+        case .interrupted:
+            logger.info("Model output interrupted")
         case .goAway(let retryMs):
             logger.info("GoAway received, reconnecting in \(retryMs)ms")
         case .sessionResumption(let handle):
@@ -235,6 +310,8 @@ struct MainView: View {
         isSafeMode = true
         currentLOD = 1
         connectionStatus = "Safe Mode - Reconnecting..."
+        debugModel.isSafeMode = true
+        debugModel.currentLOD = 1
         telemetryAggregator.pause()
 
         // Local TTS alert (no network dependency)
@@ -249,6 +326,7 @@ struct MainView: View {
     private func exitSafeMode() {
         isSafeMode = false
         connectionStatus = "Connected"
+        debugModel.isSafeMode = false
         telemetryAggregator.resume()
 
         // Local TTS confirmation
@@ -314,5 +392,69 @@ struct MainView: View {
         cameraManager.stopCapture()
         audioPlayback.teardown()
         webSocketManager.disconnect()
+    }
+}
+
+@MainActor
+private final class MediaPermissionGate: ObservableObject {
+    @Published private(set) var hasMediaPermissions = false
+
+    func preflightMediaPermissions() async -> Bool {
+        let cameraGranted = await ensureCameraPermission()
+        let microphoneGranted = await ensureMicrophonePermission()
+        hasMediaPermissions = cameraGranted && microphoneGranted
+        return hasMediaPermissions
+    }
+
+    private func ensureCameraPermission() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .video) { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func ensureMicrophonePermission() async -> Bool {
+        if #available(iOS 17.0, *) {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted:
+                return true
+            case .undetermined:
+                return await withCheckedContinuation { continuation in
+                    AVAudioApplication.requestRecordPermission { granted in
+                        continuation.resume(returning: granted)
+                    }
+                }
+            case .denied:
+                return false
+            @unknown default:
+                return false
+            }
+        }
+
+        let session = AVAudioSession.sharedInstance()
+        switch session.recordPermission {
+        case .granted:
+            return true
+        case .undetermined:
+            return await withCheckedContinuation { continuation in
+                session.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        case .denied:
+            return false
+        @unknown default:
+            return false
+        }
     }
 }

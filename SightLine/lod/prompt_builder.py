@@ -13,6 +13,23 @@ from __future__ import annotations
 from lod.models import EphemeralContext, NarrativeSnapshot, SessionContext, UserProfile
 
 # ---------------------------------------------------------------------------
+# Language code → display name mapping
+# ---------------------------------------------------------------------------
+
+_LANGUAGE_NAMES: dict[str, str] = {
+    "en-US": "English",
+    "zh-CN": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    "ja-JP": "Japanese",
+    "ko-KR": "Korean",
+}
+
+
+def _language_display(code: str) -> str:
+    """Return a human-readable language name for a locale code."""
+    return _LANGUAGE_NAMES.get(code, code)
+
+# ---------------------------------------------------------------------------
 # LOD instruction templates (§7.2 from Context Engine Implementation Guide)
 # ---------------------------------------------------------------------------
 
@@ -80,7 +97,9 @@ def _build_persona_block(profile: UserProfile) -> str:
     if profile.blindness_onset == "congenital" and not profile.color_description:
         color_note = "\n- Color descriptions: DISABLED (user has never seen colors; use tactile/spatial/sound analogies instead)"
 
-    return (
+    lang_name = _language_display(profile.language)
+
+    block = (
         "## User Profile\n"
         f"- Vision: {profile.vision_status} ({onset})\n"
         f"- Mobility aids: {', '.join(aids) if aids else 'none'}\n"
@@ -88,9 +107,21 @@ def _build_persona_block(profile: UserProfile) -> str:
         f"- O&M level: {profile.om_level} (travel: {profile.travel_frequency})\n"
         f"- Verbosity preference: {profile.verbosity_preference}\n"
         f"- Description priority: {profile.description_priority}\n"
-        f"- Language: {profile.language}"
+        f"- Language: {lang_name}"
         f"{color_note}"
     )
+
+    # Only inject explicit language constraint for non-default locales.
+    # Native audio models auto-detect language from user speech; English
+    # users don't need the extra instruction.  For other languages the
+    # constraint follows the Google Live API best-practice template.
+    if profile.language != "en-US":
+        block += (
+            f"\n\nRESPOND IN {lang_name.upper()}. "
+            f"YOU MUST RESPOND UNMISTAKABLY IN {lang_name.upper()}."
+        )
+
+    return block
 
 
 # ---------------------------------------------------------------------------

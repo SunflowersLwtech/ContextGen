@@ -24,7 +24,7 @@ class WorkoutManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private static let logger = Logger(
+    nonisolated private static let logger = Logger(
         subsystem: "com.sightline.watch",
         category: "Workout"
     )
@@ -130,28 +130,17 @@ class WorkoutManager: NSObject, ObservableObject {
     }
 
     /// Extract latest heart rate from workout builder statistics.
-    private func updateHeartRate(from builder: HKLiveWorkoutBuilder) {
+    nonisolated private func latestHeartRate(from builder: HKLiveWorkoutBuilder) -> Double? {
         let heartRateType = HKQuantityType(.heartRate)
-
         guard let statistics = builder.statistics(for: heartRateType),
               let quantity = statistics.mostRecentQuantity() else {
-            return
+            return nil
         }
 
         let bpm = quantity.doubleValue(
             for: HKUnit.count().unitDivided(by: .minute())
         )
-
-        guard bpm > 0 else { return }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.heartRate = bpm
-        }
-
-        // Forward to iPhone via WCSession (<1s latency)
-        PhoneConnector.shared.sendHeartRate(bpm, isMonitoring: true)
-
-        Self.logger.debug("Heart rate: \(Int(bpm)) BPM → sent to iPhone")
+        return bpm > 0 ? bpm : nil
     }
 }
 
@@ -192,17 +181,22 @@ extension WorkoutManager: HKLiveWorkoutBuilderDelegate {
         _ workoutBuilder: HKLiveWorkoutBuilder,
         didCollectDataOf collectedTypes: Set<HKSampleType>
     ) {
-        for type in collectedTypes {
-            guard let quantityType = type as? HKQuantityType,
-                  quantityType == HKQuantityType(.heartRate) else {
-                continue
-            }
-
-            // Must dispatch to MainActor for @Published updates
-            DispatchQueue.main.async { [weak self] in
-                self?.updateHeartRate(from: workoutBuilder)
-            }
+        let hasHeartRateData = collectedTypes.contains { type in
+            guard let quantityType = type as? HKQuantityType else { return false }
+            return quantityType == HKQuantityType(.heartRate)
         }
+
+        guard hasHeartRateData,
+              let bpm = latestHeartRate(from: workoutBuilder) else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.heartRate = bpm
+            PhoneConnector.shared.sendHeartRate(bpm, isMonitoring: true)
+        }
+
+        Self.logger.debug("Heart rate: \(Int(bpm)) BPM → sent to iPhone")
     }
 
     nonisolated func workoutBuilderDidCollectEvent(

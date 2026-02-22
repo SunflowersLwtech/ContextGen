@@ -1,7 +1,12 @@
 """Tests for SightLine dynamic prompt builder."""
 
 from lod.models import EphemeralContext, NarrativeSnapshot, SessionContext, UserProfile
-from lod.prompt_builder import build_full_dynamic_prompt, build_lod_update_message
+from lod.prompt_builder import (
+    _language_display,
+    _build_persona_block,
+    build_full_dynamic_prompt,
+    build_lod_update_message,
+)
 
 
 def _default_args(lod: int = 2, **overrides):
@@ -71,3 +76,56 @@ def test_congenital_blind_no_color():
     profile.color_description = False
     msg = build_lod_update_message(**_default_args(profile=profile))
     assert "DISABLED" in msg
+
+
+# ---------------------------------------------------------------------------
+# Multi-language support tests
+# ---------------------------------------------------------------------------
+
+
+def test_language_display_known_codes():
+    """Verify mapping for en-US, zh-CN, zh-TW, ja-JP, ko-KR — all English names."""
+    assert _language_display("en-US") == "English"
+    assert _language_display("zh-CN") == "Simplified Chinese"
+    assert _language_display("zh-TW") == "Traditional Chinese"
+    assert _language_display("ja-JP") == "Japanese"
+    assert _language_display("ko-KR") == "Korean"
+
+
+def test_language_display_unknown_code_passthrough():
+    """Unknown locale codes should be returned as-is."""
+    assert _language_display("fr-FR") == "fr-FR"
+    assert _language_display("de-DE") == "de-DE"
+
+
+def test_chinese_language_persona_block():
+    """zh-CN profile should produce Google-template language constraint."""
+    profile = UserProfile.default()
+    profile.language = "zh-CN"
+    block = _build_persona_block(profile)
+    assert "Simplified Chinese" in block
+    assert "RESPOND IN SIMPLIFIED CHINESE" in block
+    assert "YOU MUST RESPOND UNMISTAKABLY IN SIMPLIFIED CHINESE" in block
+
+
+def test_english_language_persona_block():
+    """Default en-US profile should NOT inject redundant language constraint."""
+    profile = UserProfile.default()
+    block = _build_persona_block(profile)
+    assert "Language: English" in block
+    # Native audio auto-detects English; no explicit constraint needed
+    assert "RESPOND IN" not in block
+
+
+def test_full_prompt_chinese_language():
+    """build_full_dynamic_prompt should include language constraint for zh-CN user."""
+    profile = UserProfile.default()
+    profile.language = "zh-CN"
+    msg = build_full_dynamic_prompt(
+        lod=2,
+        profile=profile,
+        ephemeral_semantic="test context",
+        session=SessionContext(),
+    )
+    assert "Simplified Chinese" in msg
+    assert "RESPOND IN SIMPLIFIED CHINESE" in msg

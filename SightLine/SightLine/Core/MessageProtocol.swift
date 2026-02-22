@@ -70,6 +70,10 @@ enum DownstreamMessage {
     case searchResult(summary: String, behavior: ToolBehaviorMode)
     case personIdentified(name: String, behavior: ToolBehaviorMode)
     case identityUpdate(name: String, matched: Bool, behavior: ToolBehaviorMode)
+    case capabilityDegraded(capability: String, reason: String, recoverable: Bool)
+    case debugLod(data: [String: Any])
+    case panic(message: String)
+    case interrupted
     case unknown(raw: String)
 
     static func parse(text: String) -> DownstreamMessage? {
@@ -145,6 +149,19 @@ enum DownstreamMessage {
                 ?? (dataPayload["matched"] as? Bool)
                 ?? false
             return .identityUpdate(name: extractPersonName(), matched: matched, behavior: behavior)
+        case "capability_degraded":
+            let capability = json["capability"] as? String ?? "unknown"
+            let reason = json["reason"] as? String ?? ""
+            let recoverable = json["recoverable"] as? Bool ?? true
+            return .capabilityDegraded(capability: capability, reason: reason, recoverable: recoverable)
+        case "debug_lod":
+            let lodData = json["data"] as? [String: Any] ?? json
+            return .debugLod(data: lodData)
+        case "panic":
+            let message = json["message"] as? String ?? "PANIC detected"
+            return .panic(message: message)
+        case "interrupted":
+            return .interrupted
         default:
             return .unknown(raw: text)
         }

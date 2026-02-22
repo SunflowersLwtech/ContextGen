@@ -12,7 +12,7 @@
 //    → TelemetryAggregator → WebSocket → Cloud Run → LOD Engine
 //
 
-import WatchConnectivity
+@preconcurrency import WatchConnectivity
 import Foundation
 import Combine
 import os
@@ -116,8 +116,9 @@ extension WatchReceiver: WCSessionDelegate {
             "WCSession activated: state=\(activationState.rawValue), paired=\(session.isPaired), installed=\(session.isWatchAppInstalled)"
         )
 
+        let reachable = session.isReachable
         DispatchQueue.main.async { [weak self] in
-            self?.isWatchReachable = session.isReachable
+            self?.isWatchReachable = reachable
         }
     }
 

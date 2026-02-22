@@ -11,11 +11,18 @@
 
 import Foundation
 import Combine
+import CoreGraphics
+import ImageIO
 
 class FrameSelector: ObservableObject {
     @Published var currentLOD: Int = 2
 
     private var lastFrameTime: Date = .distantPast
+
+    // Pixel-diff deduplication (SL-75)
+    private var previousThumbnail: [UInt8]?
+    private let thumbnailSize = 32
+    private let diffThreshold: Float = 5.0  // 0-255 scale; below this = "same scene"
 
     var minInterval: TimeInterval {
         switch currentLOD {
@@ -31,6 +38,23 @@ class FrameSelector: ObservableObject {
         return now.timeIntervalSince(lastFrameTime) >= minInterval
     }
 
+    /// Check if the frame differs enough from the previous one to be worth sending.
+    /// Returns true if the frame is sufficiently different or if no previous frame exists.
+    func isFrameDifferent(jpegData: Data) -> Bool {
+        guard let thumbnail = downsampleToGrayscale(jpegData: jpegData) else {
+            return true  // Can't compute diff, send it
+        }
+
+        defer { previousThumbnail = thumbnail }
+
+        guard let prev = previousThumbnail, prev.count == thumbnail.count else {
+            return true  // First frame, always send
+        }
+
+        let diff = meanAbsoluteDifference(prev, thumbnail)
+        return diff >= diffThreshold
+    }
+
     func markFrameSent() {
         lastFrameTime = Date()
     }
@@ -39,5 +63,44 @@ class FrameSelector: ObservableObject {
         DispatchQueue.main.async {
             self.currentLOD = lod
         }
+    }
+
+    // MARK: - Pixel-diff helpers
+
+    private func downsampleToGrayscale(jpegData: Data) -> [UInt8]? {
+        guard let source = CGImageSourceCreateWithData(jpegData as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+
+        let width = thumbnailSize
+        let height = thumbnailSize
+        var pixels = [UInt8](repeating: 0, count: width * height)
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            return nil
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels
+    }
+
+    private func meanAbsoluteDifference(_ a: [UInt8], _ b: [UInt8]) -> Float {
+        let count = min(a.count, b.count)
+        guard count > 0 else { return Float.greatestFiniteMagnitude }
+
+        var sum: Int = 0
+        for i in 0..<count {
+            sum += abs(Int(a[i]) - Int(b[i]))
+        }
+        return Float(sum) / Float(count)
     }
 }

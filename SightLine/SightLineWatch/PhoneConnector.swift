@@ -7,7 +7,7 @@
 //  transferUserInfo when unreachable (queued for later delivery).
 //
 
-import WatchConnectivity
+@preconcurrency import WatchConnectivity
 import Foundation
 import Combine
 import os
@@ -17,7 +17,7 @@ class PhoneConnector: NSObject, ObservableObject {
 
     @Published var isReachable: Bool = false
 
-    private static let logger = Logger(
+    nonisolated private static let logger = Logger(
         subsystem: "com.sightline.watch",
         category: "PhoneConnector"
     )
@@ -52,25 +52,26 @@ class PhoneConnector: NSObject, ObservableObject {
             "ts": Date().timeIntervalSince1970,
             "isMonitoring": isMonitoring,
         ]
+        let session = WCSession.default
 
-        guard WCSession.default.activationState == .activated else {
+        guard session.activationState == .activated else {
             Self.logger.warning("WCSession not activated, dropping heart rate")
             return
         }
 
-        if WCSession.default.isReachable {
+        if session.isReachable {
             // Real-time path: sendMessage (<1s delivery)
-            WCSession.default.sendMessage(
+            session.sendMessage(
                 payload,
                 replyHandler: nil
             ) { error in
                 Self.logger.error("sendMessage failed: \(error.localizedDescription)")
                 // Fallback to transferUserInfo on failure
-                WCSession.default.transferUserInfo(payload)
+                session.transferUserInfo(payload)
             }
         } else {
             // Offline path: transferUserInfo (queued, delivered when reachable)
-            WCSession.default.transferUserInfo(payload)
+            session.transferUserInfo(payload)
             Self.logger.debug("iPhone unreachable — queued via transferUserInfo")
         }
     }
@@ -89,10 +90,11 @@ extension PhoneConnector: WCSessionDelegate {
             return
         }
 
+        let reachable = session.isReachable
         Self.logger.info("WCSession activated: state=\(activationState.rawValue)")
 
         DispatchQueue.main.async { [weak self] in
-            self?.isReachable = session.isReachable
+            self?.isReachable = reachable
         }
     }
 
