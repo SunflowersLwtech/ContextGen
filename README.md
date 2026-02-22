@@ -30,7 +30,7 @@ Communication is handled via a single, highly-optimized **WebSocket (`NWConnecti
 
 ```mermaid
 graph TD
-    subgraph Edge Devices (Hardware Agnostic)
+    subgraph Edge["Edge Devices (Hardware Agnostic)"]
         A[Smart Glasses / iPhone Camera] -->|SEP-Vision: JPEG Streams| D{SightLine API Gateway}
         B[Hearing Aids / AirPods] <-->|SEP-Audio: PCM 16kHz| D
         C[Apple Watch / Sensors] -->|SEP-Telemetry: JSON| D
@@ -38,7 +38,7 @@ graph TD
     
     D -->|Unified WebSocket| E[Cloud Run ADK Backend]
     
-    subgraph SightLine Cloud Brain
+    subgraph Cloud["SightLine Cloud Brain"]
         E --> F(Context Parser)
         F --> G(ADK Orchestrator Agent)
         G <--> H[Adaptive LOD Engine]
