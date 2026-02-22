@@ -103,6 +103,14 @@ def _build_persona_block(profile: UserProfile) -> str:
         )
 
     lang_name = _language_display(profile.language)
+    # Normalize user-entered name to one line before prompt injection.
+    preferred_name = " ".join(profile.preferred_name.strip().split())
+    name_line = ""
+    if preferred_name:
+        name_line = (
+            f"\n- Preferred name: {preferred_name} "
+            f"(address the user with this name when appropriate)"
+        )
 
     block = (
         "## User Profile\n"
@@ -113,6 +121,7 @@ def _build_persona_block(profile: UserProfile) -> str:
         f"- Verbosity preference: {profile.verbosity_preference}\n"
         f"- Description priority: {profile.description_priority}\n"
         f"- Language: {lang_name}"
+        f"{name_line}"
         f"{color_note}"
     )
 

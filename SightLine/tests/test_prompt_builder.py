@@ -129,3 +129,18 @@ def test_full_prompt_chinese_language():
     )
     assert "Simplified Chinese" in msg
     assert "RESPOND IN SIMPLIFIED CHINESE" in msg
+
+
+def test_persona_block_includes_preferred_name_when_present():
+    profile = UserProfile.default()
+    profile.preferred_name = "Liu Wei"
+    block = _build_persona_block(profile)
+    assert "Preferred name: Liu Wei" in block
+    assert "address the user with this name when appropriate" in block
+
+
+def test_persona_block_omits_preferred_name_when_empty():
+    profile = UserProfile.default()
+    profile.preferred_name = "   "
+    block = _build_persona_block(profile)
+    assert "Preferred name:" not in block

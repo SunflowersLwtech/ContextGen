@@ -45,6 +45,7 @@ def test_user_profile_from_firestore():
         "verbosity_preference": "detailed",
         "om_level": "advanced",
         "travel_frequency": "daily",
+        "preferred_name": "Alex",
     }
     p = UserProfile.from_firestore(doc, user_id="user123")
     assert p.user_id == "user123"
@@ -56,6 +57,7 @@ def test_user_profile_from_firestore():
     assert p.verbosity_preference == "detailed"
     assert p.om_level == "advanced"
     assert p.travel_frequency == "daily"
+    assert p.preferred_name == "Alex"
 
 
 def test_gps_data_defaults():
