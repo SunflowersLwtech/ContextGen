@@ -18,6 +18,27 @@
 			remoteGlobalIDString = 9656C1AA2F4A1BF10068374A;
 			remoteInfo = SightLineWatch;
 		};
+		AA0010072F4A1BF10068374A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9656C18B2F4A1BF00068374A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9656C1922F4A1BF00068374A;
+			remoteInfo = SightLine;
+		};
+		BB0010072F4A1BF10068374A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9656C18B2F4A1BF00068374A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9656C1922F4A1BF00068374A;
+			remoteInfo = SightLine;
+		};
+		CC0010072F4A1BF10068374A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9656C18B2F4A1BF00068374A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9656C1AA2F4A1BF10068374A;
+			remoteInfo = SightLineWatch;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -37,6 +58,9 @@
 /* Begin PBXFileReference section */
 		9656C1932F4A1BF00068374A /* SightLine.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SightLine.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9656C1A52F4A1BF10068374A /* SightLineWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SightLineWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0010012F4A1BF10068374A /* SightLineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SightLineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0010012F4A1BF10068374A /* SightLineUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SightLineUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC0010012F4A1BF10068374A /* SightLineWatchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SightLineWatchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -48,6 +72,21 @@
 		9656C1A62F4A1BF10068374A /* SightLineWatch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = SightLineWatch;
+			sourceTree = "<group>";
+		};
+		AA0010022F4A1BF10068374A /* SightLineTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SightLineTests;
+			sourceTree = "<group>";
+		};
+		BB0010022F4A1BF10068374A /* SightLineUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SightLineUITests;
+			sourceTree = "<group>";
+		};
+		CC0010022F4A1BF10068374A /* SightLineWatchTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SightLineWatchTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -67,6 +106,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0010042F4A1BF10068374A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0010042F4A1BF10068374A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0010042F4A1BF10068374A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -75,6 +135,9 @@
 			children = (
 				9656C1952F4A1BF00068374A /* SightLine */,
 				9656C1A62F4A1BF10068374A /* SightLineWatch */,
+				AA0010022F4A1BF10068374A /* SightLineTests */,
+				BB0010022F4A1BF10068374A /* SightLineUITests */,
+				CC0010022F4A1BF10068374A /* SightLineWatchTests */,
 				9656C1942F4A1BF00068374A /* Products */,
 			);
 			sourceTree = "<group>";
@@ -84,6 +147,9 @@
 			children = (
 				9656C1932F4A1BF00068374A /* SightLine.app */,
 				9656C1A52F4A1BF10068374A /* SightLineWatch.app */,
+				AA0010012F4A1BF10068374A /* SightLineTests.xctest */,
+				BB0010012F4A1BF10068374A /* SightLineUITests.xctest */,
+				CC0010012F4A1BF10068374A /* SightLineWatchTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -137,6 +203,75 @@
 			productReference = 9656C1A52F4A1BF10068374A /* SightLineWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0010062F4A1BF10068374A /* SightLineTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineTests" */;
+			buildPhases = (
+				AA0010032F4A1BF10068374A /* Sources */,
+				AA0010042F4A1BF10068374A /* Frameworks */,
+				AA0010052F4A1BF10068374A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0010082F4A1BF10068374A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0010022F4A1BF10068374A /* SightLineTests */,
+			);
+			name = SightLineTests;
+			packageProductDependencies = (
+			);
+			productName = SightLineTests;
+			productReference = AA0010012F4A1BF10068374A /* SightLineTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		BB0010062F4A1BF10068374A /* SightLineUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineUITests" */;
+			buildPhases = (
+				BB0010032F4A1BF10068374A /* Sources */,
+				BB0010042F4A1BF10068374A /* Frameworks */,
+				BB0010052F4A1BF10068374A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB0010082F4A1BF10068374A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BB0010022F4A1BF10068374A /* SightLineUITests */,
+			);
+			name = SightLineUITests;
+			packageProductDependencies = (
+			);
+			productName = SightLineUITests;
+			productReference = BB0010012F4A1BF10068374A /* SightLineUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		CC0010062F4A1BF10068374A /* SightLineWatchTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineWatchTests" */;
+			buildPhases = (
+				CC0010032F4A1BF10068374A /* Sources */,
+				CC0010042F4A1BF10068374A /* Frameworks */,
+				CC0010052F4A1BF10068374A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CC0010082F4A1BF10068374A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				CC0010022F4A1BF10068374A /* SightLineWatchTests */,
+			);
+			name = SightLineWatchTests;
+			packageProductDependencies = (
+			);
+			productName = SightLineWatchTests;
+			productReference = CC0010012F4A1BF10068374A /* SightLineWatchTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -152,6 +287,18 @@
 					};
 					9656C1AA2F4A1BF10068374A = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					AA0010062F4A1BF10068374A = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 9656C1922F4A1BF00068374A;
+					};
+					BB0010062F4A1BF10068374A = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 9656C1922F4A1BF00068374A;
+					};
+					CC0010062F4A1BF10068374A = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 9656C1AA2F4A1BF10068374A;
 					};
 				};
 			};
@@ -171,6 +318,9 @@
 			targets = (
 				9656C1922F4A1BF00068374A /* SightLine */,
 				9656C1AA2F4A1BF10068374A /* SightLineWatch */,
+				AA0010062F4A1BF10068374A /* SightLineTests */,
+				BB0010062F4A1BF10068374A /* SightLineUITests */,
+				CC0010062F4A1BF10068374A /* SightLineWatchTests */,
 			);
 		};
 /* End PBXProject section */
@@ -184,6 +334,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		9656C1A92F4A1BF10068374A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0010052F4A1BF10068374A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0010052F4A1BF10068374A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0010052F4A1BF10068374A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -207,6 +378,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0010032F4A1BF10068374A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0010032F4A1BF10068374A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0010032F4A1BF10068374A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -214,6 +406,21 @@
 			isa = PBXTargetDependency;
 			target = 9656C1AA2F4A1BF10068374A /* SightLineWatch */;
 			targetProxy = 9656C1AE2F4A1BF10068374A /* PBXContainerItemProxy */;
+		};
+		AA0010082F4A1BF10068374A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9656C1922F4A1BF00068374A /* SightLine */;
+			targetProxy = AA0010072F4A1BF10068374A /* PBXContainerItemProxy */;
+		};
+		BB0010082F4A1BF10068374A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9656C1922F4A1BF00068374A /* SightLine */;
+			targetProxy = BB0010072F4A1BF10068374A /* PBXContainerItemProxy */;
+		};
+		CC0010082F4A1BF10068374A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9656C1AA2F4A1BF10068374A /* SightLineWatch */;
+			targetProxy = CC0010072F4A1BF10068374A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -487,6 +694,138 @@
 			};
 			name = Release;
 		};
+		AA0010092F4A1BF10068374A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SightLine.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SightLine";
+			};
+			name = Debug;
+		};
+		AA00100A2F4A1BF10068374A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SightLine.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SightLine";
+			};
+			name = Release;
+		};
+		BB0010092F4A1BF10068374A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = SightLine;
+			};
+			name = Debug;
+		};
+		BB00100A2F4A1BF10068374A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = SightLine;
+			};
+			name = Release;
+		};
+		CC0010092F4A1BF10068374A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineWatchTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SightLineWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SightLineWatch";
+				WATCHOS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Debug;
+		};
+		CC00100A2F4A1BF10068374A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2MCUR7CFAU;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sunflowers.SightLineWatchTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SightLineWatch.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SightLineWatch";
+				WATCHOS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -513,6 +852,33 @@
 			buildConfigurations = (
 				9656C1AB2F4A1BF10068374A /* Debug */,
 				9656C1AC2F4A1BF10068374A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0010092F4A1BF10068374A /* Debug */,
+				AA00100A2F4A1BF10068374A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0010092F4A1BF10068374A /* Debug */,
+				BB00100A2F4A1BF10068374A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CC00100B2F4A1BF10068374A /* Build configuration list for PBXNativeTarget "SightLineWatchTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC0010092F4A1BF10068374A /* Debug */,
+				CC00100A2F4A1BF10068374A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

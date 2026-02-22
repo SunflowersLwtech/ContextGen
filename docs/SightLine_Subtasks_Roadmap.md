@@ -1,7 +1,7 @@
 # SightLine Subtasks & Roadmap (Rebuilt)
 
 > Version: 2.0 (Clean Foundation)
-> Last Updated: 2026-02-22
+> Last Updated: 2026-02-22 (Phase 0~3 Complete)
 > Deadline: 2026-03-16 17:00 PDT
 > Delivery Track: Swift Native iOS + Cloud Run ADK Server-to-Server
 > Status: Active
@@ -125,16 +125,16 @@
 
 | ID | Subtask | Priority | Status | Depends | Deliverable | Acceptance |
 |---|---|---|---|---|---|---|
-| SL-50 | Vision Sub-Agent（`gemini-3.1-pro-preview`） | P0 | TODO | SL-12 | 场景理解能力 | 对典型场景输出稳定 |
-| SL-51 | Proactive-Oriented Vision Prompt（按 LOD 分级提取） | P1 | TODO | SL-50 | LOD1安全/LOD2导航/LOD3全量 | 输出与 LOD 对齐 |
-| SL-52 | OCR Sub-Agent（`gemini-3-flash-preview`） | P1 | TODO | SL-12 | 菜单/标识朗读 | OCR 场景通过率 > 90% |
-| SL-53 | `navigate_location()` tool（Maps/Routes/Geocoding） | P1 | TODO | SL-12 | 基础导航说明 | 返回时钟方位可用 |
-| SL-54 | `google_search()` grounding tool | P1 | TODO | SL-12 | 外部事实校验 | 响应可附来源摘要 |
-| SL-55 | tool behavior 策略（INTERRUPT/WHEN_IDLE/SILENT） | P0 | TODO | SL-53 | 工具调用调度稳定 | 不打断主对话节奏 |
-| SL-56 | Face pipeline（InsightFace detection + embedding + match） | P2 | TODO | SL-02, SL-12 | 人脸识别服务能力 | 单帧匹配延迟 < 300ms |
-| SL-57 | 人脸注册流程（helper 模式 + 多样本） | P2 | TODO | SL-56 | 可维护 face library | 单人 3-5 样本入库 |
-| SL-58 | `identify_person()` 集成（SILENT 注入） | P2 | TODO | SL-56 | 身份信息自然融合 | 不产生硬打断 |
-| SL-59 | Face 数据删除/隐私 API（清除机制） | P2 | TODO | SL-57 | 隐私合规操作 | 一键清空可验证 |
+| SL-50 | Vision Sub-Agent（`gemini-3.1-pro-preview`） | P0 | DONE | SL-12 | 场景理解能力 | 对典型场景输出稳定 |
+| SL-51 | Proactive-Oriented Vision Prompt（按 LOD 分级提取） | P1 | DONE | SL-50 | LOD1安全/LOD2导航/LOD3全量 | 输出与 LOD 对齐 |
+| SL-52 | OCR Sub-Agent（`gemini-3-flash-preview`） | P1 | DONE | SL-12 | 菜单/标识朗读 | OCR 场景通过率 > 90% |
+| SL-53 | `navigate_location()` tool（Maps/Routes/Geocoding） | P1 | DONE | SL-12 | 基础导航说明 | 返回时钟方位可用 |
+| SL-54 | `google_search()` grounding tool | P1 | DONE | SL-12 | 外部事实校验 | 响应可附来源摘要 |
+| SL-55 | tool behavior 策略（INTERRUPT/WHEN_IDLE/SILENT） | P0 | DONE | SL-53 | 工具调用调度稳定 | 不打断主对话节奏 |
+| SL-56 | Face pipeline（InsightFace detection + embedding + match） | P2 | DONE | SL-02, SL-12 | 人脸识别服务能力 | 单帧匹配延迟 < 300ms |
+| SL-57 | 人脸注册流程（helper 模式 + 多样本） | P2 | DONE | SL-56 | 可维护 face library | 单人 3-5 样本入库 |
+| SL-58 | `identify_person()` 集成（SILENT 注入） | P2 | DONE | SL-56 | 身份信息自然融合 | 不产生硬打断 |
+| SL-59 | Face 数据删除/隐私 API（清除机制） | P2 | DONE | SL-57 | 隐私合规操作 | 一键清空可验证 |
 
 ### Phase 4 - Memory, Reliability, Demo Hardening (M4)
 
@@ -186,16 +186,18 @@
 
 ## 6. Immediate Next 10 Tasks (Execution Queue)
 
-1. `SL-10` 后端目录骨架建立。
-2. `SL-11` WebSocket 入口完成。
-3. `SL-12` ADK `run_live()` 接通。
-4. `SL-13` RunConfig 基线可运行。
-5. `SL-18` iOS WebSocket 接入。
-6. `SL-19` iOS 音频采集与播放。
-7. `SL-20` iOS 视频帧上传。
-8. `SL-21` Cloud Run 首次部署。
-9. `SL-30` iOS Telemetry 聚合。
-10. `SL-33` 规则式 LOD 决策引擎。
+> Phase 0~3 全部完成，进入 Phase 4 (M4) — Memory + 稳定性 + Demo 打磨
+
+1. `SL-75` 性能优化：帧去重、预反馈、流式播放细化。
+2. `SL-76` 稳定性矩阵：断网/GoAway/API 异常/摄像头失败。
+3. `SL-78` 最小测试集（unit + e2e smoke）。
+4. `SL-77` DebugOverlay（LOD/Telemetry/Latency 可视化）。
+5. `SL-70` SessionService 迁移到 VertexAiSessionService。
+6. `SL-71` 接入 VertexAiMemoryBankService + PreloadMemoryTool。
+7. `SL-72` Memory 提取策略 + 写入预算。
+8. `SL-90` 锁定 4 分钟脚本与 4 个关键场景。
+9. `SL-91` 端到端彩排与故障清单修复。
+10. `SL-94` README + 启动说明 + 已知限制。
 
 ---
 
