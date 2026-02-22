@@ -641,6 +641,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "SightLine Watch";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "SightLine Watch monitors your heart rate for real-time stress and panic detection.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "SightLine Watch writes workout sessions so heart-rate sampling stays responsive for safety alerts.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.sunflowers.SightLine;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -676,6 +677,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "SightLine Watch";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "SightLine Watch monitors your heart rate for real-time stress and panic detection.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "SightLine Watch writes workout sessions so heart-rate sampling stays responsive for safety alerts.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.sunflowers.SightLine;
 				LD_RUNPATH_SEARCH_PATHS = (

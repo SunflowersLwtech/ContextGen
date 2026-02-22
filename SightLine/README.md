@@ -105,6 +105,22 @@ cd infrastructure
 ./deploy.sh
 ```
 
+## 🧪 Watch Device Test Command
+
+Use the dedicated script for physical Apple Watch testing. It performs a lock-state preflight, forces a stable `arm64` destination, and retries once if watchOS blocks navigation away from the clock UI state.
+
+```bash
+cd SightLine
+./scripts/run_watch_device_tests.sh
+```
+
+Optional overrides:
+```bash
+SIGHTLINE_WATCH_DESTINATION_ID=00008310-0018C3A80A7B601E \
+SIGHTLINE_WATCH_ARCH=arm64 \
+./scripts/run_watch_device_tests.sh
+```
+
 ---
 
 <div align="center">
