@@ -746,27 +746,19 @@ private final class MediaPermissionGate: ObservableObject {
     }
 
     private func ensureMicrophonePermission() async -> Bool {
-        if #available(iOS 17.0, *) {
-            switch AVAudioApplication.shared.recordPermission {
-            case .granted:
-                return true
-            case .undetermined:
-                return await withCheckedContinuation { continuation in
-                    AVAudioApplication.requestRecordPermission { granted in
-                        continuation.resume(returning: granted)
-                    }
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .undetermined:
+            return await withCheckedContinuation { continuation in
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
                 }
-            case .denied:
-                return false
-            @unknown default:
-                return false
             }
-        }
-
-        return await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
+        case .denied:
+            return false
+        @unknown default:
+            return false
         }
     }
 }
