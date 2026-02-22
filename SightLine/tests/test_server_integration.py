@@ -237,3 +237,80 @@ class TestTelemetryAggregator:
         agg.update_lod(3)
         interval_lod3 = agg.send_interval
         assert interval_lod3 > interval_lod1  # LOD 3 is slower
+
+
+# ---------------------------------------------------------------------------
+# Repeat suppression guards
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatSuppressionGuards:
+    """Verify anti-repeat helpers used by server-side speech throttling."""
+
+    def test_repeated_text_detected_within_cooldown(self):
+        from server import _is_repeated_text
+
+        repeated = _is_repeated_text(
+            "Facing north. Hallway ahead.",
+            previous_text="Facing north. Hallway ahead!",
+            now_ts=12.0,
+            previous_ts=4.0,
+            cooldown_sec=10.0,
+        )
+        assert repeated is True
+
+    def test_short_text_not_suppressed(self):
+        from server import _is_repeated_text
+
+        repeated = _is_repeated_text(
+            "OK",
+            previous_text="OK",
+            now_ts=5.0,
+            previous_ts=1.0,
+            cooldown_sec=10.0,
+        )
+        assert repeated is False
+
+    def test_telemetry_injection_requires_meaningful_change(self):
+        from lod.models import EphemeralContext
+        from server import _build_telemetry_signature, _should_inject_telemetry_context
+
+        previous_ctx = EphemeralContext(
+            motion_state="walking",
+            step_cadence=80,
+            ambient_noise_db=55,
+            heading=80,
+            heart_rate=92,
+        )
+        current_ctx = EphemeralContext(
+            motion_state="walking",
+            step_cadence=82,  # same cadence bucket
+            ambient_noise_db=58,  # same noise bucket
+            heading=84,  # same 30° bucket
+            heart_rate=95,  # same HR bucket
+        )
+
+        should_inject, _ = _should_inject_telemetry_context(
+            previous_signature=_build_telemetry_signature(previous_ctx),
+            current_signature=_build_telemetry_signature(current_ctx),
+            last_injected_ts=10.0,
+            now_ts=18.0,
+        )
+        assert should_inject is False
+
+    def test_telemetry_force_refresh_after_timeout(self):
+        from lod.models import EphemeralContext
+        from server import _build_telemetry_signature, _should_inject_telemetry_context
+
+        ctx = EphemeralContext(motion_state="walking", step_cadence=80, ambient_noise_db=55)
+        signature = _build_telemetry_signature(ctx)
+
+        should_inject, reasons = _should_inject_telemetry_context(
+            previous_signature=signature,
+            current_signature=signature,
+            last_injected_ts=0.0,
+            now_ts=30.0,
+            force_refresh_sec=25.0,
+        )
+        assert should_inject is True
+        assert "periodic_refresh" in reasons

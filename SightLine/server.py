@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +100,156 @@ def _coerce_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return default
+
+
+TELEMETRY_FORCE_REFRESH_SEC = 25.0
+AGENT_TEXT_REPEAT_SUPPRESS_SEC = 14.0
+VISION_REPEAT_SUPPRESS_SEC = 18.0
+VISION_SAFETY_REPEAT_SUPPRESS_SEC = 6.0
+OCR_REPEAT_SUPPRESS_SEC = 20.0
+OCR_SAFETY_REPEAT_SUPPRESS_SEC = 8.0
+VISION_PREFEEDBACK_COOLDOWN_SEC = 12.0
+OCR_PREFEEDBACK_COOLDOWN_SEC = 15.0
+
+_MEANINGFUL_TELEMETRY_FIELDS = {
+    "motion_state",
+    "hr_bucket",
+    "noise_bucket",
+    "cadence_bucket",
+    "heading_bucket",
+    "gps_bucket",
+    "device_type",
+}
+
+
+def _normalize_text_for_dedupe(text: str) -> str:
+    """Normalize free text for repeat suppression checks."""
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return ""
+    compact = re.sub(r"\s+", " ", lowered)
+    compact = re.sub(r"[^\w\s]", "", compact, flags=re.UNICODE)
+    return compact.strip()
+
+
+def _is_repeated_text(
+    text: str,
+    *,
+    previous_text: str,
+    now_ts: float,
+    previous_ts: float,
+    cooldown_sec: float,
+    min_chars: int = 20,
+) -> bool:
+    """Return True when the same meaningful text repeats inside cooldown."""
+    if not previous_text:
+        return False
+    if now_ts < previous_ts:
+        return False
+    normalized = _normalize_text_for_dedupe(text)
+    previous_normalized = _normalize_text_for_dedupe(previous_text)
+    if len(normalized) < min_chars or len(previous_normalized) < min_chars:
+        return False
+    if normalized != previous_normalized:
+        return False
+    return (now_ts - previous_ts) < cooldown_sec
+
+
+def _heart_rate_bucket(heart_rate: float | None) -> str:
+    if heart_rate is None or heart_rate <= 0:
+        return "unknown"
+    if heart_rate > 120:
+        return "panic"
+    if heart_rate > 100:
+        return "elevated"
+    return "normal"
+
+
+def _noise_bucket(noise_db: float) -> str:
+    if noise_db < 40:
+        return "quiet"
+    if noise_db < 65:
+        return "moderate"
+    if noise_db < 80:
+        return "noisy"
+    return "very_loud"
+
+
+def _cadence_bucket(step_cadence: float) -> str:
+    if step_cadence <= 0:
+        return "still"
+    if step_cadence < 60:
+        return "slow"
+    if step_cadence < 120:
+        return "walk"
+    return "fast"
+
+
+def _heading_bucket(heading: float | None) -> int | None:
+    if heading is None:
+        return None
+    return int((heading % 360) // 30)
+
+
+def _gps_bucket(gps) -> tuple[float, float] | None:
+    if gps is None:
+        return None
+    try:
+        return (round(float(gps.lat), 3), round(float(gps.lng), 3))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _build_telemetry_signature(ephemeral_ctx) -> dict[str, object]:
+    """Build coarse signature to detect meaningful telemetry changes."""
+    heading_value = getattr(ephemeral_ctx, "heading", None)
+    heading_bucket = _heading_bucket(heading_value if heading_value not in (None, 0.0) else None)
+    return {
+        "motion_state": getattr(ephemeral_ctx, "motion_state", "unknown"),
+        "hr_bucket": _heart_rate_bucket(getattr(ephemeral_ctx, "heart_rate", None)),
+        "noise_bucket": _noise_bucket(float(getattr(ephemeral_ctx, "ambient_noise_db", 50.0) or 50.0)),
+        "cadence_bucket": _cadence_bucket(float(getattr(ephemeral_ctx, "step_cadence", 0.0) or 0.0)),
+        "heading_bucket": heading_bucket,
+        "gps_bucket": _gps_bucket(getattr(ephemeral_ctx, "gps", None)),
+        "time_context": getattr(ephemeral_ctx, "time_context", "unknown"),
+        "device_type": getattr(ephemeral_ctx, "device_type", "phone_only"),
+    }
+
+
+def _changed_signature_fields(
+    previous_signature: dict[str, object] | None,
+    current_signature: dict[str, object],
+) -> list[str]:
+    if previous_signature is None:
+        return ["initial"]
+    changed: list[str] = []
+    for key, value in current_signature.items():
+        if previous_signature.get(key) != value:
+            changed.append(key)
+    return changed
+
+
+def _should_inject_telemetry_context(
+    *,
+    previous_signature: dict[str, object] | None,
+    current_signature: dict[str, object],
+    last_injected_ts: float,
+    now_ts: float,
+    force_refresh_sec: float = TELEMETRY_FORCE_REFRESH_SEC,
+) -> tuple[bool, list[str]]:
+    """Decide if telemetry context should be injected into the model."""
+    changed = _changed_signature_fields(previous_signature, current_signature)
+    if previous_signature is None:
+        return True, changed
+
+    meaningful_change = [field for field in changed if field in _MEANINGFUL_TELEMETRY_FIELDS]
+    if meaningful_change:
+        return True, meaningful_change
+
+    if now_ts - last_injected_ts >= force_refresh_sec:
+        return True, ["periodic_refresh"]
+
+    return False, changed
 
 # ---------------------------------------------------------------------------
 # Sub-agent & tool imports (lazy to handle missing deps gracefully)
@@ -493,6 +644,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _last_vision_time = 0.0
     _frame_seq = 0
     _is_client_muted = False
+    _last_vision_context_text = ""
+    _last_vision_context_sent_at = 0.0
+    _last_vision_prefeedback_at = 0.0
+    _last_ocr_context_text = ""
+    _last_ocr_context_sent_at = 0.0
+    _last_ocr_prefeedback_at = 0.0
+    _last_telemetry_signature: dict[str, object] | None = None
+    _last_telemetry_context_sent_at = 0.0
+    _last_agent_text = ""
+    _last_agent_text_sent_at = 0.0
+    _allow_agent_repeat_until = 0.0
 
     def _is_websocket_open() -> bool:
         return (
@@ -521,6 +683,31 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         except (WebSocketDisconnect, RuntimeError):
             stop_downstream.set()
             return False
+
+    async def _forward_agent_transcript(text: str) -> bool:
+        """Forward agent transcript with short-window duplicate suppression."""
+        nonlocal _last_agent_text, _last_agent_text_sent_at
+        now_mono = time.monotonic()
+        can_repeat = now_mono <= _allow_agent_repeat_until
+        is_repeat = _is_repeated_text(
+            text,
+            previous_text=_last_agent_text,
+            now_ts=now_mono,
+            previous_ts=_last_agent_text_sent_at,
+            cooldown_sec=AGENT_TEXT_REPEAT_SUPPRESS_SEC,
+        )
+        if is_repeat and not can_repeat:
+            logger.debug("Suppressed repeated downstream transcript: %s", text[:120])
+            return True
+        sent = await _safe_send_json({
+            "type": "transcript",
+            "text": text,
+            "role": "agent",
+        })
+        if sent:
+            _last_agent_text = text
+            _last_agent_text_sent_at = now_mono
+        return sent
 
     async def _emit_tool_event(
         tool: str,
@@ -771,7 +958,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     async def _run_vision_analysis(image_base64: str) -> None:
         """Run async vision analysis and inject results into Live session."""
-        nonlocal _vision_in_progress
+        nonlocal _vision_in_progress, _last_vision_context_text
+        nonlocal _last_vision_context_sent_at, _last_vision_prefeedback_at
         if not _vision_available:
             await _emit_tool_event(
                 "analyze_scene",
@@ -787,11 +975,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             _vision_in_progress = True
 
         # B-5: Pre-feedback — immediate audio cue before analysis starts
-        await _safe_send_json({
-            "type": "transcript",
-            "text": "Let me look at that for you...",
-            "role": "agent",
-        })
+        now_mono = time.monotonic()
+        if now_mono - _last_vision_prefeedback_at >= VISION_PREFEEDBACK_COOLDOWN_SEC:
+            await _forward_agent_transcript("Let me look at that for you...")
+            _last_vision_prefeedback_at = now_mono
 
         try:
             ctx_dict = {
@@ -801,13 +988,33 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "motion_state": session_manager.get_ephemeral_context(session_id).motion_state,
             }
             result = await analyze_scene(image_base64, session_ctx.current_lod, ctx_dict)
-            summary = result.get("scene_description", "")
-            await _safe_send_json({
-                "type": "vision_result",
-                "summary": summary,
-                "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
-                "data": _json_safe(result),
-            })
+            warnings = result.get("safety_warnings", [])
+            vision_text = _format_vision_result(result, session_ctx.current_lod)
+            vision_repeat_window = (
+                VISION_SAFETY_REPEAT_SUPPRESS_SEC
+                if warnings
+                else VISION_REPEAT_SUPPRESS_SEC
+            )
+            now_mono = time.monotonic()
+            repeated = _is_repeated_text(
+                vision_text,
+                previous_text=_last_vision_context_text,
+                now_ts=now_mono,
+                previous_ts=_last_vision_context_sent_at,
+                cooldown_sec=vision_repeat_window,
+            )
+            if not repeated:
+                await _safe_send_json({
+                    "type": "vision_result",
+                    "summary": result.get("scene_description", ""),
+                    "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
+                    "data": _json_safe(result),
+                })
+                _last_vision_context_text = vision_text
+                _last_vision_context_sent_at = now_mono
+            else:
+                logger.debug("Suppressed repeated vision summary within %.1fs window", vision_repeat_window)
+
             await _safe_send_json({
                 "type": "vision_debug",
                 "data": {
@@ -820,12 +1027,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "analyze_scene",
                 ToolBehavior.WHEN_IDLE,
                 status="completed",
-                data={"confidence": float(result.get("confidence", 0.0))},
+                data={
+                    "confidence": float(result.get("confidence", 0.0)),
+                    "repeat_suppressed": repeated,
+                },
             )
 
-            if result.get("confidence", 0) > 0:
+            if result.get("confidence", 0) > 0 and not repeated:
                 # Determine info_type for should_speak gate
-                warnings = result.get("safety_warnings", [])
                 info_type = "safety_warning" if warnings else "spatial_description"
                 ephemeral = session_manager.get_ephemeral_context(session_id)
                 speak = should_speak(
@@ -835,7 +1044,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
                 )
 
-                vision_text = _format_vision_result(result, session_ctx.current_lod)
                 if not speak:
                     vision_text = "[SILENT - context only, do not speak aloud]\n" + vision_text
                 content = types.Content(
@@ -966,6 +1174,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     async def _run_ocr_analysis(image_base64: str, safety_only: bool = False) -> None:
         """Run OCR and inject results into Live session context."""
+        nonlocal _last_ocr_context_text, _last_ocr_context_sent_at, _last_ocr_prefeedback_at
         if not _ocr_available:
             await _emit_tool_event(
                 "extract_text",
@@ -978,11 +1187,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         # B-5: Pre-feedback — immediate audio cue before analysis starts
         # Skip pre-feedback for safety-only scans (LOD 1/2)
         if not safety_only:
-            await _safe_send_json({
-                "type": "transcript",
-                "text": "Reading the text for you...",
-                "role": "agent",
-            })
+            now_mono = time.monotonic()
+            if now_mono - _last_ocr_prefeedback_at >= OCR_PREFEEDBACK_COOLDOWN_SEC:
+                await _forward_agent_transcript("Reading the text for you...")
+                _last_ocr_prefeedback_at = now_mono
 
         try:
             # Build context hint from session state
@@ -993,12 +1201,28 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 hint += f" Currently: {session_ctx.active_task}."
 
             result = await extract_text(image_base64, context_hint=hint, safety_only=safety_only)
-            await _safe_send_json({
-                "type": "ocr_result",
-                "summary": result.get("text", ""),
-                "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
-                "data": _json_safe(result),
-            })
+            ocr_text = _format_ocr_result(result)
+            repeat_window = OCR_SAFETY_REPEAT_SUPPRESS_SEC if safety_only else OCR_REPEAT_SUPPRESS_SEC
+            now_mono = time.monotonic()
+            repeated = _is_repeated_text(
+                ocr_text,
+                previous_text=_last_ocr_context_text,
+                now_ts=now_mono,
+                previous_ts=_last_ocr_context_sent_at,
+                cooldown_sec=repeat_window,
+            )
+            if not repeated:
+                await _safe_send_json({
+                    "type": "ocr_result",
+                    "summary": result.get("text", ""),
+                    "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
+                    "data": _json_safe(result),
+                })
+                _last_ocr_context_text = ocr_text
+                _last_ocr_context_sent_at = now_mono
+            else:
+                logger.debug("Suppressed repeated OCR summary within %.1fs window", repeat_window)
+
             await _safe_send_json({
                 "type": "ocr_debug",
                 "data": {
@@ -1011,10 +1235,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "extract_text",
                 ToolBehavior.WHEN_IDLE,
                 status="completed",
-                data={"confidence": float(result.get("confidence", 0.0))},
+                data={
+                    "confidence": float(result.get("confidence", 0.0)),
+                    "repeat_suppressed": repeated,
+                },
             )
 
-            if result.get("confidence", 0) > 0.3 and result.get("text"):
+            if result.get("confidence", 0) > 0.3 and result.get("text") and not repeated:
                 ephemeral = session_manager.get_ephemeral_context(session_id)
                 info_type = "safety_warning" if safety_only else "object_enumeration"
                 speak = should_speak(
@@ -1024,7 +1251,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
                 )
 
-                ocr_text = _format_ocr_result(result)
                 if not speak:
                     ocr_text = "[SILENT - context only, do not speak aloud]\n" + ocr_text
                 content = types.Content(
@@ -1060,7 +1286,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Handles upstream message types: audio, image, telemetry,
         activity_start, activity_end, gesture.
         """
-        nonlocal _last_vision_time, _frame_seq
+        nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until
 
         try:
             while True:
@@ -1351,6 +1577,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         live_request_queue.send_content(content)
 
                     elif gesture == "repeat_last":
+                        _allow_agent_repeat_until = time.monotonic() + 12.0
                         last_agent = None
                         for entry in reversed(transcript_history):
                             if entry.get("role") == "agent":
@@ -1484,6 +1711,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     async def _process_telemetry(telemetry_data: dict) -> None:
         """Process a telemetry tick: semantic text + LOD decision."""
         import time as _time
+        nonlocal _last_telemetry_signature, _last_telemetry_context_sent_at
 
         ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
@@ -1496,7 +1724,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         if is_panic:
             semantic_text = parse_telemetry(telemetry_data)
             content = types.Content(
-                parts=[types.Part(text=semantic_text)],
+                parts=[types.Part(
+                    text=(
+                        "[TELEMETRY CONTEXT - CRITICAL]\n"
+                        "PANIC-related sensor context follows. Keep responses calming and brief.\n"
+                        f"{semantic_text}"
+                    )
+                )],
                 role="user",
             )
             live_request_queue.send_content(content)
@@ -1506,12 +1740,30 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         # Semantic text injection (LOD-aware throttle)
         now = _time.monotonic()
         if telemetry_agg.should_send(now):
-            semantic_text = parse_telemetry(telemetry_data)
-            content = types.Content(
-                parts=[types.Part(text=semantic_text)],
-                role="user",
+            signature = _build_telemetry_signature(ephemeral_ctx)
+            should_inject, reasons = _should_inject_telemetry_context(
+                previous_signature=_last_telemetry_signature,
+                current_signature=signature,
+                last_injected_ts=_last_telemetry_context_sent_at,
+                now_ts=now,
             )
-            live_request_queue.send_content(content)
+            if should_inject:
+                semantic_text = parse_telemetry(telemetry_data)
+                content = types.Content(
+                    parts=[types.Part(
+                        text=(
+                            "[TELEMETRY CONTEXT - INTERNAL ONLY]\n"
+                            "This is passive sensor context. Do NOT speak, summarize, or repeat it aloud.\n"
+                            "Use it silently unless there is a new immediate safety hazard.\n"
+                            f"{semantic_text}"
+                        )
+                    )],
+                    role="user",
+                )
+                live_request_queue.send_content(content)
+                _last_telemetry_context_sent_at = now
+                logger.debug("Telemetry context injected: reasons=%s", ",".join(reasons))
+            _last_telemetry_signature = signature
             telemetry_agg.mark_sent(now)
 
         await _process_lod_decision(ephemeral_ctx)
@@ -1689,11 +1941,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         "role": "agent",
                         "text": event.output_transcription.text,
                     })
-                    if not await _safe_send_json({
-                        "type": "transcript",
-                        "text": event.output_transcription.text,
-                        "role": "agent",
-                    }):
+                    if not await _forward_agent_transcript(event.output_transcription.text):
                         break
 
                 # --- Content parts (audio / text) ---
@@ -1710,11 +1958,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 break
 
                         elif part.text:
-                            if not await _safe_send_json({
-                                "type": "transcript",
-                                "text": part.text,
-                                "role": "agent",
-                            }):
+                            if not await _forward_agent_transcript(part.text):
                                 break
 
                     if stop_downstream.is_set():

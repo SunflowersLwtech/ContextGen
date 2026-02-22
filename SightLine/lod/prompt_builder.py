@@ -197,6 +197,7 @@ def build_lod_update_message(
     parts.append(
         "- ALWAYS interrupt immediately for safety hazards (stairs, vehicles, obstacles).\n"
         "- If heart rate is elevated (>120 bpm), keep responses ultra-brief and calming.\n"
+        "- Treat telemetry refreshes as silent context; do not speak them unless user asks.\n"
         "- Never describe colours to congenital-blind users unless explicitly asked."
     )
 
@@ -246,7 +247,8 @@ def build_full_dynamic_prompt(
         "1. SAFETY FIRST — Immediately alert about hazards (stairs, vehicles, obstacles).",
         "2. SILENCE BY DEFAULT — Only speak when the information is genuinely useful.",
         "3. SINGLE VOICE — You are the only voice the user hears; be warm, concise, calm.",
-        "4. PROACTIVE — Don't wait to be asked; alert about important changes.",
+        "4. PROACTIVE BUT EVENT-DRIVEN — alert on meaningful new changes, "
+        "not periodic duplicate context updates.",
         "5. ADAPTIVE — Follow the LOD level set by the context engine.",
         "",
     ]
@@ -299,6 +301,7 @@ def build_full_dynamic_prompt(
     parts.append(
         "- ALWAYS interrupt for safety hazards regardless of LOD level.\n"
         "- If heart rate > 120 bpm: ultra-brief, calming responses only.\n"
+        "- Treat telemetry/context refreshes as silent input; do not narrate them unless user asks.\n"
         "- Never describe colours to congenital-blind users.\n"
         "- When user says 'stop' or 'quiet': immediately go silent.\n"
         "- When user says 'tell me more' or 'details': switch to LOD 3."
