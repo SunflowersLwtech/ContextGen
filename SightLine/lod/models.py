@@ -37,7 +37,7 @@ class EphemeralContext:
 
     motion_state: str = "stationary"  # stationary | walking | running | in_vehicle | cycling
     step_cadence: float = 0.0  # steps/minute (CMPedometer)
-    ambient_noise_db: float = 50.0  # dB SPL
+    ambient_noise_db: float = 70.0  # dB SPL (conservative default when sensor unavailable)
     gps: Optional[GPSData] = None
     heading: float = 0.0  # degrees, 0=N
     time_context: str = "unknown"  # morning_commute | work_hours | evening | late_night

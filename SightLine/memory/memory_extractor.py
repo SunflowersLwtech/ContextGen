@@ -45,6 +45,9 @@ Transcript:
 """
 
 
+_VALID_CATEGORIES = {"preference", "experience", "person", "location", "routine", "general"}
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
     va = np.array(a, dtype=np.float64)
@@ -59,7 +62,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 class MemoryExtractor:
     """Extracts and stores key memories from a session transcript."""
 
-    def __init__(self, similarity_threshold: float = 0.85, confidence_threshold: float = 0.7):
+    def __init__(self, similarity_threshold: float = 0.85, confidence_threshold: float = 0.75):
         self.similarity_threshold = similarity_threshold
         self.confidence_threshold = confidence_threshold
 
@@ -104,10 +107,14 @@ class MemoryExtractor:
         stored_count = 0
         for candidate in candidates:
             confidence = float(candidate.get("confidence", 0))
-            if confidence < self.confidence_threshold:
+            category = str(candidate.get("category", "general")).strip().lower()
+            required_confidence = self.confidence_threshold
+            if category in ("person", "stress_trigger"):
+                required_confidence = 0.9
+            if confidence < required_confidence:
                 logger.debug(
-                    "Skipping low-confidence memory (%.2f): %s",
-                    confidence, candidate.get("content", "")[:80],
+                    "Skipping (conf=%.2f < %.2f): %s",
+                    confidence, required_confidence, candidate.get("content", "")[:80],
                 )
                 continue
 
@@ -182,15 +189,40 @@ class MemoryExtractor:
             if not isinstance(candidates, list):
                 logger.warning("Extraction model returned non-list: %s", type(candidates))
                 return []
-            return candidates
+            validated = []
+            for raw in candidates:
+                v = self._validate_candidate(raw)
+                if v is not None:
+                    validated.append(v)
+            return validated
         except Exception:
             logger.exception("Memory extraction model call failed")
             return []
+
+    def _validate_candidate(self, raw: dict) -> Optional[dict]:
+        """Validate and normalize a candidate memory dict."""
+        try:
+            content = str(raw.get("content", "")).strip()
+            if not content:
+                return None
+            category = str(raw.get("category", "general")).strip().lower()
+            if category not in _VALID_CATEGORIES:
+                logger.warning("Unknown category %r, defaulting to 'general'", category)
+                category = "general"
+            importance = max(0.0, min(1.0, float(raw.get("importance", 0.5))))
+            confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
+            return {"content": content, "category": category, "importance": importance, "confidence": confidence}
+        except (TypeError, ValueError) as e:
+            logger.warning("Invalid candidate: %s", e)
+            return None
 
     def _find_duplicate(
         self, content: str, existing_memories: list[dict]
     ) -> Optional[dict]:
         """Check if content is semantically similar to an existing memory.
+
+        Uses vector cosine similarity when embeddings are available,
+        falls back to Jaccard text similarity when embeddings fail.
 
         Returns the matching memory dict if similarity > threshold, else None.
         """
@@ -198,24 +230,37 @@ class MemoryExtractor:
             return None
 
         new_embedding = _compute_embedding(content)
-        # Skip comparison if embedding failed (zero vector)
-        if all(v == 0.0 for v in new_embedding[:10]):
-            return None
+        embedding_valid = not all(v == 0.0 for v in new_embedding[:10])
 
         for mem in existing_memories:
             existing_content = mem.get("content", "")
             if not existing_content:
                 continue
-            existing_embedding = _compute_embedding(existing_content)
-            if all(v == 0.0 for v in existing_embedding[:10]):
-                continue
-
-            sim = _cosine_similarity(new_embedding, existing_embedding)
-            if sim > self.similarity_threshold:
+            # Try vector similarity
+            if embedding_valid:
+                existing_embedding = _compute_embedding(existing_content)
+                if not all(v == 0.0 for v in existing_embedding[:10]):
+                    sim = _cosine_similarity(new_embedding, existing_embedding)
+                    if sim > self.similarity_threshold:
+                        logger.debug(
+                            "Found duplicate (vec sim=%.3f): '%s' ~ '%s'",
+                            sim, content[:50], existing_content[:50],
+                        )
+                        return mem
+            # Text fallback (Jaccard)
+            if self._text_similarity(content, existing_content) > 0.7:
                 logger.debug(
-                    "Found duplicate (sim=%.3f): '%s' ~ '%s'",
-                    sim, content[:50], existing_content[:50],
+                    "Found duplicate (text sim): '%s' ~ '%s'",
+                    content[:50], existing_content[:50],
                 )
                 return mem
 
         return None
+
+    def _text_similarity(self, a: str, b: str) -> float:
+        """Jaccard word-overlap similarity between two strings."""
+        a_words = set(a.lower().split())
+        b_words = set(b.lower().split())
+        if not a_words or not b_words:
+            return 0.0
+        return len(a_words & b_words) / len(a_words | b_words)

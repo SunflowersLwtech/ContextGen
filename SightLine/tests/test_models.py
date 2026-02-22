@@ -7,7 +7,7 @@ def test_ephemeral_context_defaults():
     ctx = EphemeralContext()
     assert ctx.motion_state == "stationary"
     assert ctx.step_cadence == 0.0
-    assert ctx.ambient_noise_db == 50.0
+    assert ctx.ambient_noise_db == 70.0
     assert ctx.heart_rate is None
     assert ctx.panic is False
     assert ctx.gps is None

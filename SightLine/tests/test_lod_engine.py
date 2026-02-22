@@ -218,3 +218,101 @@ def test_low_value_high_noise_no_speak():
 
 def test_navigation_normal_conditions():
     assert should_speak("navigation", current_lod=2, step_cadence=50, ambient_noise_db=50) is True
+
+
+# =====================================================================
+# decide_lod() — Gesture + voice interaction (Task 1.1)
+# =====================================================================
+
+
+def test_gesture_takes_priority_over_voice_detail(default_profile):
+    """Gesture lod_down should NOT be undone by user_requested_detail."""
+    ctx = EphemeralContext(motion_state="stationary", user_gesture="lod_down")
+    session = SessionContext(user_requested_detail=True)
+    lod, log = decide_lod(ctx, session, default_profile)
+    # Stationary base is LOD 3, gesture lod_down → LOD 2 (not overridden to LOD 3)
+    assert lod == 2
+    assert any("lod_down" in r for r in log.triggered_rules)
+    assert not any("user_requested_detail" in r for r in log.triggered_rules)
+
+
+def test_gesture_takes_priority_over_voice_stop(default_profile):
+    """Gesture lod_up should NOT be undone by user_said_stop."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=50, user_gesture="lod_up")
+    session = SessionContext(user_said_stop=True)
+    lod, log = decide_lod(ctx, session, default_profile)
+    # Walking slow base is LOD 2, gesture lod_up → LOD 3 (not overridden to LOD 1)
+    assert lod == 3
+    assert any("lod_up" in r for r in log.triggered_rules)
+    assert not any("user_said_stop" in r for r in log.triggered_rules)
+
+
+# =====================================================================
+# decide_lod() — Unknown gesture (Task 1.2)
+# =====================================================================
+
+
+def test_unknown_gesture_ignored(default_session, default_profile):
+    """Unknown gesture strings should be silently ignored."""
+    ctx = EphemeralContext(motion_state="stationary", user_gesture="triple_tap")
+    lod, log = decide_lod(ctx, default_session, default_profile)
+    assert lod == 3  # stationary default, no gesture effect
+    assert not any("Gesture" in r for r in log.triggered_rules)
+
+
+def test_whitespace_gesture_ignored(default_session, default_profile):
+    """Whitespace-only gesture should be treated as None."""
+    ctx = EphemeralContext(motion_state="stationary", user_gesture="  ")
+    lod, log = decide_lod(ctx, default_session, default_profile)
+    assert not any("Gesture" in r for r in log.triggered_rules)
+
+
+# =====================================================================
+# decide_lod() — Rule 2b: Time context (Task 1.4)
+# =====================================================================
+
+
+def test_morning_commute_reduces_lod(commute_ephemeral, default_session, default_profile):
+    """morning_commute should reduce LOD by 1."""
+    lod, log = decide_lod(commute_ephemeral, default_session, default_profile)
+    # Stationary base LOD 3, morning_commute → LOD 2
+    assert lod == 2
+    assert any("Rule2b:morning_commute" in r for r in log.triggered_rules)
+
+
+def test_late_night_reduces_lod(default_session, default_profile):
+    """late_night should reduce LOD by 1."""
+    ctx = EphemeralContext(motion_state="stationary", time_context="late_night")
+    lod, log = decide_lod(ctx, default_session, default_profile)
+    assert lod == 2
+    assert any("Rule2b:late_night" in r for r in log.triggered_rules)
+
+
+def test_time_context_no_effect_at_lod1(default_session, default_profile):
+    """Time context should NOT reduce below LOD 1."""
+    ctx = EphemeralContext(motion_state="running", time_context="morning_commute")
+    lod, _ = decide_lod(ctx, default_session, default_profile)
+    assert lod == 1
+
+
+# =====================================================================
+# decide_lod() — step_cadence boundary (Task 1.5)
+# =====================================================================
+
+
+def test_step_cadence_120_triggers_lod1(default_session, default_profile):
+    """step_cadence=120 (boundary) should trigger LOD 1."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=120)
+    lod, log = decide_lod(ctx, default_session, default_profile)
+    assert lod == 1
+
+
+# =====================================================================
+# decide_lod() — Default ambient noise (Task 1.3)
+# =====================================================================
+
+
+def test_default_ambient_noise_is_70():
+    """EphemeralContext default ambient_noise_db should be 70.0."""
+    ctx = EphemeralContext()
+    assert ctx.ambient_noise_db == 70.0

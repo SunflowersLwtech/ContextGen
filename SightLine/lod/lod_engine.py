@@ -39,7 +39,7 @@ class LODDecisionLog:
     # Input snapshot
     motion_state: str = ""
     step_cadence: float = 0.0
-    ambient_noise_db: float = 50.0
+    ambient_noise_db: float = 70.0
     heart_rate: float | None = None
     panic: bool = False
     space_transition: bool = False
@@ -93,7 +93,7 @@ def should_speak(
     info_type: str,
     current_lod: int,
     step_cadence: float = 0.0,
-    ambient_noise_db: float = 50.0,
+    ambient_noise_db: float = 70.0,
 ) -> bool:
     """Determine whether the agent should vocalise this information.
 
@@ -146,10 +146,22 @@ def decide_lod(
 
     motion_state = getattr(ephemeral, "motion_state", "stationary") or "stationary"
     step_cadence = _to_float(getattr(ephemeral, "step_cadence", 0.0), 0.0)
-    ambient_noise_db = _to_float(getattr(ephemeral, "ambient_noise_db", 50.0), 50.0)
+    _raw_noise = getattr(ephemeral, "ambient_noise_db", None)
+    if _raw_noise is None:
+        logger.debug("ambient_noise_db missing; defaulting to conservative 70dB")
+        ambient_noise_db = 70.0
+    else:
+        ambient_noise_db = _to_float(_raw_noise, 70.0)
     heart_rate = _to_opt_float(getattr(ephemeral, "heart_rate", None))
     panic = bool(getattr(ephemeral, "panic", False))
-    user_gesture = getattr(ephemeral, "user_gesture", None)
+    _raw_gesture = getattr(ephemeral, "user_gesture", None)
+    if isinstance(_raw_gesture, str) and _raw_gesture.strip():
+        user_gesture = _raw_gesture.strip().lower()
+        if user_gesture not in ("lod_up", "lod_down", "tap", "shake"):
+            logger.warning("Unknown user_gesture: %r", user_gesture)
+            user_gesture = None
+    else:
+        user_gesture = None
 
     recent_space_transition = bool(getattr(session, "recent_space_transition", False))
     user_requested_detail = bool(getattr(session, "user_requested_detail", False))
@@ -190,7 +202,7 @@ def decide_lod(
         return 1, log
 
     # ── Rule 2: Motion-state baseline ─────────────────────────────────
-    if motion_state == "running" or step_cadence > 120:
+    if motion_state == "running" or step_cadence >= 120:
         base_lod = 1
         log.triggered_rules.append("Rule2:running→LOD1")
     elif motion_state == "walking":
@@ -211,6 +223,12 @@ def decide_lod(
         log.triggered_rules.append("Rule2:stationary→LOD3")
 
     log.base_lod_before_adjustments = base_lod
+
+    # ── Rule 2b: Time-of-day adjustment ─────────────────────────────
+    time_context = getattr(ephemeral, "time_context", "unknown") or "unknown"
+    if time_context in ("morning_commute", "late_night") and base_lod > 1:
+        base_lod = max(1, base_lod - 1)
+        log.triggered_rules.append(f"Rule2b:{time_context}→-1")
 
     # ── Rule 3: Ambient noise override ────────────────────────────────
     if ambient_noise_db > 80:
@@ -243,17 +261,7 @@ def decide_lod(
         if base_lod != prev:
             log.triggered_rules.append("Rule6:advanced_daily→-1")
 
-    # ── Rule 7: Explicit user override (highest priority after PANIC) ─
-    if user_requested_detail:
-        base_lod = 3
-        log.triggered_rules.append("Rule7:user_requested_detail→LOD3")
-        log.user_override = "detail"
-    elif user_said_stop:
-        base_lod = 1
-        log.triggered_rules.append("Rule7:user_said_stop→LOD1")
-        log.user_override = "stop"
-
-    # ── User gesture override ─────────────────────────────────────────
+    # ── Rule 7: Explicit user override + gesture (highest priority after PANIC)
     if user_gesture == "lod_up":
         prev = base_lod
         base_lod = min(3, base_lod + 1)
@@ -264,6 +272,14 @@ def decide_lod(
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
             log.triggered_rules.append("Gesture:lod_down→-1")
+    elif user_requested_detail:
+        base_lod = 3
+        log.triggered_rules.append("Rule7:user_requested_detail→LOD3")
+        log.user_override = "detail"
+    elif user_said_stop:
+        base_lod = 1
+        log.triggered_rules.append("Rule7:user_said_stop→LOD1")
+        log.user_override = "stop"
 
     # ── Finalise ──────────────────────────────────────────────────────
     log.final_lod = base_lod

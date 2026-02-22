@@ -9,6 +9,7 @@ Embedding model: gemini-embedding-001 (truncated to 2048-D)
 
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Optional
@@ -53,17 +54,28 @@ class MemoryBankService:
         self._memories_cache: list[dict] = []
         self._init_backend()
 
-    def _init_backend(self):
-        """Initialize Firestore backend for memory storage."""
-        try:
-            from google.cloud import firestore
+    def _init_backend(self, max_retries: int = 3):
+        """Initialize Firestore backend with retry and exponential backoff."""
+        for attempt in range(max_retries):
+            try:
+                from google.cloud import firestore
 
-            self._firestore = firestore.Client(project=PROJECT_ID)
-            logger.info("MemoryBankService initialized for user %s", self.user_id)
-        except Exception:
-            logger.warning(
-                "Firestore unavailable for MemoryBankService; memories will be ephemeral"
-            )
+                self._firestore = firestore.Client(project=PROJECT_ID)
+                logger.info("MemoryBankService initialized for user %s", self.user_id)
+                return
+            except Exception as e:
+                wait = min(2 ** attempt, 4)
+                logger.warning(
+                    "Firestore init attempt %d/%d failed: %s (retry in %ds)",
+                    attempt + 1, max_retries, e, wait,
+                )
+                if attempt < max_retries - 1:
+                    import time as _time
+                    _time.sleep(wait)
+        logger.error(
+            "Firestore unavailable after %d attempts; memories will be EPHEMERAL",
+            max_retries,
+        )
 
     def _memories_collection(self):
         """Return the memories subcollection reference for this user."""
@@ -314,14 +326,22 @@ def _get_bank(user_id: str) -> MemoryBankService:
     return _bank_instances[user_id]
 
 
+def _sanitize_memory_content(text: str) -> str:
+    """Remove prompt-injection patterns from memory content."""
+    text = re.sub(r'(?i)ignore\s+(all\s+)?previous\s+instructions?', '[REDACTED]', text)
+    text = re.sub(r'(?i)you\s+are\s+now\s+', 'the user mentioned ', text)
+    text = re.sub(r'(?i)system\s*:\s*', '', text)
+    return text.strip()
+
+
 def load_relevant_memories(user_id: str, context: str, top_k: int = 3) -> list[str]:
     """Load top-K relevant memories for prompt injection.
 
-    Returns a list of memory content strings, ranked by relevance.
+    Returns a list of sanitized memory content strings, ranked by relevance.
     """
     bank = _get_bank(user_id)
     results = bank.retrieve_memories(context, top_k=top_k)
-    return [m["content"] for m in results]
+    return [_sanitize_memory_content(m["content"]) for m in results]
 
 
 def preload_memory(user_id: str, context: str) -> dict:

@@ -69,7 +69,8 @@ def try_restore_snapshot(session: SessionContext) -> str | None:
         f"[RESUME] The user was previously doing '{snap.task_type}'. "
         f"Progress so far: {snap.progress}. "
         f"Remaining items: {remaining_str}. "
-        f"Please continue from where they left off — do NOT restart from the beginning."
+        f"Please continue from where they left off — do NOT restart from the beginning. "
+        f"IMPORTANT: Still interrupt immediately for any safety hazards."
     )
 
     # Consume the snapshot

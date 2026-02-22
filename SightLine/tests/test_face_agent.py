@@ -623,8 +623,11 @@ class TestFaceToolsLoad:
     def test_load_library(self):
         from tools.face_tools import load_face_library, set_db_client
 
-        emb_vec = MagicMock()
-        emb_vec.value = _make_embedding(seed=200).tolist()
+        class _MockVector:
+            """Mimics Firestore Vector with only .value (no to_map_value)."""
+            def __init__(self, val):
+                self.value = val
+        emb_vec = _MockVector(_make_embedding(seed=200).tolist())
 
         docs = [
             MockDocRef("f1", {

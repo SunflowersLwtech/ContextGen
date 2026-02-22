@@ -60,7 +60,7 @@ enum UpstreamMessage {
         case .activityEnd:
             return "{\"type\":\"activity_end\"}"
         case .gesture(let type):
-            return "{\"type\":\"gesture\",\"gesture_type\":\"\(type)\"}"
+            return "{\"type\":\"gesture\",\"gesture\":\"\(type)\"}"
         }
     }
 }

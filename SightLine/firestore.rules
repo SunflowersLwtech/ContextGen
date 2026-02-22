@@ -2,68 +2,56 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ┌─────────────────────────────────────────────────────────────┐
-    // │ HACKATHON MODE: open access (Firebase Auth not integrated)  │
-    // │ TODO(production): Remove this block and uncomment the       │
-    // │ auth-based rules below once Firebase Auth is wired up.      │
-    // └─────────────────────────────────────────────────────────────┘
-    match /users/{userId}/{document=**} {
-      allow read, write: if true;
-    }
-    match /memories/{memoryId} {
-      allow read, write: if true;
+    // ── Production rules (Firebase Auth required) ─────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    // ── Production rules (activate after Firebase Auth integration) ──
-    //
-    // function isAuthenticated() {
-    //   return request.auth != null;
-    // }
-    //
-    // function isOwner(userId) {
-    //   return isAuthenticated() && request.auth.uid == userId;
-    // }
-    //
-    // function validFaceWrite(userId) {
-    //   return request.resource.data.person_name is string
-    //     && request.resource.data.relationship is string
-    //     && request.resource.data.photo_index is int
-    //     && request.resource.data.registered_by is string
-    //     && request.resource.data.registered_by == userId
-    //     && (
-    //       !('reference_photo_base64' in request.resource.data)
-    //       || (
-    //         request.resource.data.consent_confirmed == true
-    //         && request.resource.data.reference_photo_base64 is string
-    //         && request.resource.data.reference_photo_base64.size() <= 350000
-    //       )
-    //     );
-    // }
-    //
-    // match /users/{userId} {
-    //   allow read, write: if isOwner(userId);
-    //
-    //   match /face_library/{faceId} {
-    //     allow read: if isOwner(userId);
-    //     allow create, update: if isOwner(userId) && validFaceWrite(userId);
-    //     allow delete: if isOwner(userId);
-    //   }
-    //
-    //   match /sessions_meta/{sessionId} {
-    //     allow read, write: if isOwner(userId);
-    //   }
-    //
-    //   match /memories/{memoryId} {
-    //     allow read, write: if isOwner(userId);
-    //   }
-    // }
-    //
-    // match /memories/{memoryId} {
-    //   allow read, write: if isAuthenticated()
-    //     && request.auth.uid == resource.data.user_id;
-    //   allow create: if isAuthenticated()
-    //     && request.auth.uid == request.resource.data.user_id;
-    // }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function validFaceWrite(userId) {
+      return request.resource.data.person_name is string
+        && request.resource.data.relationship is string
+        && request.resource.data.photo_index is int
+        && request.resource.data.registered_by is string
+        && request.resource.data.registered_by == userId
+        && (
+          !('reference_photo_base64' in request.resource.data)
+          || (
+            request.resource.data.consent_confirmed == true
+            && request.resource.data.reference_photo_base64 is string
+            && request.resource.data.reference_photo_base64.size() <= 350000
+          )
+        );
+    }
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /face_library/{faceId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validFaceWrite(userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /sessions_meta/{sessionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /memories/{memoryId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /memories/{memoryId} {
+      allow read, write: if isAuthenticated()
+        && request.auth.uid == resource.data.user_id;
+      allow create: if isAuthenticated()
+        && request.auth.uid == request.resource.data.user_id;
+    }
 
     // ── Deny all other access by default ───────────────────────────
     match /{document=**} {

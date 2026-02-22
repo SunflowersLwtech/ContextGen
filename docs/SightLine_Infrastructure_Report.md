@@ -134,26 +134,63 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function validFaceWrite(userId) {
+      return request.resource.data.person_name is string
+        && request.resource.data.relationship is string
+        && request.resource.data.photo_index is int
+        && request.resource.data.registered_by is string
+        && request.resource.data.registered_by == userId
+        && (
+          !('reference_photo_base64' in request.resource.data)
+          || (
+            request.resource.data.consent_confirmed == true
+            && request.resource.data.reference_photo_base64 is string
+            && request.resource.data.reference_photo_base64.size() <= 350000
+          )
+        );
+    }
+
     // 用户档案：仅本人可读写
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read, write: if isOwner(userId);
 
-      // 人脸库：仅本人（或 registered_by 标记的亲属）可写
+      // 人脸库：仅本人可读写，写入需数据校验
       match /face_library/{faceId} {
-        allow read: if request.auth != null && request.auth.uid == userId;
-        allow write: if request.auth != null;
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validFaceWrite(userId);
+        allow delete: if isOwner(userId);
       }
 
       // 会话元数据：仅本人可读写
       match /sessions_meta/{sessionId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read, write: if isOwner(userId);
+      }
+
+      // 用户级记忆：仅本人可读写
+      match /memories/{memoryId} {
+        allow read, write: if isOwner(userId);
       }
     }
 
-    // 记忆集合（fallback）：仅本人可读写
+    // 顶层记忆集合（fallback）：仅本人可读写
     match /memories/{memoryId} {
-      allow read, write: if request.auth != null
+      allow read, write: if isAuthenticated()
         && request.auth.uid == resource.data.user_id;
+      allow create: if isAuthenticated()
+        && request.auth.uid == request.resource.data.user_id;
+    }
+
+    // 默认拒绝所有其他访问
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

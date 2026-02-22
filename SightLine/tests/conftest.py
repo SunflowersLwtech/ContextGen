@@ -52,7 +52,14 @@ def high_hr_ephemeral() -> EphemeralContext:
 
 @pytest.fixture
 def noisy_ephemeral() -> EphemeralContext:
+    """High ambient noise (>80 dB) — caps LOD to 1."""
     return EphemeralContext(ambient_noise_db=85)
+
+
+@pytest.fixture
+def commute_ephemeral() -> EphemeralContext:
+    """Morning commute context — triggers Rule 2b LOD reduction."""
+    return EphemeralContext(motion_state="stationary", time_context="morning_commute")
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ final class MainFlowSmokeXCTest: XCTestCase {
 
     func testGestureSerialization() {
         let json = UpstreamMessage.gesture(type: "sos").toJSON()
-        XCTAssertEqual(json, "{\"type\":\"gesture\",\"gesture_type\":\"sos\"}")
+        XCTAssertEqual(json, "{\"type\":\"gesture\",\"gesture\":\"sos\"}")
     }
 
     func testSessionReadyAndLodParse() {
