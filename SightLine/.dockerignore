@@ -8,6 +8,7 @@ SightLine/
 SightLine.xcodeproj/
 *.xcworkspace
 *.swift
+tests/
 .pytest_cache
 .mypy_cache
 sightline-backend-sa.json

@@ -82,6 +82,7 @@ struct TelemetryData: Codable {
     var stepCadence: Int = 0
     var ambientNoiseDb: Double = 50.0
     var gps: GPSData?
+    var heading: Double?
     var timeContext: String = "unknown"
     var heartRate: Double?
     var userGesture: String?
@@ -92,6 +93,7 @@ struct TelemetryData: Codable {
         case stepCadence = "step_cadence"
         case ambientNoiseDb = "ambient_noise_db"
         case gps
+        case heading
         case timeContext = "time_context"
         case heartRate = "heart_rate"
         case userGesture = "user_gesture"
@@ -102,4 +104,15 @@ struct TelemetryData: Codable {
 struct GPSData: Codable {
     var lat: Double
     var lng: Double
+    var accuracy: Double?
+    var speed: Double?
+    var altitude: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case lat = "latitude"
+        case lng = "longitude"
+        case accuracy
+        case speed
+        case altitude
+    }
 }

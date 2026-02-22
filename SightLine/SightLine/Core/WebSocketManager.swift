@@ -35,6 +35,13 @@ class WebSocketManager: ObservableObject {
     var onAudioReceived: ((Data) -> Void)?
     var onTextReceived: ((String) -> Void)?
     var onConnectionStateChanged: ((Bool) -> Void)?
+    /// Called when connection is lost — UI should enter safe mode (LOD 1).
+    var onDisconnectionDegraded: (() -> Void)?
+    /// Called when connection is restored after a disconnection.
+    var onConnectionRestored: (() -> Void)?
+
+    /// Track whether we have notified about degradation to avoid duplicates.
+    private var hasDegradedNotification = false
 
     func connect(url: URL) {
         serverURL = url
@@ -135,6 +142,16 @@ class WebSocketManager: ObservableObject {
                 self.startPingTimer(for: activeConnection)
                 self.receiveLoop(connection: activeConnection)
 
+                // Notify restoration if we were degraded
+                if self.hasDegradedNotification {
+                    self.hasDegradedNotification = false
+                    DispatchQueue.main.async {
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.success)
+                        self.onConnectionRestored?()
+                    }
+                }
+
             case .failed(let error):
                 Self.logger.error("WebSocket failed: \(error)")
                 self.isConnectionInProgress = false
@@ -218,10 +235,14 @@ class WebSocketManager: ObservableObject {
         updateConnectionState(false)
         stopPingTimer()
 
-        // Haptic feedback to alert user of disconnection
-        DispatchQueue.main.async {
-            let generator = UINotificationFeedbackGenerator()
-            generator.notificationOccurred(.warning)
+        // Haptic feedback + degradation notification
+        if !hasDegradedNotification {
+            hasDegradedNotification = true
+            DispatchQueue.main.async { [weak self] in
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.error)
+                self?.onDisconnectionDegraded?()
+            }
         }
 
         // Exponential backoff reconnection

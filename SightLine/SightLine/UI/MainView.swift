@@ -6,8 +6,11 @@
 //  Background color shifts with LOD level. A breathing circle indicates active state.
 //  Designed for accessibility - all elements have VoiceOver labels.
 //
+//  Phase 2: Integrated SensorManager, TelemetryAggregator, and disconnection degradation.
+//
 
 import SwiftUI
+import AVFoundation
 import os
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "MainView")
@@ -18,10 +21,17 @@ struct MainView: View {
     @StateObject private var audioPlayback = AudioPlaybackManager()
     @StateObject private var cameraManager = CameraManager()
     @StateObject private var frameSelector = FrameSelector()
+    @StateObject private var sensorManager = SensorManager()
+    @StateObject private var telemetryAggregator = TelemetryAggregator()
 
     @State private var transcript: String = ""
     @State private var isActive = false
     @State private var currentLOD: Int = 2
+    @State private var connectionStatus: String = "Connecting..."
+    @State private var isSafeMode = false
+
+    /// Local TTS synthesizer for disconnection alerts (no network needed).
+    private let localSynthesizer = AVSpeechSynthesizer()
 
     var body: some View {
         ZStack {
@@ -46,15 +56,11 @@ struct MainView: View {
                 Spacer()
 
                 // Connection status
-                Text(webSocketManager.isConnected ? "Connected" : "Connecting...")
+                Text(connectionStatus)
                     .font(.caption)
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
                     .padding(.bottom, 8)
-                    .accessibilityLabel(
-                        webSocketManager.isConnected
-                            ? "Server connected"
-                            : "Attempting to connect to server"
-                    )
+                    .accessibilityLabel(connectionStatus)
 
                 // Latest transcript from agent or user
                 if !transcript.isEmpty {
@@ -114,10 +120,25 @@ struct MainView: View {
         webSocketManager.onConnectionStateChanged = { connected in
             DispatchQueue.main.async {
                 isActive = connected
-                if !connected {
+                if connected {
+                    connectionStatus = "Connected"
+                } else {
                     audioCapture.stopCapture()
                     cameraManager.stopCapture()
                 }
+            }
+        }
+
+        // SL-38: Disconnection degradation callbacks
+        webSocketManager.onDisconnectionDegraded = {
+            DispatchQueue.main.async {
+                enterSafeMode()
+            }
+        }
+
+        webSocketManager.onConnectionRestored = {
+            DispatchQueue.main.async {
+                exitSafeMode()
             }
         }
 
@@ -130,11 +151,20 @@ struct MainView: View {
             webSocketManager.sendText(msg.toJSON())
         }
 
-        // 4. Setup audio capture -> WebSocket
+        // 4. Setup audio capture -> WebSocket + NoiseMeter RMS feed
         audioCapture.onAudioCaptured = { pcmData in
             let msg = UpstreamMessage.audio(data: pcmData)
             webSocketManager.sendText(msg.toJSON())
         }
+        audioCapture.onAudioLevelUpdate = { rms in
+            sensorManager.processAudioRMS(rms)
+        }
+
+        // 5. Start sensor collection
+        sensorManager.startAll()
+
+        // 6. Start telemetry aggregator
+        telemetryAggregator.start(sensorManager: sensorManager, webSocket: webSocketManager)
     }
 
     private func startMediaCapture() {
@@ -157,6 +187,7 @@ struct MainView: View {
             DispatchQueue.main.async {
                 currentLOD = lod
                 frameSelector.updateLOD(lod)
+                telemetryAggregator.updateLOD(lod)
             }
         case .goAway(let retryMs):
             logger.info("GoAway received, reconnecting in \(retryMs)ms")
@@ -167,7 +198,42 @@ struct MainView: View {
         }
     }
 
+    // MARK: - Safe Mode (SL-38)
+
+    private func enterSafeMode() {
+        isSafeMode = true
+        currentLOD = 1
+        connectionStatus = "Safe Mode - Reconnecting..."
+        telemetryAggregator.pause()
+
+        // Local TTS alert (no network dependency)
+        let utterance = AVSpeechUtterance(string: "Connection lost. Safe mode active.")
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        localSynthesizer.speak(utterance)
+
+        logger.warning("Entered safe mode (LOD 1)")
+    }
+
+    private func exitSafeMode() {
+        isSafeMode = false
+        connectionStatus = "Connected"
+        telemetryAggregator.resume()
+
+        // Local TTS confirmation
+        let utterance = AVSpeechUtterance(string: "Connection restored.")
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        localSynthesizer.speak(utterance)
+
+        logger.info("Exited safe mode")
+    }
+
+    // MARK: - Teardown
+
     private func teardownPipeline() {
+        telemetryAggregator.stop()
+        sensorManager.stopAll()
         audioCapture.stopCapture()
         cameraManager.stopCapture()
         audioPlayback.teardown()

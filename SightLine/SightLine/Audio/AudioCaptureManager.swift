@@ -17,6 +17,8 @@ class AudioCaptureManager: ObservableObject {
 
     private var audioEngine: AVAudioEngine?
     var onAudioCaptured: ((Data) -> Void)?
+    /// RMS audio level callback for NoiseMeter (ambient noise calculation).
+    var onAudioLevelUpdate: ((Float) -> Void)?
 
     func startCapture() {
         let engine = AVAudioEngine()
@@ -57,6 +59,20 @@ class AudioCaptureManager: ObservableObject {
             if let error = error {
                 Self.logger.error("Audio conversion error: \(error)")
                 return
+            }
+
+            // Calculate RMS for NoiseMeter (from input buffer, not converted output)
+            if let floatData = buffer.floatChannelData {
+                let frameLength = Int(buffer.frameLength)
+                if frameLength > 0 {
+                    var sumSquares: Float = 0
+                    let samples = floatData[0]
+                    for i in 0..<frameLength {
+                        sumSquares += samples[i] * samples[i]
+                    }
+                    let rms = sqrtf(sumSquares / Float(frameLength))
+                    self?.onAudioLevelUpdate?(rms)
+                }
             }
 
             if let channelData = outputBuffer.int16ChannelData {
