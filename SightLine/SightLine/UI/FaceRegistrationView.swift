@@ -18,6 +18,10 @@ import UIKit
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "FaceRegistration")
 
+extension Notification.Name {
+    static let faceLibraryChanged = Notification.Name("com.sightline.faceLibraryChanged")
+}
+
 // MARK: - Face Registration Model
 
 @MainActor
@@ -183,6 +187,7 @@ final class FaceRegistrationModel: ObservableObject {
             }
 
             clearDraftAfterSuccess()
+            NotificationCenter.default.post(name: .faceLibraryChanged, object: nil)
             await loadFaces()
             return
         }

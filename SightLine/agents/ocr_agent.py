@@ -45,6 +45,17 @@ Rules:
 Priority: accuracy over speed. A blind user depends on correct text reading.
 """
 
+_SAFETY_SYSTEM_PROMPT = """\
+You are a safety text detector for a blind user. Focus ONLY on identifying \
+warning signs, traffic signs, danger labels, hazard notices, and any \
+safety-critical text visible in the image.
+
+Rules:
+1. Only extract text related to warnings, traffic, danger, or hazards.
+2. Ignore menus, decorative text, brand names, and non-safety content.
+3. If no safety-related text is visible, return empty results with confidence 0.0.
+"""
+
 # ---------------------------------------------------------------------------
 # Response schema
 # ---------------------------------------------------------------------------
@@ -104,6 +115,7 @@ def _get_client() -> genai.Client:
 async def extract_text(
     image_base64: str,
     context_hint: str = "",
+    safety_only: bool = False,
 ) -> dict[str, Any]:
     """Extract text from an image using Gemini Flash OCR.
 
@@ -111,6 +123,8 @@ async def extract_text(
         image_base64: Base64-encoded image data (JPEG or PNG).
         context_hint: Optional context about the user's situation
             (e.g., "user is at a restaurant") to help focus extraction.
+        safety_only: When True, only detect safety-critical text
+            (warnings, traffic signs, danger labels) using low resolution.
 
     Returns:
         Structured dict with text, text_type, items, confidence.
@@ -122,9 +136,20 @@ async def extract_text(
         logger.error("Failed to decode base64 image data")
         return dict(_EMPTY_RESULT)
 
-    user_message = "Extract all visible text from this image."
-    if context_hint:
-        user_message += f" Context: {context_hint}"
+    if safety_only:
+        system_prompt = _SAFETY_SYSTEM_PROMPT
+        user_message = (
+            "Identify any warning signs, traffic signs, danger labels, "
+            "or safety-critical text visible in this image. "
+            "If none, respond with empty string."
+        )
+        media_res = types.MediaResolution.MEDIA_RESOLUTION_LOW
+    else:
+        system_prompt = _SYSTEM_PROMPT
+        user_message = "Extract all visible text from this image."
+        if context_hint:
+            user_message += f" Context: {context_hint}"
+        media_res = types.MediaResolution.MEDIA_RESOLUTION_MEDIUM
 
     try:
         client = _get_client()
@@ -143,8 +168,8 @@ async def extract_text(
                 ),
             ],
             config=types.GenerateContentConfig(
-                system_instruction=_SYSTEM_PROMPT,
-                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+                system_instruction=system_prompt,
+                media_resolution=media_res,
                 response_mime_type="application/json",
                 response_schema=_RESPONSE_SCHEMA,
                 temperature=0.1,

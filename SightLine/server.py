@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -124,6 +125,8 @@ try:
     _face_available = True
 except ImportError:
     logger.warning("Face agent not available (missing dependencies)")
+
+FACE_LIBRARY_REFRESH_SEC: float = 60.0
 
 from tools import ALL_FUNCTIONS
 from tools.navigation import NAVIGATION_FUNCTIONS
@@ -409,7 +412,7 @@ async def _dispatch_function_call(
             func_args.setdefault("lat", ephemeral.gps.lat)
             func_args.setdefault("lng", ephemeral.gps.lng)
 
-    return ALL_FUNCTIONS[func_name](**func_args)
+    return await asyncio.to_thread(ALL_FUNCTIONS[func_name], **func_args)
 
 
 # ---------------------------------------------------------------------------
@@ -441,9 +444,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # -- Per-session face library cache (Phase 3) ----------------------------
     face_library: list[dict] = []
+    _face_library_loaded_at: float = 0.0
     if _face_available:
         try:
             face_library = load_face_library(user_id)
+            _face_library_loaded_at = time.monotonic()
             logger.info("Loaded %d face(s) for user %s", len(face_library), user_id)
         except Exception:
             logger.exception("Failed to load face library for user %s", user_id)
@@ -600,16 +605,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # -- Per-session memory state (Phase 4) -----------------------------------
     memory_top3: list[str] = []
+    memory_top3_detailed: list[dict] = []
     memory_budget = MemoryBudgetTracker() if _memory_available else None
     transcript_history: list[dict] = []
 
     async def _load_session_memories(context_hint: str = "") -> list[str]:
         """Load relevant memories for this user session."""
-        nonlocal memory_top3
+        nonlocal memory_top3, memory_top3_detailed
         try:
-            memories = load_relevant_memories(user_id, context_hint, top_k=3)
-            memory_top3 = memories[:3]
-            return memories
+            if _memory_available:
+                bank = MemoryBankService(user_id)
+                raw_results = bank.retrieve_memories(context_hint, top_k=3)
+                memory_top3 = [m["content"] for m in raw_results][:3]
+                memory_top3_detailed = [{
+                    "content": m.get("content", "")[:120],
+                    "category": m.get("category", "general"),
+                    "importance": round(float(m.get("importance", 0.5)), 2),
+                    "score": round(float(m.get("_composite_score", 0)), 3),
+                } for m in raw_results][:3]
+                return memory_top3
+            return []
         except Exception:
             logger.exception("Failed to load memories for user %s", user_id)
             return []
@@ -651,6 +666,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         })
         # SL-77: Include memory_top3 in debug_lod for DebugOverlay
         debug_dict["memory_top3"] = memory_top3
+        debug_dict["memory_top3_detailed"] = memory_top3_detailed
         if vad_update:
             debug_dict["vad_update"] = vad_update
         await _safe_send_json({
@@ -771,6 +787,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     async def _run_face_recognition(image_base64: str) -> None:
         """Run face recognition and inject results as SILENT context."""
+        nonlocal face_library, _face_library_loaded_at
         if not _face_available:
             await _emit_tool_event(
                 "identify_person",
@@ -780,12 +797,23 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             return
 
+        # Periodic refresh of face library
+        now_mono = time.monotonic()
+        if now_mono - _face_library_loaded_at >= FACE_LIBRARY_REFRESH_SEC:
+            try:
+                face_library = load_face_library(user_id)
+                _face_library_loaded_at = now_mono
+                logger.info("Refreshed face library (%d faces) for user %s", len(face_library), user_id)
+            except Exception:
+                logger.exception("Failed to refresh face library for user %s", user_id)
+
         try:
-            results = identify_persons_in_frame(
+            results = await asyncio.to_thread(
+                identify_persons_in_frame,
                 image_base64,
                 user_id,
                 face_library,
-                behavior=ToolBehavior.SILENT,
+                ToolBehavior.SILENT,
             )
             known = [r for r in results if r["person_name"] != "unknown"]
             await _emit_tool_event(
@@ -804,6 +832,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 )
 
                 face_text = _format_face_results(known)
+                if _memory_available:
+                    for person in known:
+                        pname = person.get("person_name", "")
+                        if pname and pname != "unknown":
+                            try:
+                                person_memories = load_relevant_memories(user_id, f"person {pname}", top_k=2)
+                                if person_memories:
+                                    face_text += f"\nMemories about {pname}:"
+                                    for mem in person_memories:
+                                        face_text += f"\n- {mem}"
+                            except Exception:
+                                logger.debug("Failed to load memories for person %s", pname, exc_info=True)
                 if not speak:
                     face_text = "[SILENT - context only, do not speak aloud]\n" + face_text
                 content = types.Content(
@@ -837,7 +877,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             await _emit_capability_degraded("face", str(exc)[:200])
 
-    async def _run_ocr_analysis(image_base64: str) -> None:
+    async def _run_ocr_analysis(image_base64: str, safety_only: bool = False) -> None:
         """Run OCR and inject results into Live session context."""
         if not _ocr_available:
             await _emit_tool_event(
@@ -849,11 +889,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             return
 
         # B-5: Pre-feedback — immediate audio cue before analysis starts
-        await _safe_send_json({
-            "type": "transcript",
-            "text": "Reading the text for you...",
-            "role": "agent",
-        })
+        # Skip pre-feedback for safety-only scans (LOD 1/2)
+        if not safety_only:
+            await _safe_send_json({
+                "type": "transcript",
+                "text": "Reading the text for you...",
+                "role": "agent",
+            })
 
         try:
             # Build context hint from session state
@@ -863,7 +905,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             if session_ctx.active_task:
                 hint += f" Currently: {session_ctx.active_task}."
 
-            result = await extract_text(image_base64, context_hint=hint)
+            result = await extract_text(image_base64, context_hint=hint, safety_only=safety_only)
             await _safe_send_json({
                 "type": "ocr_result",
                 "summary": result.get("text", ""),
@@ -879,8 +921,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
             if result.get("confidence", 0) > 0.3 and result.get("text"):
                 ephemeral = session_manager.get_ephemeral_context(session_id)
+                info_type = "safety_warning" if safety_only else "object_enumeration"
                 speak = should_speak(
-                    info_type="object_enumeration",
+                    info_type=info_type,
                     current_lod=session_ctx.current_lod,
                     step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
                     ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
@@ -979,12 +1022,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 )
                                 asyncio.create_task(_run_face_recognition(image_b64))
 
-                            # OCR: only at LOD 3 (detailed mode)
-                            if lod == 3:
+                            # OCR: safety-only at LOD 1-2, full at LOD 3
+                            if lod >= 1:
                                 await _emit_tool_event(
                                     "extract_text", ToolBehavior.WHEN_IDLE, status="queued",
                                 )
-                                asyncio.create_task(_run_ocr_analysis(image_b64))
+                                asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
                         continue
 
                     else:
@@ -1058,14 +1101,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             )
                             asyncio.create_task(_run_face_recognition(image_b64))
 
-                        # OCR: only at LOD 3 (detailed mode)
-                        if lod == 3:
+                        # OCR: safety-only at LOD 1-2, full at LOD 3
+                        if lod >= 1:
                             await _emit_tool_event(
                                 "extract_text",
                                 ToolBehavior.WHEN_IDLE,
                                 status="queued",
                             )
-                            asyncio.create_task(_run_ocr_analysis(image_b64))
+                            asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
 
                 elif message.get("type") == "camera_failure":
                     # SL-76: Camera hardware failure path
@@ -1129,24 +1172,71 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         is_muted = message.get("muted", False)
                         logger.info("Mute toggle: muted=%s", is_muted)
 
+                    elif gesture == "sos":
+                        logger.warning("SOS gesture received for session %s", session_id)
+                        ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
+                        ephemeral_ctx.panic = True
+                        await _handle_panic(ephemeral_ctx)
+
                     elif gesture == "emergency_pause":
-                        old_lod = session_ctx.current_lod
-                        logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
-                        on_lod_change(session_ctx, old_lod, 1)
-                        session_ctx.current_lod = 1
-                        content = types.Content(
-                            parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
-                            role="user",
-                        )
-                        live_request_queue.send_content(content)
-                        await _safe_send_json({
-                            "type": "lod_update",
-                            "lod": 1,
-                            "reason": "emergency_pause",
-                        })
+                        paused = _coerce_bool(message.get("paused", True), default=True)
+                        if paused:
+                            old_lod = session_ctx.current_lod
+                            logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
+                            on_lod_change(session_ctx, old_lod, 1)
+                            session_ctx.current_lod = 1
+                            content = types.Content(
+                                parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+                            await _safe_send_json({
+                                "type": "lod_update",
+                                "lod": 1,
+                                "reason": "emergency_pause",
+                            })
+                        else:
+                            resume_lod = 2
+                            old_lod = session_ctx.current_lod
+                            logger.info("Emergency pause resumed: LOD %d -> %d", old_lod, resume_lod)
+                            on_lod_change(session_ctx, old_lod, resume_lod)
+                            session_ctx.current_lod = resume_lod
+                            content = types.Content(
+                                parts=[types.Part(text="[EMERGENCY RESUME] The user has deactivated emergency pause. Resume normal operation at LOD 2 (balanced mode). You may speak again.")],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+                            await _safe_send_json({
+                                "type": "lod_update",
+                                "lod": resume_lod,
+                                "reason": "emergency_resume",
+                            })
 
                     else:
                         logger.debug("Unhandled gesture type: %s", gesture)
+
+                elif message.get("type") == "reload_face_library":
+                    logger.info("Reload face library requested for user=%s", user_id)
+                    if _face_available:
+                        try:
+                            face_library.clear()
+                            face_library.extend(await asyncio.to_thread(load_face_library, user_id))
+                            await _safe_send_json({
+                                "type": "face_library_reloaded",
+                                "count": len(face_library),
+                            })
+                            logger.info("Reloaded %d face(s) for user %s", len(face_library), user_id)
+                        except Exception:
+                            logger.exception("Failed to reload face library")
+                            await _safe_send_json({
+                                "type": "error",
+                                "error": "Failed to reload face library",
+                            })
+                    else:
+                        await _safe_send_json({
+                            "type": "error",
+                            "error": "Face recognition not available",
+                        })
 
                 elif message.get("type") == "clear_face_library":
                     logger.info("Clear face library requested for user=%s", user_id)

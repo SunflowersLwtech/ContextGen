@@ -12,6 +12,7 @@ import pytest
 from agents.ocr_agent import (
     OCR_MODEL,
     _EMPTY_RESULT,
+    _SAFETY_SYSTEM_PROMPT,
     extract_text,
 )
 from google.genai import types
@@ -314,6 +315,51 @@ class TestExtractText:
         assert result["confidence"] == 0.8
         assert result["text_type"] == "unknown"
         assert result["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_safety_only_uses_low_resolution(self, tiny_image, sign_response):
+        """When safety_only=True, MEDIA_RESOLUTION_LOW should be used."""
+        mock_generate = AsyncMock(return_value=_make_mock_response(sign_response))
+
+        with patch("agents.ocr_agent._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.aio.models.generate_content = mock_generate
+            mock_get_client.return_value = mock_client
+
+            await extract_text(tiny_image, safety_only=True)
+
+        config = mock_generate.call_args.kwargs["config"]
+        assert config.media_resolution == types.MediaResolution.MEDIA_RESOLUTION_LOW
+
+    @pytest.mark.asyncio
+    async def test_safety_only_uses_safety_prompt(self, tiny_image, sign_response):
+        """When safety_only=True, the safety system prompt should be used."""
+        mock_generate = AsyncMock(return_value=_make_mock_response(sign_response))
+
+        with patch("agents.ocr_agent._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.aio.models.generate_content = mock_generate
+            mock_get_client.return_value = mock_client
+
+            await extract_text(tiny_image, safety_only=True)
+
+        config = mock_generate.call_args.kwargs["config"]
+        assert config.system_instruction == _SAFETY_SYSTEM_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_default_safety_only_false(self, tiny_image, menu_response):
+        """Default behavior (safety_only=False) should use MEDIUM resolution."""
+        mock_generate = AsyncMock(return_value=_make_mock_response(menu_response))
+
+        with patch("agents.ocr_agent._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.aio.models.generate_content = mock_generate
+            mock_get_client.return_value = mock_client
+
+            await extract_text(tiny_image)
+
+        config = mock_generate.call_args.kwargs["config"]
+        assert config.media_resolution == types.MediaResolution.MEDIA_RESOLUTION_MEDIUM
 
 
 # ---------------------------------------------------------------------------

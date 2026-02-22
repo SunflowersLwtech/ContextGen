@@ -184,6 +184,10 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
             handleShake()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .faceLibraryChanged)) { _ in
+            webSocketManager.sendText("{\"type\":\"reload_face_library\"}")
+            logger.info("Face library changed notification received, sending reload request")
+        }
         .sheet(isPresented: $showDevConsole) {
             DeveloperConsoleView(
                 model: devConsoleModel,
@@ -264,7 +268,7 @@ struct MainView: View {
                 audioCapture.startCapture()
             }
         }
-        webSocketManager.sendText(UpstreamMessage.gesture(type: "emergency_pause").toJSON())
+        webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(isEmergencyPaused)}")
         UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
         logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
     }
@@ -588,7 +592,8 @@ struct MainView: View {
     private func drainWhenIdleToolQueueIfPossible() {
         guard !audioPlayback.isPlaying else { return }
         guard !whenIdleToolQueue.isEmpty else { return }
-        transcript = whenIdleToolQueue.removeFirst()
+        transcript = whenIdleToolQueue.last ?? transcript
+        whenIdleToolQueue.removeAll()
     }
 
     // MARK: - Face Privacy Action (SL-59)

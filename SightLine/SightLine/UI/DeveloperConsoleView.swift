@@ -57,6 +57,7 @@ final class DeveloperConsoleModel: ObservableObject {
 
     // Memory
     @Published var memoryTop3: [String] = []
+    @Published var memoryTop3Detailed: [[String: Any]] = []
 
     // Watch
     @Published var isWatchReachable: Bool = false
@@ -116,6 +117,11 @@ final class DeveloperConsoleModel: ObservableObject {
         debugModel.$memoryTop3
             .receive(on: DispatchQueue.main)
             .sink { [weak self] v in self?.memoryTop3 = v }
+            .store(in: &cancellables)
+
+        debugModel.$memoryTop3Detailed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] v in self?.memoryTop3Detailed = v }
             .store(in: &cancellables)
 
         debugModel.$triggeredRules
@@ -427,10 +433,36 @@ struct DeveloperConsoleView: View {
                 Divider().background(Color.white.opacity(0.1))
 
                 sectionHeader("MEMORY TOP 3")
-                if model.memoryTop3.isEmpty {
+                if model.memoryTop3Detailed.isEmpty && model.memoryTop3.isEmpty {
                     Text("No memories loaded")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.white.opacity(0.3))
+                } else if !model.memoryTop3Detailed.isEmpty {
+                    ForEach(Array(model.memoryTop3Detailed.prefix(3).enumerated()), id: \.offset) { idx, memory in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text("\(idx + 1).")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.green)
+                                Text(memory["category"] as? String ?? "general")
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.cyan)
+                                    .padding(.horizontal, 4)
+                                    .background(Color.cyan.opacity(0.15))
+                                    .cornerRadius(3)
+                                Text(String(format: "imp=%.2f", memory["importance"] as? Double ?? 0.5))
+                                    .font(.system(size: 8, design: .monospaced))
+                                    .foregroundColor(.yellow)
+                                Text(String(format: "score=%.3f", memory["score"] as? Double ?? 0))
+                                    .font(.system(size: 8, design: .monospaced))
+                                    .foregroundColor(.orange)
+                            }
+                            Text(memory["content"] as? String ?? "")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.7))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 } else {
                     ForEach(Array(model.memoryTop3.enumerated()), id: \.offset) { idx, memory in
                         HStack(alignment: .top, spacing: 4) {

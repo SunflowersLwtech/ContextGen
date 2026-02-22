@@ -261,3 +261,58 @@ class TestTextDuplicateDetection:
 
         assert result is not None
         assert result["memory_id"] == "mem1"
+
+
+# ---------------------------------------------------------------------------
+# Embedding cache optimization (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingCache:
+    """Tests for _precompute_existing_embeddings and cached _find_duplicate."""
+
+    def test_precompute_caches_all_memories(self):
+        """_precompute_existing_embeddings returns embeddings keyed by memory_id."""
+        ext = _make_extractor()
+        memories = [
+            {"memory_id": "m1", "content": "User likes coffee"},
+            {"memory_id": "m2", "content": "User takes the 8am bus"},
+            {"memory_id": "m3", "content": ""},  # empty content, should be skipped
+            {"content": "No id field"},  # no memory_id, should be skipped
+        ]
+        fake_emb = [0.5] * 2048
+        with patch("memory.memory_extractor._compute_embedding", return_value=fake_emb) as mock_emb:
+            cache = ext._precompute_existing_embeddings(memories)
+
+        assert "m1" in cache
+        assert "m2" in cache
+        assert "m3" not in cache  # empty content skipped
+        assert len(cache) == 2
+        assert mock_emb.call_count == 2
+        assert cache["m1"] == fake_emb
+        assert cache["m2"] == fake_emb
+
+    def test_find_duplicate_uses_cache(self):
+        """When existing_embeddings cache is provided, _compute_embedding is NOT called for cached memories."""
+        ext = _make_extractor()
+        existing = [
+            {"content": "User likes coffee", "memory_id": "m1"},
+            {"content": "User takes the 8am bus", "memory_id": "m2"},
+        ]
+        # Pre-populated cache
+        cached_emb = [0.9] * 2048
+        existing_embeddings = {"m1": cached_emb, "m2": cached_emb}
+
+        call_count = 0
+        def mock_compute(text):
+            nonlocal call_count
+            call_count += 1
+            return [0.9] * 2048
+
+        with patch("memory.memory_extractor._compute_embedding", side_effect=mock_compute):
+            with patch("memory.memory_extractor._cosine_similarity", return_value=0.95):
+                result = ext._find_duplicate("User likes tea", existing, existing_embeddings=existing_embeddings)
+
+        # _compute_embedding should only be called once — for the candidate content, not for existing memories
+        assert call_count == 1
+        assert result is not None

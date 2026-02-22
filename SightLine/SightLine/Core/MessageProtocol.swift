@@ -52,8 +52,10 @@ enum UpstreamMessage {
         case .image(let data, let mimeType):
             return "{\"type\":\"image\",\"data\":\"\(data.base64EncodedString())\",\"mimeType\":\"\(mimeType)\"}"
         case .telemetry(let data):
-            let jsonData = try! JSONEncoder().encode(data)
-            let jsonStr = String(data: jsonData, encoding: .utf8)!
+            guard let jsonData = try? JSONEncoder().encode(data),
+                  let jsonStr = String(data: jsonData, encoding: .utf8) else {
+                return "{\"type\":\"telemetry\",\"data\":{}}"
+            }
             return "{\"type\":\"telemetry\",\"data\":\(jsonStr)}"
         case .activityStart:
             return "{\"type\":\"activity_start\"}"

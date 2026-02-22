@@ -41,6 +41,7 @@ final class DebugOverlayModel: ObservableObject {
 
     // Memory Top 3 (SL-77)
     @Published var memoryTop3: [String] = []
+    @Published var memoryTop3Detailed: [[String: Any]] = []
 
     // GPS
     @Published var latitude: Double = 0
@@ -69,6 +70,9 @@ final class DebugOverlayModel: ObservableObject {
         if let cadence = data["cadence"] as? Double { stepCadence = cadence }
         if let memories = data["memory_top3"] as? [String] {
             memoryTop3 = Array(memories.prefix(3))
+        }
+        if let detailed = data["memory_top3_detailed"] as? [[String: Any]] {
+            memoryTop3Detailed = detailed
         }
         lastEventTime = Date()
     }

@@ -40,9 +40,6 @@ except ImportError:
         """Fallback when memory module is not available."""
         return {"memory_id": memory_id, "deleted": False, "status": "unavailable"}
 
-VISION_SUB_AGENT_MODEL = "gemini-3.1-pro-preview"
-OCR_SUB_AGENT_MODEL = "gemini-3-flash-preview"
-
 SYSTEM_PROMPT = """\
 You are SightLine, a warm and patient AI companion for blind and low-vision users.
 
@@ -118,6 +115,18 @@ Called automatically when faces are detected. Results arrive as \
 your descriptions without making it obvious the system is doing face matching.
 Example: Instead of "Face recognized: David", say "David is sitting across from you."
 
+### preload_memory / forget_recent_memory / forget_memory
+Memory tools for managing the user's long-term memory:
+- **preload_memory(user_id, context)**: Retrieve relevant memories for the current context. \
+Called automatically at session start and LOD transitions. You may also call it proactively \
+when the conversation topic shifts significantly to ensure you have the right context.
+- **forget_recent_memory(user_id, minutes)**: When the user says "forget what I just told you" \
+or similar, use this to delete memories from the last N minutes (default 30).
+- **forget_memory(user_id, memory_id)**: Delete a specific memory by ID. Use when the user \
+asks to remove a particular remembered fact.
+Always respect the user's request to forget. Memory operations are SILENT — do not announce \
+them to the user unless confirming a forget request.
+
 ## Sub-Agent Result Injection
 You will receive results from Vision and OCR sub-agents as context injections:
 - ``[VISION ANALYSIS]``: Scene understanding results. Integrate naturally into speech.
@@ -135,23 +144,10 @@ def create_orchestrator_agent(model_name: str) -> Agent:
     Returns:
         Configured ADK Agent instance.
     """
-    vision_sub_agent = Agent(
-        model=VISION_SUB_AGENT_MODEL,
-        name="vision_sub_agent",
-        instruction=(
-            "Analyze scene frames for safety hazards and navigation context. "
-            "Prioritize hazards first and output concise, structured findings."
-        ),
-    )
-    ocr_sub_agent = Agent(
-        model=OCR_SUB_AGENT_MODEL,
-        name="ocr_sub_agent",
-        instruction=(
-            "Extract all visible text accurately from frames and preserve reading order. "
-            "Return menu/sign/document text in an accessibility-friendly format."
-        ),
-    )
-
+    # NOTE: Vision and OCR are dispatched asynchronously by server.py
+    # (via direct Gemini API calls), not through ADK sub-agent delegation.
+    # Their results are injected as [VISION ANALYSIS] and [OCR RESULT]
+    # context messages into the orchestrator's LiveRequestQueue.
     return Agent(
         model=model_name,
         name="sightline_orchestrator",
@@ -168,5 +164,4 @@ def create_orchestrator_agent(model_name: str) -> Agent:
             forget_recent_memory,
             forget_memory,
         ],
-        sub_agents=[vision_sub_agent, ocr_sub_agent],
     )

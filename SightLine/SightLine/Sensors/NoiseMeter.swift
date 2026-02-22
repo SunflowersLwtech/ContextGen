@@ -17,19 +17,21 @@ class NoiseMeter: ObservableObject {
     private static let logger = Logger(subsystem: "com.sightline.app", category: "NoiseMeter")
 
     private var rmsHistory: [Float] = []
-    private let historySize = 5
+    private let historySize = 20
     private let calibrationOffset: Float = 100.0  // approximate dB SPL calibration
 
     /// Process a raw RMS value from the audio capture tap.
     /// Called by AudioCaptureManager's onAudioLevelUpdate callback.
+    /// Uses 25th-percentile over a 20-sample window to filter speech spikes.
     func processRMS(_ rms: Float) {
         rmsHistory.append(rms)
         if rmsHistory.count > historySize {
             rmsHistory.removeFirst()
         }
 
-        let avgRms = rmsHistory.reduce(0, +) / Float(rmsHistory.count)
-        let db = Double(20.0 * log10(max(avgRms, 1e-6)) + calibrationOffset)
+        let sorted = rmsHistory.sorted()
+        let p25Rms = sorted[sorted.count / 4]
+        let db = Double(20.0 * log10(max(p25Rms, 1e-6)) + calibrationOffset)
         let clampedDb = max(0.0, min(120.0, db))
 
         DispatchQueue.main.async {

@@ -103,6 +103,7 @@ class MemoryExtractor:
 
         # Fetch existing memories for conflict detection
         existing_memories = memory_bank.retrieve_memories(context="", top_k=50)
+        existing_embeddings = self._precompute_existing_embeddings(existing_memories)
 
         stored_count = 0
         for candidate in candidates:
@@ -131,7 +132,7 @@ class MemoryExtractor:
             importance = float(candidate.get("importance", 0.5))
 
             # Conflict detection: check if a similar memory already exists
-            duplicate = self._find_duplicate(content, existing_memories)
+            duplicate = self._find_duplicate(content, existing_memories, existing_embeddings=existing_embeddings)
             if duplicate is not None:
                 # Update existing memory instead of creating new one
                 memory_id = duplicate.get("memory_id")
@@ -216,13 +217,34 @@ class MemoryExtractor:
             logger.warning("Invalid candidate: %s", e)
             return None
 
+    def _precompute_existing_embeddings(self, existing_memories: list[dict]) -> dict[str, list[float]]:
+        """Pre-compute embeddings for all existing memories. Returns dict keyed by memory_id."""
+        cache: dict[str, list[float]] = {}
+        for mem in existing_memories:
+            mid = mem.get("memory_id", "")
+            content = mem.get("content", "")
+            if mid and content:
+                try:
+                    cache[mid] = _compute_embedding(content)
+                except Exception:
+                    logger.debug("Failed to compute embedding for memory %s", mid, exc_info=True)
+        return cache
+
     def _find_duplicate(
-        self, content: str, existing_memories: list[dict]
+        self,
+        content: str,
+        existing_memories: list[dict],
+        existing_embeddings: dict[str, list[float]] | None = None,
     ) -> Optional[dict]:
         """Check if content is semantically similar to an existing memory.
 
         Uses vector cosine similarity when embeddings are available,
         falls back to Jaccard text similarity when embeddings fail.
+
+        Args:
+            content: The candidate memory content.
+            existing_memories: List of existing memory dicts.
+            existing_embeddings: Optional pre-computed embeddings keyed by memory_id.
 
         Returns the matching memory dict if similarity > threshold, else None.
         """
@@ -238,7 +260,11 @@ class MemoryExtractor:
                 continue
             # Try vector similarity
             if embedding_valid:
-                existing_embedding = _compute_embedding(existing_content)
+                mid = mem.get("memory_id", "")
+                if existing_embeddings and mid in existing_embeddings:
+                    existing_embedding = existing_embeddings[mid]
+                else:
+                    existing_embedding = _compute_embedding(existing_content)
                 if not all(v == 0.0 for v in existing_embedding[:10]):
                     sim = _cosine_similarity(new_embedding, existing_embedding)
                     if sim > self.similarity_threshold:

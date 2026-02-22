@@ -120,7 +120,6 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             return
         }
 
-        frameSelector?.markFrameSent()
         onFrameCaptured?(jpegData)
     }
 }
