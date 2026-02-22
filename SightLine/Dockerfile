@@ -1,8 +1,8 @@
 FROM python:3.12-slim
 
-# System dependencies for InsightFace (OpenCV, ONNX Runtime)
+# System dependencies: build tools for insightface Cython, OpenCV runtime libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx libglib2.0-0 && \
+    g++ libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -10,6 +10,9 @@ WORKDIR /app
 # Install Python dependencies first (cache layer)
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
+
+# Remove build tools to reduce image size (no longer needed at runtime)
+RUN apt-get purge -y g++ && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 # Download InsightFace buffalo_l models at build time
 # (avoids downloading at runtime, which would slow cold starts)

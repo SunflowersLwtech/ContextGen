@@ -29,8 +29,8 @@ steps:
       - '--timeout=3600'
       - '--memory=2Gi'
       - '--cpu=2'
-      - '--cpu-throttling=false'
-      - '--startup-cpu-boost'
+      - '--no-cpu-throttling'
+      - '--cpu-boost'
       - '--set-secrets=GOOGLE_API_KEY=gemini-api-key:latest,GOOGLE_MAPS_API_KEY=google-maps-api-key:latest'
       - '--service-account=sightline-backend@$PROJECT_ID.iam.gserviceaccount.com'
 

@@ -15,9 +15,9 @@ tests/
 .mypy_cache
 sightline-backend-sa.json
 gen-lang-client-*.json
-cloudbuild.yaml
 firebase.json
 firestore.rules
 firestore.indexes.json
 *.md
 .dockerignore
+.gcloudignore
