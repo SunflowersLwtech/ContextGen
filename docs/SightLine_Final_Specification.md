@@ -247,14 +247,16 @@ doc_ref.set({
 
 | 协议 | 覆盖设备 | 优先级 |
 |------|---------|--------|
-| **WebRTC** | 手机浏览器摄像头、PWA | **P0 (Hackathon 唯一实现)** |
+| **NWConnection WebSocket (Swift Native)** | iPhone（`AVCaptureSession` → JPEG）| **P0 (Hackathon 实际实现)** |
 | RTMP ingest | GoPro、DJI 运动相机 | P1 (赛后) |
 | RTSP pull | IP 摄像头、RunCam WiFiLink | P1 (赛后) |
 | USB UVC | USB 摄像头、HDMI 采集卡 | P2 (赛后) |
 
-**Hackathon 策略**：仅实现 WebRTC (手机摄像头)。在架构图中画出 RTMP/RTSP/UVC 接口，但标注为 "future integration"。如果评委问到，说明：
+> **注**：原设计为 WebRTC（PWA），已迁移到 Swift Native iOS App，视频通过 NWConnection WebSocket 发送 JPEG 帧。Gemini Live API 不支持 WebRTC 直连，Server-to-Server 模式更稳定。
 
-> "Our cloud agent is protocol-agnostic. Today we demonstrate with WebRTC from a phone camera. But our SEP gateway is designed to accept RTMP (for GoPro/DJI), RTSP (for IP cameras), and UVC (for USB cameras). The AI backend doesn't care where the pixels come from — it only processes standardized frames."
+**Hackathon 策略**：仅实现 NWConnection WebSocket (iPhone 摄像头)。在架构图中画出 RTMP/RTSP/UVC 接口，但标注为 "future integration"。如果评委问到，说明：
+
+> "Our cloud agent is protocol-agnostic. Today we demonstrate with a native iOS app streaming over WebSocket. Our SEP gateway is designed to accept RTMP (for GoPro/DJI), RTSP (for IP cameras), and UVC (for USB cameras). The AI backend doesn't care where the pixels come from — it only processes standardized frames."
 
 #### SEP-Audio (音频通道)
 
@@ -357,7 +359,7 @@ Apple Watch (watchOS App) ── WCSession ──→ iPhone (实时心率)
 │  │    ├──🔧 google_search()      Grounding                               │
 │  │    └──🔧 identify_person()    → Face ID Sub-Agent (behavior=SILENT)   │
 │  │                                                                        │
-│  ├── Session: InMemorySessionService (开发初期) → VertexAiSessionService  │
+│  ├── Session: VertexAiSessionService (Agent Engine: 8731647347169165312)  │
 │  ├── Config: min_instance_count=1, timeout=3600s, memory=2Gi, cpu=2      │
 │  └── Secret Manager: GOOGLE_API_KEY                                       │
 └────────────────────────────┬───────────────────────────────────────────────┘
@@ -842,7 +844,7 @@ sightline/
 - [ ] Gemini Live API WebSocket 连接建立
 - [ ] Orchestrator Agent 基础框架 (意图分类 + 路由)
 - [ ] LOD Engine 基础版 (3 级固定切换)
-- [ ] WebRTC 前端骨架 (手机摄像头 + 麦克风)
+- [x] Swift Native iOS App（NWConnection WebSocket + AVCaptureSession + AVAudioEngine）✅
 - [ ] 部署到 GCP (尽早验证)
 - [ ] 加入 GDG
 

@@ -78,4 +78,14 @@ final class HapticManager {
             self?.heavyImpact.impactOccurred()
         }
     }
+
+    /// Connection restored: success notification confirming reconnection.
+    func connectionRestored() {
+        notification.notificationOccurred(.success)
+    }
+
+    /// Connection lost: warning notification for disconnection.
+    func connectionLost() {
+        notification.notificationOccurred(.warning)
+    }
 }

@@ -146,8 +146,7 @@ class WebSocketManager: ObservableObject {
                 if self.hasDegradedNotification {
                     self.hasDegradedNotification = false
                     DispatchQueue.main.async {
-                        let generator = UINotificationFeedbackGenerator()
-                        generator.notificationOccurred(.success)
+                        HapticManager.shared.connectionRestored()
                         self.onConnectionRestored?()
                     }
                 }
@@ -239,8 +238,7 @@ class WebSocketManager: ObservableObject {
         if !hasDegradedNotification {
             hasDegradedNotification = true
             DispatchQueue.main.async { [weak self] in
-                let generator = UINotificationFeedbackGenerator()
-                generator.notificationOccurred(.warning)
+                HapticManager.shared.connectionLost()
                 self?.onDisconnectionDegraded?()
             }
         }

@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python dependencies first (cache layer)
-COPY requirements-deploy.txt .
-RUN pip install --no-cache-dir -r requirements-deploy.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Remove build tools to reduce image size (no longer needed at runtime)
 RUN apt-get purge -y g++ && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*

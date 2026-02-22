@@ -5,16 +5,20 @@ deletion, and loading. Embeddings are stored as Firestore Vectors.
 
 Firestore collection: users/{user_id}/face_library/{face_id}
 
-Privacy: NEVER stores raw images — only 512-D L2-normalized embeddings.
+Privacy: stores 512-D L2-normalized embeddings by default; optional reference
+photo storage is only enabled when explicit consent is provided.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import base64
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
+import cv2
 import numpy as np
 from google.cloud import firestore
 from google.cloud.firestore_v1.vector import Vector
@@ -49,12 +53,41 @@ def _face_collection(user_id: str):
     return _get_db().collection("users").document(user_id).collection("face_library")
 
 
+def _encode_reference_photo(image_bgr: np.ndarray) -> tuple[str, str, int]:
+    """Create a size-bounded JPEG/base64 payload from an OpenCV BGR image."""
+    max_edge = 960
+    height, width = image_bgr.shape[:2]
+    longest_edge = max(height, width)
+
+    resized = image_bgr
+    if longest_edge > max_edge and longest_edge > 0:
+        scale = max_edge / float(longest_edge)
+        resized = cv2.resize(
+            image_bgr,
+            (int(width * scale), int(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    ok, encoded = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    if not ok:
+        raise ValueError("Failed to encode reference photo")
+
+    jpeg_bytes = encoded.tobytes()
+    return (
+        base64.b64encode(jpeg_bytes).decode("utf-8"),
+        hashlib.sha256(jpeg_bytes).hexdigest(),
+        len(jpeg_bytes),
+    )
+
+
 def register_face(
     user_id: str,
     person_name: str,
     relationship: str,
     image_base64: str,
     photo_index: int = 0,
+    consent_confirmed: bool = False,
+    store_reference_photo: bool = False,
 ) -> dict:
     """Register a new face entry by detecting, embedding, and storing.
 
@@ -64,6 +97,8 @@ def register_face(
         relationship: Relationship to the user (e.g. "friend", "spouse").
         image_base64: Base64-encoded image containing the person's face.
         photo_index: Index when registering multiple photos (0-based).
+        consent_confirmed: Whether explicit user consent was confirmed.
+        store_reference_photo: Whether to store a compressed reference photo.
 
     Returns:
         Dict with face_id, person_name, relationship, photo_index, created_at.
@@ -81,6 +116,9 @@ def register_face(
     if not faces:
         raise ValueError("No face detected in the provided image")
 
+    if store_reference_photo and not consent_confirmed:
+        raise ValueError("Consent is required to store reference photos")
+
     embedding = faces[0].normed_embedding
 
     now = datetime.now(timezone.utc)
@@ -91,7 +129,19 @@ def register_face(
         "photo_index": photo_index,
         "registered_by": user_id,
         "created_at": now,
+        "consent_confirmed": consent_confirmed,
     }
+
+    stored_reference_photo = False
+    if consent_confirmed:
+        doc_data["consent_timestamp"] = now
+
+    if store_reference_photo and consent_confirmed:
+        photo_b64, photo_sha256, photo_bytes = _encode_reference_photo(img)
+        doc_data["reference_photo_base64"] = photo_b64
+        doc_data["reference_photo_sha256"] = photo_sha256
+        doc_data["reference_photo_bytes"] = photo_bytes
+        stored_reference_photo = True
 
     doc_ref = _face_collection(user_id).document()
     doc_ref.set(doc_data)
@@ -104,6 +154,8 @@ def register_face(
         "relationship": relationship,
         "photo_index": photo_index,
         "created_at": now.isoformat(),
+        "stored_reference_photo": stored_reference_photo,
+        "consent_confirmed": consent_confirmed,
     }
 
 
@@ -192,6 +244,8 @@ def list_faces(user_id: str) -> list[dict]:
             "person_name": data.get("person_name", ""),
             "relationship": data.get("relationship", ""),
             "photo_index": data.get("photo_index", 0),
+            "consent_confirmed": bool(data.get("consent_confirmed", False)),
+            "has_reference_photo": bool(data.get("reference_photo_base64")),
             "created_at": (
                 data["created_at"].isoformat()
                 if isinstance(data.get("created_at"), datetime)
@@ -221,7 +275,10 @@ def load_face_library(user_id: str) -> list[dict]:
             continue
 
         # Firestore Vector -> list[float] -> numpy array
-        if hasattr(emb_raw, "value"):
+        if hasattr(emb_raw, "to_map_value"):
+            # google.cloud.firestore_v1.vector.Vector (Sequence subclass)
+            emb_list = list(emb_raw)
+        elif hasattr(emb_raw, "value"):
             emb_list = emb_raw.value
         elif isinstance(emb_raw, (list, tuple)):
             emb_list = emb_raw

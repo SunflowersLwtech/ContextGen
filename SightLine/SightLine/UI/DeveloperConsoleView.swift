@@ -72,8 +72,16 @@ final class DeveloperConsoleModel: ObservableObject {
     func bind(
         sensorManager: SensorManager,
         cameraManager: CameraManager,
-        debugModel: DebugOverlayModel
+        debugModel: DebugOverlayModel,
+        frameSelector: FrameSelector? = nil
     ) {
+        // Frame rate -> DebugOverlay
+        if let fs = frameSelector {
+            fs.$effectiveFPS
+                .receive(on: DispatchQueue.main)
+                .sink { v in debugModel.frameRate = v }
+                .store(in: &cancellables)
+        }
         // DebugOverlayModel mirrors (already fed by MainView pipeline)
         debugModel.$currentLOD
             .receive(on: DispatchQueue.main)
@@ -138,12 +146,18 @@ final class DeveloperConsoleModel: ObservableObject {
         // GPS + heading from LocationManager
         sensorManager.locationManager.$latitude
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] v in self?.latitude = v }
+            .sink { [weak self] v in
+                self?.latitude = v
+                debugModel.latitude = v
+            }
             .store(in: &cancellables)
 
         sensorManager.locationManager.$longitude
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] v in self?.longitude = v }
+            .sink { [weak self] v in
+                self?.longitude = v
+                debugModel.longitude = v
+            }
             .store(in: &cancellables)
 
         sensorManager.locationManager.$accuracy
@@ -348,7 +362,7 @@ struct DeveloperConsoleView: View {
                 }
                 .padding(8)
             }
-            .onChange(of: model.transcripts.count) { _ in
+            .onChange(of: model.transcripts.count) { _, _ in
                 if let last = model.transcripts.last {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(last.id, anchor: .bottom)

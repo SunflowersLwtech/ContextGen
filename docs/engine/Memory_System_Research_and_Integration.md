@@ -1,8 +1,10 @@
 # SightLine Memory System: 方案调研与集成策略
 
 > Date: 2026-02-21
-> Status: Research complete — Integration decision made
+> Status: Research complete — **最终决策（2026-02-22）：采用自建 Firestore MemoryBankService，不使用 Vertex AI Memory Bank**
 > Related: `Context_Engine_Implementation_Guide.md` §4 (Long-term Context)
+
+> **⚠️ 最终决策说明**：本文档的调研结论（推荐 Vertex AI Memory Bank）已被推翻。实际开发中发现自建方案（`memory/memory_bank.py`，340 行）功能更完整（支持 auto-extract / forget / budget / 三维排序），且无外部托管依赖，成本更低。**Vertex AI Memory Bank 和 Mem0 均降级为备选，不再迁移。** 本文档保留作为历史调研记录。
 
 ---
 

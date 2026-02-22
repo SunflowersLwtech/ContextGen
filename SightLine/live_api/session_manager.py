@@ -8,8 +8,7 @@ Phase 3 additions:
 - Per-session face library cache tracking
 
 Phase 4 additions:
-- VertexAiSessionService migration (SL-70)
-- AGENT_ENGINE_ID configuration
+- 3-tier session service fallback: VertexAi → Database → InMemory (depends on AGENT_ENGINE_ID at runtime)
 """
 
 import logging

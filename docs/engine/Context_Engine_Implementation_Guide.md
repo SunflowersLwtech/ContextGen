@@ -258,7 +258,7 @@ def on_lod_upgrade():
 | **+ Mem0 式自动提取逻辑** | 自动从对话中提取结构化记忆 | 需要额外 LLM 调用 | 采用其设计模式，自行实现 |
 | **+ Graphiti 式时序查询**（可选） | "用户上周 vs 现在的偏好" | 增加复杂度 | Phase 2 考虑 |
 
-**推荐方案**: **Vertex AI Memory Bank**（首选，~30 行集成，ADK 原生）。详见 `Memory_System_Research_and_Integration.md` §3。以下自建方案仅作为 **fallback 备选**（当 Memory Bank 提取逻辑不够灵活时再启用）。
+**最终采用方案**: **自建 Firestore MemoryBankService**（`memory/memory_bank.py`，340 行）。Vertex AI Memory Bank 降级为备选，不迁移。详见 `Memory_System_Research_and_Integration.md` 最终决策说明。以下自建方案描述即为**当前实现**。
 
 ### 4.2 记忆分类与存储
 
@@ -569,7 +569,7 @@ class SpeechCostManager:
 LOD_COT_PROMPT = """
 Before responding, internally reason about the appropriate response level:
 <think>
-1. User physical state: [moving/stationary/in_vehicle] at [cadence] steps/sec
+1. User physical state: [moving/stationary/in_vehicle] at [cadence] steps/min
 2. Environment: [noise_level]dB, [space_type]
 3. Current task: [active_task or "none"]
 4. Persona factors: [vision_status], [verbosity_preference], [om_level]

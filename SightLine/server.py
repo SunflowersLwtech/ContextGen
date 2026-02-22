@@ -87,6 +87,17 @@ runner = Runner(
     auto_create_session=True,
 )
 
+
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    """Parse bool-like JSON values safely for request handling."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return default
+
 # ---------------------------------------------------------------------------
 # Sub-agent & tool imports (lazy to handle missing deps gracefully)
 # ---------------------------------------------------------------------------
@@ -177,6 +188,8 @@ async def api_register_face(request: Request) -> JSONResponse:
         relationship: str
         image_base64: str  (JPEG base64-encoded)
         photo_index: int (optional, default 0)
+        consent_confirmed: bool (optional, default false)
+        store_reference_photo: bool (optional, default false)
 
     Returns the face_id and metadata on success.
     """
@@ -190,10 +203,18 @@ async def api_register_face(request: Request) -> JSONResponse:
     relationship = body.get("relationship", "")
     image_base64 = body.get("image_base64")
     photo_index = body.get("photo_index", 0)
+    consent_confirmed = _coerce_bool(body.get("consent_confirmed"), default=False)
+    store_reference_photo = _coerce_bool(body.get("store_reference_photo"), default=False)
 
     if not all([user_id, person_name, image_base64]):
         return JSONResponse(
             {"error": "Missing required fields: user_id, person_name, image_base64"},
+            status_code=400,
+        )
+
+    if store_reference_photo and not consent_confirmed:
+        return JSONResponse(
+            {"error": "consent_confirmed must be true when store_reference_photo is enabled"},
             status_code=400,
         )
 
@@ -212,6 +233,8 @@ async def api_register_face(request: Request) -> JSONResponse:
             relationship=relationship,
             image_base64=image_base64,
             photo_index=photo_index,
+            consent_confirmed=consent_confirmed,
+            store_reference_photo=store_reference_photo,
         )
         logger.info("REST face register: %s for user %s", result.get("face_id"), user_id)
         return JSONResponse(result, status_code=201)
@@ -941,9 +964,27 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             await _emit_tool_event(
                                 "analyze_scene", ToolBehavior.WHEN_IDLE, status="queued",
                             )
-                            asyncio.create_task(_run_vision(image_b64, lod))
-                            asyncio.create_task(_run_face_id(image_b64))
-                            asyncio.create_task(_run_ocr(image_b64))
+                            asyncio.create_task(_run_vision_analysis(image_b64))
+
+                            # Face recognition: only at LOD 2/3 (match JSON path)
+                            if lod >= 2:
+                                await _emit_tool_event(
+                                    "identify_person", ToolBehavior.SILENT, status="queued",
+                                )
+                                await _emit_identity_event(
+                                    person_name="unknown",
+                                    matched=False,
+                                    similarity=0.0,
+                                    source="queued",
+                                )
+                                asyncio.create_task(_run_face_recognition(image_b64))
+
+                            # OCR: only at LOD 3 (detailed mode)
+                            if lod == 3:
+                                await _emit_tool_event(
+                                    "extract_text", ToolBehavior.WHEN_IDLE, status="queued",
+                                )
+                                asyncio.create_task(_run_ocr_analysis(image_b64))
                         continue
 
                     else:
@@ -1054,6 +1095,82 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         await _process_lod_decision(ephemeral_ctx)
                         ephemeral_ctx.user_gesture = None
                         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
+
+                    elif gesture == "interrupt":
+                        logger.info("User interrupt gesture received")
+                        content = types.Content(
+                            parts=[types.Part(text="[USER INTERRUPT] The user has interrupted. Stop current output immediately and wait for their next input.")],
+                            role="user",
+                        )
+                        live_request_queue.send_content(content)
+
+                    elif gesture == "repeat_last":
+                        last_agent = None
+                        for entry in reversed(transcript_history):
+                            if entry.get("role") == "agent":
+                                last_agent = entry.get("text", "")
+                                break
+                        if last_agent:
+                            logger.info("Repeat last gesture: replaying last agent utterance")
+                            content = types.Content(
+                                parts=[types.Part(text=f'[REPEAT REQUEST] The user wants you to repeat your last response. Please repeat: "{last_agent}"')],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+                        else:
+                            logger.info("Repeat last gesture: no previous agent utterance found")
+                            content = types.Content(
+                                parts=[types.Part(text="[REPEAT REQUEST] The user wants you to repeat your last response, but no previous response was found. Let the user know.")],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+
+                    elif gesture == "mute_toggle":
+                        is_muted = message.get("muted", False)
+                        logger.info("Mute toggle: muted=%s", is_muted)
+
+                    elif gesture == "emergency_pause":
+                        old_lod = session_ctx.current_lod
+                        logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
+                        on_lod_change(session_ctx, old_lod, 1)
+                        session_ctx.current_lod = 1
+                        content = types.Content(
+                            parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
+                            role="user",
+                        )
+                        live_request_queue.send_content(content)
+                        await _safe_send_json({
+                            "type": "lod_update",
+                            "lod": 1,
+                            "reason": "emergency_pause",
+                        })
+
+                    else:
+                        logger.debug("Unhandled gesture type: %s", gesture)
+
+                elif message.get("type") == "clear_face_library":
+                    logger.info("Clear face library requested for user=%s", user_id)
+                    if _face_available:
+                        try:
+                            from tools.face_tools import clear_face_library
+                            count = await asyncio.to_thread(clear_face_library, user_id)
+                            face_library.clear()
+                            await _safe_send_json({
+                                "type": "face_library_cleared",
+                                "deleted_count": count,
+                            })
+                            logger.info("Cleared %d face(s) for user %s", count, user_id)
+                        except Exception:
+                            logger.exception("Failed to clear face library")
+                            await _safe_send_json({
+                                "type": "error",
+                                "error": "Failed to clear face library",
+                            })
+                    else:
+                        await _safe_send_json({
+                            "type": "error",
+                            "error": "Face recognition not available",
+                        })
 
                 else:
                     logger.warning("Unknown upstream message type: %s", message.get("type"))

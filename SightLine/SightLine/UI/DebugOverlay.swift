@@ -42,6 +42,13 @@ final class DebugOverlayModel: ObservableObject {
     // Memory Top 3 (SL-77)
     @Published var memoryTop3: [String] = []
 
+    // GPS
+    @Published var latitude: Double = 0
+    @Published var longitude: Double = 0
+
+    // Frame rate
+    @Published var frameRate: Double = 0
+
     // Latency
     @Published var lastEventTime: Date?
 
@@ -96,7 +103,7 @@ struct DebugOverlay: View {
             HStack(spacing: 8) {
                 lodBadge
                 Text(model.lodReason.isEmpty ? "Initializing..." : model.lodReason)
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
                     .lineLimit(2)
             }
@@ -113,6 +120,11 @@ struct DebugOverlay: View {
                 label("Cadence", value: String(format: "%.0f", model.stepCadence))
             }
 
+            // GPS row
+            HStack(spacing: 12) {
+                label("GPS", value: String(format: "%.4f, %.4f", model.latitude, model.longitude))
+            }
+
             // Sub-agent status row
             HStack(spacing: 12) {
                 capabilityDot("Vision", status: model.visionStatus)
@@ -122,16 +134,28 @@ struct DebugOverlay: View {
                 label("Latency", value: model.latencyText)
             }
 
+            // Connection + FPS
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.isSafeMode ? Color.red : (model.isConnected ? Color.green : Color.yellow))
+                    .frame(width: 6, height: 6)
+                Text(model.isSafeMode ? "SAFE MODE" : (model.isConnected ? "Connected" : "Disconnected"))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+                Spacer()
+                label("FPS", value: String(format: "%.1f", model.frameRate))
+            }
+
             // Memory Top 3 (SL-77)
             if !model.memoryTop3.isEmpty {
                 Divider().background(Color.white.opacity(0.2))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Memory Top 3")
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(.white.opacity(0.4))
                     ForEach(model.memoryTop3.prefix(3), id: \.self) { memory in
                         Text("• \(memory)")
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(.white.opacity(0.6))
                             .lineLimit(2)
                     }
@@ -141,19 +165,9 @@ struct DebugOverlay: View {
             // Rules
             if !model.triggeredRules.isEmpty {
                 Text(model.triggeredRules.joined(separator: " | "))
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5))
                     .lineLimit(1)
-            }
-
-            // Connection
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(model.isSafeMode ? Color.red : (model.isConnected ? Color.green : Color.yellow))
-                    .frame(width: 6, height: 6)
-                Text(model.isSafeMode ? "SAFE MODE" : (model.isConnected ? "Connected" : "Disconnected"))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
             }
         }
         .padding(10)
@@ -188,10 +202,10 @@ struct DebugOverlay: View {
     private func label(_ title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(title)
-                .font(.system(size: 8, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.white.opacity(0.4))
             Text(value)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundColor(.white.opacity(0.8))
         }
     }
@@ -200,9 +214,9 @@ struct DebugOverlay: View {
         HStack(spacing: 3) {
             Circle()
                 .fill(status == "ready" ? Color.green : Color.red)
-                .frame(width: 5, height: 5)
+                .frame(width: 6, height: 6)
             Text(name)
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.white.opacity(0.6))
         }
     }

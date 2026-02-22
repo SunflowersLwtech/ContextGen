@@ -36,7 +36,9 @@ steps:
       - '--service-account=sightline-backend@$PROJECT_ID.iam.gserviceaccount.com'
 
 substitutions:
-  _AGENT_ENGINE_ID: 'projects/sightline-hackathon/locations/us-central1/reasoningEngines/YOUR_ID'
+  # _AGENT_ENGINE_ID: Used for VertexAiSessionService persistence (optional).
+  # If unset, SessionService falls back to InMemory. Does not affect Memory Bank (Memory uses Firestore directly).
+  _AGENT_ENGINE_ID: '8731647347169165312'
 
 timeout: '1800s'
 options:

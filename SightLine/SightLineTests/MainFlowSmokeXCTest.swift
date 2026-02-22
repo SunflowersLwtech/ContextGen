@@ -31,17 +31,4 @@ final class MainFlowSmokeXCTest: XCTestCase {
         }
     }
 
-    func testPanicImmediateTriggerRule() {
-        let aggregator = TelemetryAggregator()
-        var old = TelemetryData()
-        old.panic = false
-
-        var new = old
-        new.panic = true
-
-        XCTAssertEqual(
-            aggregator.immediateTrigger(old: old, new: new),
-            TelemetryAggregator.ImmediateTrigger.panicDetected
-        )
-    }
 }

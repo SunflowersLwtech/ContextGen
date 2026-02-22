@@ -409,10 +409,78 @@ class TestFaceToolsRegister:
         assert result["person_name"] == "Eve"
         assert result["relationship"] == "sister"
         assert result["photo_index"] == 0
+        assert result["stored_reference_photo"] is False
+        assert result["consent_confirmed"] is False
         assert "face_id" in result
         assert "created_at" in result
 
         # Cleanup
+        set_db_client(None)
+
+    @patch("agents.face_agent._get_face_app")
+    def test_register_face_with_consent_and_reference_photo(self, mock_get_app):
+        from tools.face_tools import register_face, set_db_client
+
+        mock_face = _make_mock_face(seed=101)
+        mock_app = MagicMock()
+        mock_app.get.return_value = [mock_face]
+        mock_get_app.return_value = mock_app
+
+        mock_coll = MockCollection()
+        mock_db = MagicMock()
+        mock_db.collection.return_value.document.return_value.collection.return_value = (
+            mock_coll
+        )
+        set_db_client(mock_db)
+
+        result = register_face(
+            user_id="u1",
+            person_name="Grace",
+            relationship="friend",
+            image_base64=_minimal_jpeg_b64(),
+            photo_index=1,
+            consent_confirmed=True,
+            store_reference_photo=True,
+        )
+
+        assert result["person_name"] == "Grace"
+        assert result["stored_reference_photo"] is True
+        assert result["consent_confirmed"] is True
+
+        saved = mock_coll._docs[0]._data
+        assert saved["consent_confirmed"] is True
+        assert "consent_timestamp" in saved
+        assert "reference_photo_base64" in saved
+        assert "reference_photo_sha256" in saved
+        assert saved["reference_photo_bytes"] > 0
+
+        set_db_client(None)
+
+    @patch("agents.face_agent._get_face_app")
+    def test_register_face_store_photo_requires_consent(self, mock_get_app):
+        from tools.face_tools import register_face, set_db_client
+
+        mock_face = _make_mock_face(seed=102)
+        mock_app = MagicMock()
+        mock_app.get.return_value = [mock_face]
+        mock_get_app.return_value = mock_app
+
+        mock_coll = MockCollection()
+        mock_db = MagicMock()
+        mock_db.collection.return_value.document.return_value.collection.return_value = (
+            mock_coll
+        )
+        set_db_client(mock_db)
+
+        with pytest.raises(ValueError, match="Consent is required"):
+            register_face(
+                user_id="u1",
+                person_name="Hank",
+                relationship="friend",
+                image_base64=_minimal_jpeg_b64(),
+                store_reference_photo=True,
+            )
+
         set_db_client(None)
 
     @patch("agents.face_agent._get_face_app")
@@ -501,12 +569,15 @@ class TestFaceToolsList:
                 "person_name": "Alice",
                 "relationship": "friend",
                 "photo_index": 0,
+                "consent_confirmed": True,
+                "reference_photo_base64": "abc123",
                 "created_at": "2025-01-01T00:00:00",
             }),
             MockDocRef("f2", {
                 "person_name": "Bob",
                 "relationship": "colleague",
                 "photo_index": 1,
+                "consent_confirmed": False,
                 "created_at": "2025-01-02T00:00:00",
             }),
         ]
@@ -521,6 +592,10 @@ class TestFaceToolsList:
         assert len(result) == 2
         assert result[0]["person_name"] == "Alice"
         assert result[1]["person_name"] == "Bob"
+        assert result[0]["consent_confirmed"] is True
+        assert result[0]["has_reference_photo"] is True
+        assert result[1]["consent_confirmed"] is False
+        assert result[1]["has_reference_photo"] is False
         # Embeddings should NOT be in the list output
         assert "embedding" not in result[0]
 

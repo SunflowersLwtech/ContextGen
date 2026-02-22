@@ -26,7 +26,7 @@
 - ☁️ **后端架构完全不变**：Cloud Run + FastAPI + Google ADK + Gemini Live API
 - 🤖 **Agent 编排不变**：Orchestrator + Vision/OCR/Navigation/Memory/FaceID Sub-Agents
 - 🧠 **LOD Engine 不变**：三级 LOD + 规则引擎 + 发声阈值
-- 💾 **Memory 系统不变**：Vertex AI Memory Bank + Firestore
+- 💾 **Memory 系统**：自建 Firestore MemoryBankService（`memory/memory_bank.py`，340 行，支持 auto-extract/forget/budget）
 - 🔌 **WebSocket 协议不变**：`wss://cloud-run-url/ws/{user_id}/{session_id}`
 
 **唯一变更是"最后一公里"——前端从浏览器变成了原生 App。**

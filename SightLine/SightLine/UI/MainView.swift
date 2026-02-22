@@ -47,9 +47,10 @@ struct MainView: View {
 
     var body: some View {
         ZStack {
-            // Background color shifts with LOD level
+            // Background color shifts with LOD level (0.3s smooth transition per spec)
             lodBackgroundColor
                 .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.3), value: currentLOD)
 
             VStack {
                 Spacer()
@@ -85,6 +86,27 @@ struct MainView: View {
                         .lineLimit(3)
                         .accessibilityLabel("Last message: \(transcript)")
                 }
+
+                // Direct caregiver setup actions (non-debug flow).
+                HStack(spacing: 12) {
+                    quickActionButton(
+                        title: "Profile",
+                        systemImage: "person.crop.circle",
+                        accessibilityLabel: "Edit user profile"
+                    ) {
+                        showUserProfile = true
+                    }
+
+                    quickActionButton(
+                        title: "Familiar Faces",
+                        systemImage: "person.2.crop.square.stack",
+                        accessibilityLabel: "Upload family and friend photos"
+                    ) {
+                        showFaceRegistration = true
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
 
             // Debug overlay (SL-77) - top-aligned
@@ -151,7 +173,8 @@ struct MainView: View {
             devConsoleModel.bind(
                 sensorManager: sensorManager,
                 cameraManager: cameraManager,
-                debugModel: debugModel
+                debugModel: debugModel,
+                frameSelector: frameSelector
             )
         }
         .onDisappear {
@@ -180,6 +203,26 @@ struct MainView: View {
         .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")")
     }
 
+    // MARK: - Setup Action Buttons
+
+    private func quickActionButton(
+        title: String,
+        systemImage: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.white.opacity(0.14))
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .accessibilityLabel(accessibilityLabel)
+    }
+
     // MARK: - Gesture Handlers
 
     private func handleSingleTap() {
@@ -191,6 +234,7 @@ struct MainView: View {
             audioCapture.startCapture()
         }
         webSocketManager.sendText(UpstreamMessage.gesture(type: "mute_toggle").toJSON())
+        UIAccessibility.post(notification: .announcement, argument: isMuted ? "Microphone muted" : "Microphone unmuted")
         logger.info("Gesture: mute_toggle (isMuted=\(isMuted))")
     }
 
@@ -198,12 +242,14 @@ struct MainView: View {
         HapticManager.shared.doubleTap()
         audioPlayback.stopImmediately()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "interrupt").toJSON())
+        UIAccessibility.post(notification: .announcement, argument: "Speech interrupted")
         logger.info("Gesture: interrupt")
     }
 
     private func handleTripleTap() {
         HapticManager.shared.tripleTap()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "repeat_last").toJSON())
+        UIAccessibility.post(notification: .announcement, argument: "Repeating last message")
         logger.info("Gesture: repeat_last")
     }
 
@@ -219,6 +265,7 @@ struct MainView: View {
             }
         }
         webSocketManager.sendText(UpstreamMessage.gesture(type: "emergency_pause").toJSON())
+        UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
         logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
     }
 
@@ -229,10 +276,12 @@ struct MainView: View {
         if translation.height < 0 {
             // Swipe up -> LOD upgrade
             webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_up").toJSON())
+            UIAccessibility.post(notification: .announcement, argument: "Detail level increasing")
             logger.info("Gesture: lod_up")
         } else {
             // Swipe down -> LOD downgrade
             webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_down").toJSON())
+            UIAccessibility.post(notification: .announcement, argument: "Detail level decreasing")
             logger.info("Gesture: lod_down")
         }
     }
@@ -240,6 +289,7 @@ struct MainView: View {
     private func handleShake() {
         HapticManager.shared.sos()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "sos").toJSON())
+        UIAccessibility.post(notification: .announcement, argument: "SOS signal sent")
         logger.info("Gesture: sos (shake)")
     }
 
@@ -332,6 +382,7 @@ struct MainView: View {
             } else {
                 webSocketManager.sendText(msg.toJSON())
             }
+            frameSelector.markFrameSent()
         }
 
         // 4. Setup audio capture -> WebSocket + NoiseMeter RMS feed
@@ -392,6 +443,10 @@ struct MainView: View {
             }
         case .lodUpdate(let lod):
             DispatchQueue.main.async {
+                let lodNames = [1: "Safety", 2: "Balanced", 3: "Detailed"]
+                if lod != currentLOD {
+                    UIAccessibility.post(notification: .announcement, argument: "Detail level \(lod): \(lodNames[lod] ?? "")")
+                }
                 currentLOD = lod
                 frameSelector.updateLOD(lod)
                 telemetryAggregator.updateLOD(lod)
@@ -477,6 +532,7 @@ struct MainView: View {
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         localSynthesizer.speak(utterance)
 
+        UIAccessibility.post(notification: .announcement, argument: "Connection lost. Safe mode active.")
         logger.warning("Entered safe mode (LOD 1)")
     }
 
@@ -492,6 +548,7 @@ struct MainView: View {
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         localSynthesizer.speak(utterance)
 
+        UIAccessibility.post(notification: .announcement, argument: "Connection restored.")
         logger.info("Exited safe mode")
     }
 

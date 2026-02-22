@@ -15,7 +15,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-AGENT_ENGINE_ID = os.getenv("AGENT_ENGINE_ID", "")
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 2048
@@ -48,9 +47,8 @@ class MemoryBankService:
     retrieval via embeddings.
     """
 
-    def __init__(self, user_id: str, agent_engine_id: str = ""):
+    def __init__(self, user_id: str):
         self.user_id = user_id
-        self.agent_engine_id = agent_engine_id or AGENT_ENGINE_ID
         self._firestore = None
         self._memories_cache: list[dict] = []
         self._init_backend()

@@ -2,17 +2,19 @@
 //  FaceRegistrationView.swift
 //  SightLine
 //
-//  Face registration interface for sighted family members / caregivers.
-//  Captures photos via the camera, collects person metadata, and sends
-//  the image to the backend REST API for InsightFace embedding extraction.
+//  Family/caregiver face registration UI.
+//  Supports direct camera capture + photo library upload (3-5 samples),
+//  explicit consent, and batched registration via REST.
 //
-//  Spec: Final_Specification.md §4.2
 //  Backend: POST /api/face/register, GET /api/face/list/{user_id}
 //
 
 import SwiftUI
 import AVFoundation
+import PhotosUI
+import Combine
 import os
+import UIKit
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "FaceRegistration")
 
@@ -26,109 +28,196 @@ final class FaceRegistrationModel: ObservableObject {
         let relationship: String
         let photoIndex: Int
         let createdAt: String
+        let hasReferencePhoto: Bool
+        let consentConfirmed: Bool
     }
+
+    let minFaceSamples = 3
+    let maxFaceSamples = 5
 
     @Published var personName: String = ""
     @Published var relationship: String = "friend"
+    @Published var consentConfirmed: Bool = false
+
     @Published var isRegistering: Bool = false
     @Published var registrationResult: String = ""
     @Published var registrationSuccess: Bool = false
+    @Published var registrationProgress: String = ""
+    @Published var errorMessage: String = ""
+
+    @Published var selectedImages: [UIImage] = []
+    @Published var showCamera: Bool = false
+
     @Published var registeredFaces: [RegisteredFace] = []
     @Published var isLoadingFaces: Bool = false
-    @Published var capturedImage: UIImage?
-    @Published var showCamera: Bool = false
-    @Published var errorMessage: String = ""
 
     let relationships = ["friend", "family", "spouse", "colleague", "caregiver", "other"]
 
+    var canRegister: Bool {
+        !personName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && selectedImages.count >= minFaceSamples
+        && consentConfirmed
+        && !isRegistering
+    }
+
     private var baseURL: String {
-        // Use the same server URL as the WebSocket, but with https
+        // Use the same server URL as the WebSocket, but with HTTPS.
         let wsURL = SightLineConfig.serverBaseURL
         return wsURL
             .replacingOccurrences(of: "wss://", with: "https://")
             .replacingOccurrences(of: "ws://", with: "http://")
     }
 
-    // MARK: - Register Face
+    // MARK: - Photo Draft Management
 
-    func registerFace() async {
-        guard let image = capturedImage else {
-            errorMessage = "Please capture a photo first"
+    func addSelectedImage(_ image: UIImage) {
+        guard selectedImages.count < maxFaceSamples else {
+            errorMessage = "You can upload up to \(maxFaceSamples) photos per person"
             return
         }
-        guard !personName.trimmingCharacters(in: .whitespaces).isEmpty else {
+        selectedImages.append(image)
+        registrationSuccess = false
+        registrationResult = ""
+        errorMessage = ""
+    }
+
+    func removeSelectedImage(at index: Int) {
+        guard selectedImages.indices.contains(index) else { return }
+        selectedImages.remove(at: index)
+    }
+
+    private func clearDraftAfterSuccess() {
+        selectedImages.removeAll()
+        personName = ""
+        consentConfirmed = false
+    }
+
+    // MARK: - Register Face Samples
+
+    func registerFaceSamples() async {
+        let trimmedName = personName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedName.isEmpty else {
             errorMessage = "Please enter the person's name"
             return
         }
 
-        errorMessage = ""
-        isRegistering = true
-        registrationResult = ""
-
-        // Compress to JPEG and encode
-        guard let jpegData = image.jpegData(compressionQuality: 0.85) else {
-            errorMessage = "Failed to encode image"
-            isRegistering = false
+        guard selectedImages.count >= minFaceSamples else {
+            errorMessage = "Please upload at least \(minFaceSamples) photos"
             return
         }
-        let base64Image = jpegData.base64EncodedString()
 
-        let body: [String: Any] = [
-            "user_id": SightLineConfig.defaultUserId,
-            "person_name": personName.trimmingCharacters(in: .whitespaces),
-            "relationship": relationship,
-            "image_base64": base64Image,
-            "photo_index": 0,
-        ]
+        guard consentConfirmed else {
+            errorMessage = "Please confirm consent before uploading photos"
+            return
+        }
 
         guard let url = URL(string: "\(baseURL)/api/face/register") else {
             errorMessage = "Invalid server URL"
-            isRegistering = false
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        errorMessage = ""
+        registrationResult = ""
+        registrationSuccess = false
+        registrationProgress = "Preparing upload..."
+        isRegistering = true
 
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, response) = try await URLSession.shared.data(for: request)
+        var successCount = 0
+        var failures: [String] = []
 
-            guard let httpResponse = response as? HTTPURLResponse else {
-                errorMessage = "Invalid server response"
-                isRegistering = false
-                return
+        for (index, image) in selectedImages.enumerated() {
+            registrationProgress = "Uploading photo \(index + 1) of \(selectedImages.count)..."
+
+            guard let base64Image = encodeImageForUpload(image) else {
+                failures.append("Photo \(index + 1): Failed to encode image")
+                continue
             }
 
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            let body: [String: Any] = [
+                "user_id": SightLineConfig.defaultUserId,
+                "person_name": trimmedName,
+                "relationship": relationship,
+                "image_base64": base64Image,
+                "photo_index": index,
+                "consent_confirmed": consentConfirmed,
+                "store_reference_photo": true,
+            ]
 
-            if httpResponse.statusCode == 201 {
-                let faceId = json["face_id"] as? String ?? "unknown"
-                registrationResult = "Registered \(personName) (ID: \(faceId.prefix(8))...)"
-                registrationSuccess = true
-                logger.info("Face registered: \(personName) -> \(faceId)")
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 45
 
-                // Reset for next registration
-                capturedImage = nil
-                personName = ""
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
 
-                // Refresh face list
-                await loadFaces()
-            } else {
-                let error = json["error"] as? String ?? "Unknown error"
-                errorMessage = "Registration failed: \(error)"
-                registrationSuccess = false
-                logger.error("Face registration failed: \(error)")
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    failures.append("Photo \(index + 1): Invalid server response")
+                    continue
+                }
+
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+                if httpResponse.statusCode == 201 {
+                    successCount += 1
+                } else {
+                    let serverError = json["error"] as? String ?? "Unknown error"
+                    failures.append("Photo \(index + 1): \(serverError)")
+                }
+            } catch {
+                failures.append("Photo \(index + 1): \(error.localizedDescription)")
             }
-        } catch {
-            errorMessage = "Network error: \(error.localizedDescription)"
-            registrationSuccess = false
-            logger.error("Face registration network error: \(error)")
         }
 
         isRegistering = false
+        registrationProgress = ""
+
+        if successCount >= minFaceSamples {
+            registrationSuccess = true
+            registrationResult = "Registered \(trimmedName) with \(successCount) photo(s)."
+            logger.info("Face registration completed: \(trimmedName), success=\(successCount)")
+
+            if !failures.isEmpty {
+                errorMessage = "Some photos failed. \(failures.prefix(2).joined(separator: " | "))"
+            }
+
+            clearDraftAfterSuccess()
+            await loadFaces()
+            return
+        }
+
+        registrationSuccess = false
+        if failures.isEmpty {
+            errorMessage = "Only \(successCount) photo(s) were registered. Minimum is \(minFaceSamples)."
+        } else {
+            errorMessage = "Registered \(successCount) photo(s). Need at least \(minFaceSamples). \(failures.prefix(2).joined(separator: " | "))"
+        }
+        logger.error("Face registration incomplete: success=\(successCount), failures=\(failures.count)")
+    }
+
+    private func encodeImageForUpload(_ image: UIImage) -> String? {
+        let prepared = downsample(image: image, maxEdge: 1280)
+        guard let jpegData = prepared.jpegData(compressionQuality: 0.82) else {
+            return nil
+        }
+        return jpegData.base64EncodedString()
+    }
+
+    private func downsample(image: UIImage, maxEdge: CGFloat) -> UIImage {
+        let size = image.size
+        let longestEdge = max(size.width, size.height)
+        guard longestEdge > maxEdge, longestEdge > 0 else { return image }
+
+        let scale = maxEdge / longestEdge
+        let targetSize = CGSize(width: floor(size.width * scale), height: floor(size.height * scale))
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
     }
 
     // MARK: - Load Faces
@@ -159,12 +248,14 @@ final class FaceRegistrationModel: ObservableObject {
                     personName: face["person_name"] as? String ?? "Unknown",
                     relationship: face["relationship"] as? String ?? "",
                     photoIndex: face["photo_index"] as? Int ?? 0,
-                    createdAt: face["created_at"] as? String ?? ""
+                    createdAt: face["created_at"] as? String ?? "",
+                    hasReferencePhoto: face["has_reference_photo"] as? Bool ?? false,
+                    consentConfirmed: face["consent_confirmed"] as? Bool ?? false
                 )
             }
-            logger.info("Loaded \(registeredFaces.count) registered face(s)")
+            logger.info("Loaded \(self.registeredFaces.count) registered face(s)")
         } catch {
-            logger.error("Load faces failed: \(error)")
+            logger.error("Load faces failed: \(error.localizedDescription)")
         }
 
         isLoadingFaces = false
@@ -186,7 +277,7 @@ final class FaceRegistrationModel: ObservableObject {
                 await loadFaces()
             }
         } catch {
-            logger.error("Delete face failed: \(error)")
+            logger.error("Delete face failed: \(error.localizedDescription)")
         }
     }
 }
@@ -239,6 +330,14 @@ struct FaceRegistrationView: View {
     @StateObject private var model = FaceRegistrationModel()
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var latestCameraImage: UIImage?
+    @State private var isImportingFromLibrary = false
+
+    private var remainingSlots: Int {
+        max(0, model.maxFaceSamples - model.selectedImages.count)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -249,7 +348,13 @@ struct FaceRegistrationView: View {
 
                     formSection
 
+                    consentSection
+
                     registerButton
+
+                    if !model.registrationProgress.isEmpty {
+                        progressBanner
+                    }
 
                     if !model.errorMessage.isEmpty {
                         errorBanner
@@ -264,7 +369,7 @@ struct FaceRegistrationView: View {
                 .padding()
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Register Face")
+            .navigationTitle("Register Familiar Faces")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -272,7 +377,16 @@ struct FaceRegistrationView: View {
                 }
             }
             .sheet(isPresented: $model.showCamera) {
-                CameraCaptureView(image: $model.capturedImage)
+                CameraCaptureView(image: $latestCameraImage)
+            }
+            .onChange(of: latestCameraImage) { _, newImage in
+                guard let newImage else { return }
+                model.addSelectedImage(newImage)
+                latestCameraImage = nil
+            }
+            .onChange(of: selectedPhotoItems) { _, newItems in
+                guard !newItems.isEmpty else { return }
+                Task { await importPhotoPickerItems(newItems) }
             }
             .task {
                 await model.loadFaces()
@@ -288,10 +402,10 @@ struct FaceRegistrationView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.blue)
 
-            Text("Register a Face")
+            Text("Upload Familiar Faces")
                 .font(.title2.bold())
 
-            Text("Take a clear photo of the person's face. This helps SightLine recognize them and announce their presence.")
+            Text("Add 3-5 clear photos for each person. SightLine uses these samples to recognize family members and friends.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -301,36 +415,101 @@ struct FaceRegistrationView: View {
     }
 
     private var photoSection: some View {
-        VStack(spacing: 12) {
-            if let image = model.capturedImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 200, height: 200)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(.blue, lineWidth: 3))
-                    .shadow(radius: 4)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Photos")
+                    .font(.headline)
 
-                Button("Retake Photo") {
-                    model.showCamera = true
-                }
+                Spacer()
+
+                Text("\(model.selectedImages.count)/\(model.maxFaceSamples)")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(model.selectedImages.count >= model.minFaceSamples ? .green : .orange)
+            }
+
+            Text("At least \(model.minFaceSamples) photos are required. Use different angles and lighting for better recognition.")
                 .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Button {
+                    model.showCamera = true
+                } label: {
+                    Label("Take Photo", systemImage: "camera.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isRegistering || model.selectedImages.count >= model.maxFaceSamples)
+                .accessibilityLabel("Take a new face photo")
+
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: max(1, remainingSlots),
+                    matching: .images
+                ) {
+                    Label("Choose Photos", systemImage: "photo.on.rectangle.angled")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.isRegistering || model.selectedImages.count >= model.maxFaceSamples)
+                .accessibilityLabel("Choose photos from library")
+            }
+
+            if isImportingFromLibrary {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Importing selected photos...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if model.selectedImages.isEmpty {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(.systemGray6))
+                    .frame(height: 120)
+                    .overlay(
+                        Text("No photos selected yet")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    )
+                    .accessibilityLabel("No selected photos")
             } else {
-                Button(action: { model.showCamera = true }) {
-                    VStack(spacing: 12) {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 36))
-                        Text("Tap to Take Photo")
-                            .font(.headline)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(Array(model.selectedImages.enumerated()), id: \.offset) { index, image in
+                            ZStack(alignment: .topTrailing) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 110, height: 110)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(Color.blue.opacity(0.3), lineWidth: 1)
+                                    )
+
+                                Button(role: .destructive) {
+                                    model.removeSelectedImage(at: index)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(.white, .red)
+                                }
+                                .offset(x: 6, y: -6)
+                                .accessibilityLabel("Remove photo \(index + 1)")
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("Selected photo \(index + 1)")
+                        }
                     }
-                    .foregroundStyle(.blue)
-                    .frame(width: 200, height: 200)
-                    .background(Color(.systemGray6))
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(.blue.opacity(0.3), lineWidth: 2))
+                    .padding(.vertical, 4)
                 }
             }
         }
+        .padding()
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var formSection: some View {
@@ -353,8 +532,8 @@ struct FaceRegistrationView: View {
                     .foregroundStyle(.secondary)
 
                 Picker("Relationship", selection: $model.relationship) {
-                    ForEach(model.relationships, id: \.self) { r in
-                        Text(r.capitalized).tag(r)
+                    ForEach(model.relationships, id: \.self) { relationship in
+                        Text(relationship.capitalized).tag(relationship)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -366,31 +545,63 @@ struct FaceRegistrationView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    private var consentSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Consent")
+                .font(.headline)
+
+            Toggle(isOn: $model.consentConfirmed) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("I confirm I have permission to upload and store these photos.")
+                        .font(.subheadline)
+                    Text("Stored photos are used for familiar-face recognition and can be deleted at any time from this screen.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel("Consent to upload and store familiar face photos")
+            .accessibilityHint("Required before registration")
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private var registerButton: some View {
         Button(action: {
-            Task { await model.registerFace() }
+            Task { await model.registerFaceSamples() }
         }) {
             HStack(spacing: 8) {
                 if model.isRegistering {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                 } else {
-                    Image(systemName: "person.crop.circle.badge.checkmark")
+                    Image(systemName: "icloud.and.arrow.up")
                 }
-                Text(model.isRegistering ? "Registering..." : "Register Face")
+
+                Text(model.isRegistering ? "Registering..." : "Upload and Register Faces")
                     .fontWeight(.semibold)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(
-                (model.capturedImage != nil && !model.personName.isEmpty && !model.isRegistering)
-                    ? Color.blue : Color.gray
-            )
+            .background(model.canRegister ? Color.blue : Color.gray)
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        .disabled(model.capturedImage == nil || model.personName.isEmpty || model.isRegistering)
-        .accessibilityLabel("Register this person's face")
+        .disabled(!model.canRegister)
+        .accessibilityLabel("Upload selected photos and register faces")
+    }
+
+    private var progressBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            Text(model.registrationProgress)
+                .font(.subheadline)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var errorBanner: some View {
@@ -405,6 +616,9 @@ struct FaceRegistrationView: View {
         .frame(maxWidth: .infinity)
         .background(Color.red.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Error: \(model.errorMessage)")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var successBanner: some View {
@@ -419,6 +633,9 @@ struct FaceRegistrationView: View {
         .frame(maxWidth: .infinity)
         .background(Color.green.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Success: \(model.registrationResult)")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var registeredFacesSection: some View {
@@ -458,9 +675,16 @@ struct FaceRegistrationView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(face.personName)
                                 .font(.body.bold())
-                            Text(face.relationship.capitalized)
+
+                            Text("\(face.relationship.capitalized) • Photo \(face.photoIndex + 1)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+
+                            if face.hasReferencePhoto && face.consentConfirmed {
+                                Text("Stored reference photo")
+                                    .font(.caption2)
+                                    .foregroundStyle(.green)
+                            }
                         }
 
                         Spacer()
@@ -483,5 +707,30 @@ struct FaceRegistrationView: View {
         .padding()
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Helpers
+
+    @MainActor
+    private func importPhotoPickerItems(_ items: [PhotosPickerItem]) async {
+        isImportingFromLibrary = true
+        defer {
+            isImportingFromLibrary = false
+            selectedPhotoItems = []
+        }
+
+        for item in items {
+            if model.selectedImages.count >= model.maxFaceSamples {
+                break
+            }
+            do {
+                if let data = try await item.loadTransferable(type: Data.self),
+                   let image = UIImage(data: data) {
+                    model.addSelectedImage(image)
+                }
+            } catch {
+                model.errorMessage = "Failed to import one of the selected photos"
+            }
+        }
     }
 }

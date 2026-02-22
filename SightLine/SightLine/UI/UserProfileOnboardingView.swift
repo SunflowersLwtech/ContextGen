@@ -14,6 +14,7 @@
 //
 
 import SwiftUI
+import Combine
 import os
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "UserProfile")
@@ -186,6 +187,7 @@ struct UserProfileOnboardingView: View {
     @StateObject private var model = UserProfileModel()
     @Environment(\.dismiss) private var dismiss
     @State private var showQuickPresets = false
+    @State private var showFaceRegistration = false
 
     var body: some View {
         NavigationStack {
@@ -221,6 +223,9 @@ struct UserProfileOnboardingView: View {
             .sheet(isPresented: $showQuickPresets) {
                 presetsSheet
             }
+            .sheet(isPresented: $showFaceRegistration) {
+                FaceRegistrationView()
+            }
             .task {
                 await model.loadProfile()
             }
@@ -230,7 +235,8 @@ struct UserProfileOnboardingView: View {
     // MARK: - Step Indicator
 
     private var stepIndicator: some View {
-        HStack(spacing: 8) {
+        let stepNames = ["Vision", "Mobility", "Preferences", "Review"]
+        return HStack(spacing: 8) {
             ForEach(0..<model.totalSteps, id: \.self) { step in
                 Capsule()
                     .fill(step <= model.currentStep ? Color.blue : Color.gray.opacity(0.3))
@@ -239,6 +245,9 @@ struct UserProfileOnboardingView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(model.currentStep + 1) of \(model.totalSteps): \(stepNames[model.currentStep])")
+        .accessibilityValue("\(model.currentStep + 1) of \(model.totalSteps) completed")
     }
 
     // MARK: - Step 1: Vision Status
@@ -459,6 +468,22 @@ struct UserProfileOnboardingView: View {
                 .background(Color(.systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
+                Button {
+                    showFaceRegistration = true
+                } label: {
+                    HStack {
+                        Image(systemName: "person.2.crop.square.stack")
+                        Text("Manage Familiar Face Library")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .accessibilityLabel("Open familiar face registration")
+
                 if !model.errorMessage.isEmpty {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -471,6 +496,9 @@ struct UserProfileOnboardingView: View {
                     .frame(maxWidth: .infinity)
                     .background(Color.red.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Error: \(model.errorMessage)")
+                    .accessibilityAddTraits(.updatesFrequently)
                 }
 
                 if model.saveSuccess {
@@ -485,6 +513,9 @@ struct UserProfileOnboardingView: View {
                     .frame(maxWidth: .infinity)
                     .background(Color.green.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Success: \(model.saveResult)")
+                    .accessibilityAddTraits(.updatesFrequently)
                 }
             }
             .padding()

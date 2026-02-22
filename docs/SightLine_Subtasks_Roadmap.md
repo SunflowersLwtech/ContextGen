@@ -27,7 +27,7 @@
 3. LOD 决策引擎为 **规则引擎**（毫秒级），非 LLM 判定。
 4. `step_cadence` 单位统一为 **steps/minute**。
 5. LOD 3 静止场景视频帧率统一为 **0.3-0.5 FPS**。
-6. Memory 首选 **Vertex AI Memory Bank**，Mem0 仅 fallback。
+6. Memory 最终方案：**自建 Firestore MemoryBankService**（`memory/memory_bank.py`），不使用 Vertex AI Memory Bank。
 7. 导航能力作为 **Orchestrator 的 function tool**，不是独立 Sub-Agent。
 8. 模型名必须按平台切换：
    - Gemini Developer API: `gemini-2.5-flash-native-audio-preview-12-2025`
@@ -140,8 +140,8 @@
 
 | ID | Subtask | Priority | Status | Depends | Deliverable | Acceptance |
 |---|---|---|---|---|---|---|
-| SL-70 | SessionService 从 InMemory 迁移到 VertexAiSessionService | P1 | TODO | SL-12 | 会话持久化 | 重启后会话可恢复 |
-| SL-71 | 接入 VertexAiMemoryBankService + PreloadMemoryTool | P1 | TODO | SL-70 | 长期记忆基础链路 | top-K 记忆可注入 prompt |
+| SL-70 | SessionService 迁移到 VertexAiSessionService | P1 | DONE | SL-12 | 会话持久化 | Agent Engine ID: 8731647347169165312，重启后会话可恢复 |
+| SL-71 | 自建 Firestore MemoryBankService（`memory/memory_bank.py`）| P1 | DONE | SL-70 | 长期记忆基础链路 | top-K 记忆可注入 prompt，支持 auto-extract/forget/budget |
 | SL-72 | Memory 提取策略 + 写入预算（max 5/session） | P1 | TODO | SL-71 | 记忆膨胀受控 | 每会话写入上限生效 |
 | SL-73 | Memory 检索排序（relevance/recency/importance） | P2 | TODO | SL-71 | 相关记忆优先 | 检索结果质量可解释 |
 | SL-74 | `forget_recent_memory()` 预留接口 | P2 | TODO | SL-71 | 用户可撤销近期记忆 | 删除后不可检索 |
@@ -192,8 +192,8 @@
 2. `SL-76` 稳定性矩阵：断网/GoAway/API 异常/摄像头失败。
 3. `SL-78` 最小测试集（unit + e2e smoke）。
 4. `SL-77` DebugOverlay（LOD/Telemetry/Latency 可视化）。
-5. `SL-70` SessionService 迁移到 VertexAiSessionService。
-6. `SL-71` 接入 VertexAiMemoryBankService + PreloadMemoryTool。
+5. `SL-70` SessionService 迁移到 VertexAiSessionService。✅ DONE
+6. `SL-71` 自建 Firestore MemoryBankService + preload/forget 工具集。✅ DONE
 7. `SL-72` Memory 提取策略 + 写入预算。
 8. `SL-90` 锁定 4 分钟脚本与 4 个关键场景。
 9. `SL-91` 端到端彩排与故障清单修复。

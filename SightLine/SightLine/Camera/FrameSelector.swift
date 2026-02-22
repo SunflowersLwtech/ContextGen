@@ -16,8 +16,10 @@ import ImageIO
 
 class FrameSelector: ObservableObject {
     @Published var currentLOD: Int = 2
+    @Published var effectiveFPS: Double = 0
 
     private var lastFrameTime: Date = .distantPast
+    private var frameTimes: [Date] = []
 
     // Pixel-diff deduplication (SL-75)
     private var previousThumbnail: [UInt8]?
@@ -56,7 +58,17 @@ class FrameSelector: ObservableObject {
     }
 
     func markFrameSent() {
-        lastFrameTime = Date()
+        let now = Date()
+        lastFrameTime = now
+        frameTimes.append(now)
+        // Keep only frames from the last 5 seconds for FPS calculation
+        frameTimes = frameTimes.filter { now.timeIntervalSince($0) <= 5.0 }
+        let elapsed = frameTimes.count > 1
+            ? now.timeIntervalSince(frameTimes.first!)
+            : 1.0
+        DispatchQueue.main.async {
+            self.effectiveFPS = elapsed > 0 ? Double(self.frameTimes.count - 1) / elapsed : 0
+        }
     }
 
     func updateLOD(_ lod: Int) {

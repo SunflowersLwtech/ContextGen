@@ -24,7 +24,7 @@ from tools import (
     reverse_geocode,
 )
 
-# Phase 4: Memory tools (SL-71)
+# Memory tools (custom Firestore Memory Bank)
 try:
     from memory.memory_tools import preload_memory, forget_recent_memory, forget_memory
 except ImportError:

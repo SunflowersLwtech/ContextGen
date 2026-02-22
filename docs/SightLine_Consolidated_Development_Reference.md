@@ -17,7 +17,7 @@
 | **L0 权威规格** | `SightLine_Final_Specification.md` | **主参考** | 产品定义 + 架构设计 + 竞赛策略 |
 | **L1 执行计划** | `SightLine_Subtasks_Roadmap.md` | **直接使用** | Phase 分解、依赖图、Cut-Line |
 | **L1 深化设计** | `engine/Context_Engine_Implementation_Guide.md` | **补充参考** | LOD Engine、Context 建模、Vision Extraction 实现细节 |
-| **L1 深化设计** | `engine/Memory_System_Research_and_Integration.md` | **补充参考** | Memory 方案选型决议（Vertex AI Memory Bank） |
+| **L1 深化设计** | `engine/Memory_System_Research_and_Integration.md` | **补充参考** | Memory 方案调研历史（最终采用：自建 Firestore MemoryBankService） |
 | **L2 审计日志** | `SightLine_Alignment_Review.md` | **问题回溯** | 10 个跨文档矛盾的修复记录 |
 | **L2 技术调研** | `SightLine_Technical_Research.md` | **实现细节** | Roadmap 大量引用的技术实现参考 |
 | **L2 技术调研** | `SightLine_Best_Practices_Research.md` | **实现细节** | ADK bidi-demo 模板、Activity Signals 等最佳实践 |
@@ -36,15 +36,15 @@
 | # | 矛盾点 | 涉及文档 | 裁定 |
 |---|--------|---------|------|
 | 1 | **架构模式**：Direct browser-to-Gemini vs Server-to-Server | Technical Research §753 vs 其他所有文档 | **Server-to-Server**。删除 Technical Research 中的直连方案残留 |
-| 2 | **Memory 存储方案**：自建 Firestore 图谱 vs Mem0 vs Vertex AI Memory Bank | 核心架构 vs Implementation Guide vs Memory Research | **Vertex AI Memory Bank**（首选），Mem0 作为 fallback |
+| 2 | **Memory 存储方案**：自建 Firestore 图谱 vs Mem0 vs Vertex AI Memory Bank | 核心架构 vs Implementation Guide vs Memory Research | **自建 Firestore MemoryBankService**（已采用，`memory/memory_bank.py`）。功能最完整（auto-extract / forget / budget / 三维排序），无外部依赖，成本更低。Vertex AI Memory Bank 和 Mem0 降级为备选，不再迁移 |
 | 3 | **嵌入维度**：768 vs 2048 vs 3072 | RAG Research vs Gemini 3 Migration vs Final Spec | **2048 维**（gemini-embedding-001 native 3072d → truncated to 2048 for Firestore max） |
 | 4 | **Live API 模型 ID** | 多种写法混用 | **Gemini Developer API**: `gemini-2.5-flash-native-audio-preview-12-2025`；**Vertex AI**: `gemini-live-2.5-flash-native-audio` (GA)。ADK **不会**自动映射名称，需根据 `GOOGLE_GENAI_USE_VERTEXAI` 设置对应名称（参见 ADK Part 5: How to Handle Model Names）。推荐通过 `.env` 环境变量 `GEMINI_LIVE_MODEL` 切换 |
 | 5 | **Orchestrator 构建方式** | ADK 示例用 `LlmAgent` vs 实际需要 Live API bidi-streaming | ADK `LlmAgent` 仅为结构参考；实际 Orchestrator 通过 `client.aio.live.connect()` + `LiveRequestQueue` 连接 |
 | 6 | **手势映射** | Final Spec §7.2 vs Voice UX Research §2.2 | 采用 **Voice UX Research 版本**（6 种手势，已在 Alignment Review 中确认） |
 | 7 | **砍功能优先级** | Final Spec §12.1 vs Roadmap §4 Cut-Line | 执行时以 **Roadmap Cut-Line** 为准 |
 | 8 | **vision_status 枚举值**：合并字段 vs 分离字段 | Final Spec §2.4 (`congenital_blind`) vs Context Engine §4.2 (`totally_blind` + `blindness_onset`) | **分离设计**：`vision_status: totally_blind \| low_vision` + `blindness_onset: congenital \| acquired`。合并会丢失信息，已更新 Final Spec |
-| 9 | **Session Service 选型** | Final Spec §6.1 (`InMemorySessionService`) vs Memory Research §3.2 (`VertexAiSessionService`) | 开发初期 `InMemorySessionService`（零配置），Phase 2 切 `VertexAiSessionService`（持久化）。两者 API 兼容 |
-| 10 | **Long-term Memory 实现路径** | Context Engine §4.1（自建 Mem0 式） vs Memory Research（Memory Bank ~30 行） | **Vertex AI Memory Bank 首选**。Context Engine §4 自建方案降级为 fallback 备选，已更新 |
+| 9 | **Session Service 选型** | Final Spec §6.1 (`InMemorySessionService`) vs Memory Research §3.2 (`VertexAiSessionService`) | **Phase 5 已完成迁移**：`VertexAiSessionService`（Agent Engine ID: `8731647347169165312`）正式运行中，会话持久化生效 |
+| 10 | **Long-term Memory 实现路径** | Context Engine §4.1（自建 Mem0 式） vs Memory Research（Memory Bank ~30 行） | **自建 Firestore MemoryBankService**（已采用，`memory/memory_bank.py`，340 行）。Vertex AI Memory Bank 降级为备选，不迁移。见矛盾裁定 #2 |
 | 11 | **RAG Engine Embedding 模型名** | Memory Research §4.2 (`text-embedding-005`) vs 其他所有文档 (`gemini-embedding-001`) | 统一 `gemini-embedding-001`。已修正 Memory Research 中的代码示例 |
 | 12 | **step_cadence 单位**：Final Spec 用 steps/sec (1.5), Consolidated/iOS 用 steps/min (72) | Final Spec §5.2 vs Consolidated §1.2 | **steps/minute**（iOS CMPedometer 原生输出） |
 | 13 | **LOD 3 帧率**：Final Spec 写 1FPS，Consolidated/iOS 写 0.5FPS | Final Spec vs Consolidated §1.3 | **0.5 FPS（LOD 3 静止时）** |
@@ -148,34 +148,33 @@
 |------|---------|---------|------|
 | **Ephemeral** | ms ~ s | Gemini Context Window（实时注入） | 视频帧、传感器快照、心率突变、运动状态 |
 | **Session** | min ~ hr | ADK Session State（内存/持久化） | trip_purpose, space_type, space_transitions, avg_cadence, conversation_topics, active_task, narrative_snapshot |
-| **Long-term** | 跨会话 | Vertex AI Memory Bank（底层 Firestore） | 用户偏好、人脸库、常去地点、行为模式、压力触发因素 |
+| **Long-term** | 跨会话 | 自建 Firestore Memory Bank（`memory/memory_bank.py`） | 用户偏好、人脸库、常去地点、行为模式、压力触发因素 |
 
 ### 2.2 长时记忆
 
-**裁定方案：Vertex AI Memory Bank**（首选）
+**实际方案：自建 Firestore Memory Bank**
 
-| 维度 | Vertex AI Memory Bank | 自建 Mem0 式 | Mem0 开源 |
-|------|----------------------|-------------|-----------|
-| 代码量 | ~30 行 | 200-500 行 | ~50 行 |
+| 维度 | Vertex AI Memory Bank | 自建 Firestore（✅ 已采用） | Mem0 开源 |
+|------|----------------------|---------------------------|-----------|
+| 代码量 | ~30 行 | ~340 行 | ~50 行 |
 | ADK 集成 | 原生（`VertexAiMemoryBankService`） | 手动 | 官方集成 |
-| 记忆提取 | Gemini 自动提取 | 自建 extraction prompt | 内置提取 |
-| 冲突处理 | 自动合并（非简单追加） | 手动实现 | 内置 |
-| 检索 | `PreloadMemoryTool` 每轮自动加载 | 手动 embedding + search | 内置 |
+| 记忆提取 | Gemini 自动提取 | 自建 extraction prompt（`memory_extractor.py`） | 内置提取 |
+| 冲突处理 | 自动合并（非简单追加） | 手动实现（cosine > 0.85 更新） | 内置 |
+| 检索 | `PreloadMemoryTool` 每轮自动加载 | `preload_memory()` + 三维排序 | 内置 |
 | 底层存储 | Firestore | Firestore | 多种 |
+| 忘记功能 | 不支持 | `forget_recent_memory()` + `forget_memory()` | 不支持 |
+| 写入预算 | 无 | `MAX_NEW_MEMORIES_PER_SESSION = 5` | 无 |
 
-**集成代码骨架**：
+**实际用法**：
 ```python
-from google.adk.memory import VertexAiMemoryBankService, PreloadMemoryTool
+from memory.memory_bank import MemoryBankService
 
-memory_service = VertexAiMemoryBankService(project="sightline", location="us-central1")
-runner = Runner(
-    agent=orchestrator_agent,
-    session_service=VertexAiSessionService(project="sightline", location="us-central1"),
-    memory_service=memory_service,
-)
+bank = MemoryBankService(user_id)
+memories = bank.retrieve_memories(query, top_k=5)
+bank.store_memory(content, category="preference", importance=0.8)
 ```
 
-**Fallback 策略**：如 Memory Bank 提取逻辑不够灵活（如需要 Graph Memory 做社交关系拓扑），切换到 Mem0（41K stars，ADK 官方集成）。
+**决策说明**：初期设计首选 `VertexAiMemoryBankService`，实际开发中发现自建方案功能更完整（支持 auto-extract/forget/budget），成本更低，已确认为最终方案，不迁移。
 
 **记忆分类**：
 
@@ -366,7 +365,7 @@ Vision Sub-Agent 不回答"你看到了什么"，而是回答"对视障用户当
 Orchestrator Agent (Gemini 2.5 Flash Native Audio, Live API)
 ├── Vision Sub-Agent (Gemini 3.1 Pro, REST)      — 场景理解/表情识别
 ├── OCR Sub-Agent (Gemini 3 Flash, REST, FREE)    — 文字读取
-├── Memory Sub-Agent (Vertex AI Memory Bank)       — 跨会话记忆
+├── Memory Sub-Agent (自建 Firestore Memory Bank)  — 跨会话记忆
 ├── Face ID Sub-Agent (InsightFace ONNX)          — 人脸匹配
 ├── Tools (Function Calling on Orchestrator):
 │   ├── navigate_location()                        — Google Maps 导航
@@ -382,8 +381,7 @@ Orchestrator Agent (Gemini 2.5 Flash Native Audio, Live API)
 
 ```python
 runner = Runner(agent=root_agent, app_name="sightline",
-                session_service=VertexAiSessionService(...),
-                memory_service=VertexAiMemoryBankService(...))
+                session_service=VertexAiSessionService(...))
 
 # LiveRequestQueue 直接实例化（ADK 官方 API，不通过 runner 创建）
 live_request_queue = LiveRequestQueue()
@@ -551,7 +549,7 @@ gcloud firestore indexes composite create \
 3. 返回 top-K 结果
 4. 三维加权排序：`0.5 * relevance + 0.3 * recency + 0.2 * importance`
 
-**与 Memory 系统的关系**：RAG 是 Memory 系统的底层检索机制。Vertex AI Memory Bank 在内部使用 Firestore 向量搜索做语义检索，开发者无需直接操作 RAG 管线（除非 fallback 到自建方案）。
+**与 Memory 系统的关系**：RAG 是 Memory 系统的底层检索机制。自建 Firestore Memory Bank（`memory/memory_bank.py`）直接使用 Firestore 向量搜索（`find_nearest`）做语义检索，开发者通过 `MemoryBankService` API 操作。
 
 ---
 
@@ -567,7 +565,7 @@ gcloud firestore indexes composite create \
 | **人脸识别** | InsightFace buffalo_l (ONNX, 512-D) | 99.83% LFW |
 | **后端** | Cloud Run + FastAPI + ADK | 一命令部署 |
 | **数据库** | Firestore（原生向量搜索） | 用户/人脸/记忆 |
-| **记忆服务** | Vertex AI Memory Bank | ADK 原生，~30 行集成 |
+| **记忆服务** | 自建 Firestore Memory Bank（`memory/memory_bank.py`） | ~340 行，支持 auto-extract/forget/budget |
 | **iOS 前端** | Swift Native (AVFoundation + CoreMotion + HealthKit + NWConnection) | 详见 iOS Infra Design |
 | **watchOS 前端** | SwiftUI + HKWorkoutSession + WCSession (~500-680 行) | 实时心率传输 |
 | **基础设施** | Terraform + Cloud Build + Secret Manager | +0.2 加分项 |
@@ -650,5 +648,5 @@ gcloud firestore indexes composite create \
 | ~~iOS standalone PWA 摄像头故障~~ | ~~高~~ | ~~已通过迁移到 Swift Native 解决~~ |
 | Gemini Live API 高峰期延迟 5-15s | **中** | 预反馈 + 流式播放 + 避开高峰时段 Demo |
 | 09-2025 模型 2026-03-19 弃用 | **中** | 已使用 12-2025 版本，无影响 |
-| Vertex AI Memory Bank 提取逻辑不够灵活 | **低** | Mem0 作为 fallback |
+| ~~Vertex AI Memory Bank 提取逻辑不够灵活~~ | ~~低~~ | ~~已采用自建 Firestore 方案，功能更完整~~ |
 | Context Compression 未启用导致 2 分钟断会 | **高** | 配置检查清单第一项 |
