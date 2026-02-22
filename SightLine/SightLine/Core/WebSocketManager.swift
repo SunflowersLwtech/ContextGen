@@ -34,6 +34,7 @@ class WebSocketManager: ObservableObject {
     // Callbacks
     var onAudioReceived: ((Data) -> Void)?
     var onTextReceived: ((String) -> Void)?
+    var onTextSent: ((String) -> Void)?
     var onConnectionStateChanged: ((Bool) -> Void)?
     /// Called when connection is lost — UI should enter safe mode (LOD 1).
     var onDisconnectionDegraded: (() -> Void)?
@@ -77,6 +78,9 @@ class WebSocketManager: ObservableObject {
     func sendText(_ text: String) {
         guard isConnectionReady, let activeConnection = connection else { return }
         guard let data = text.data(using: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.onTextSent?(text)
+        }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "textMessage",
                                                   metadata: [metadata])
@@ -101,6 +105,30 @@ class WebSocketManager: ObservableObject {
                 self?.handleDisconnect(sourceConnection: activeConnection)
             }
         })
+    }
+
+    /// Explicit reconnect path used for server-initiated GoAway messages.
+    func reconnect(afterMs: Int = 0) {
+        guard let url = serverURL else { return }
+
+        intentionalDisconnect = false
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        stopPingTimer()
+        connection?.cancel()
+        connection = nil
+        isConnectionReady = false
+        isConnectionInProgress = false
+        updateConnectionState(false)
+
+        let delay = max(0.0, Double(afterMs) / 1000.0)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.intentionalDisconnect else { return }
+            self.reconnectWorkItem = nil
+            self.startConnection(url: url)
+        }
+        reconnectWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     // MARK: - Private

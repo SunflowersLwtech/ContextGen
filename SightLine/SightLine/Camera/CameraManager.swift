@@ -15,6 +15,7 @@ import os
 
 class CameraManager: NSObject, ObservableObject {
     @Published var isRunning = false
+    @Published var previewSession: AVCaptureSession?
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "Camera")
 
@@ -70,7 +71,10 @@ class CameraManager: NSObject, ObservableObject {
         session.startRunning()
         captureSession = session
 
-        DispatchQueue.main.async { self.isRunning = true }
+        DispatchQueue.main.async {
+            self.isRunning = true
+            self.previewSession = session
+        }
         Self.logger.info("Camera capture started")
     }
 
@@ -78,7 +82,10 @@ class CameraManager: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             self?.captureSession?.stopRunning()
             self?.captureSession = nil
-            DispatchQueue.main.async { self?.isRunning = false }
+            DispatchQueue.main.async {
+                self?.isRunning = false
+                self?.previewSession = nil
+            }
             Self.logger.info("Camera capture stopped")
         }
     }

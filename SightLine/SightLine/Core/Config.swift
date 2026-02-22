@@ -9,11 +9,16 @@ import Foundation
 
 enum SightLineConfig {
     // Server URL - change for Cloud Run deployment
-    static let serverBaseURL = "wss://sightline-backend-200455604992.us-central1.run.app"
+    static let serverBaseURL = "wss://sightline-backend-kp47ssyf4q-uc.a.run.app"
+    static let sessionResumptionHandleDefaultsKey = "sightline.session_resumption_handle"
 
     // WebSocket path template
-    static func wsURL(userId: String, sessionId: String) -> URL {
-        URL(string: "\(serverBaseURL)/ws/\(userId)/\(sessionId)")!
+    static func wsURL(userId: String, sessionId: String, resumeHandle: String? = nil) -> URL {
+        var components = URLComponents(string: "\(serverBaseURL)/ws/\(userId)/\(sessionId)")!
+        if let resumeHandle, !resumeHandle.isEmpty {
+            components.queryItems = [URLQueryItem(name: "resume_handle", value: resumeHandle)]
+        }
+        return components.url!
     }
 
     // Audio

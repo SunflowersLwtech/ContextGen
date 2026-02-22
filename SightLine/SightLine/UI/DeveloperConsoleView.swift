@@ -27,7 +27,23 @@ final class DeveloperConsoleModel: ObservableObject {
         let text: String
     }
 
+    struct NetworkEvent: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let direction: String
+        let payload: String
+    }
+
+    struct DebugBoundingBox: Identifiable {
+        let id = UUID()
+        let source: String
+        let label: String
+        let confidence: Double
+        let normalizedRect: CGRect
+    }
+
     @Published var transcripts: [TranscriptEntry] = []
+    @Published var networkEvents: [NetworkEvent] = []
 
     // Sensor data
     @Published var motionState: String = "unknown"
@@ -65,6 +81,11 @@ final class DeveloperConsoleModel: ObservableObject {
 
     // Camera
     @Published var isCameraRunning: Bool = false
+    @Published var visionBoxes: [DebugBoundingBox] = []
+    @Published var ocrBoxes: [DebugBoundingBox] = []
+    @Published var faceBoxes: [DebugBoundingBox] = []
+    @Published var lastFrameAckId: Int = -1
+    @Published var lastFrameQueuedAgents: [String] = []
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -230,6 +251,128 @@ final class DeveloperConsoleModel: ObservableObject {
             transcripts.removeFirst()
         }
     }
+
+    func captureNetworkMessage(direction: String, payload: String) {
+        let entry = NetworkEvent(timestamp: Date(), direction: direction, payload: payload)
+        networkEvents.append(entry)
+        if networkEvents.count > 400 {
+            networkEvents.removeFirst()
+        }
+    }
+
+    func captureVisionDebug(_ data: [String: Any]) {
+        visionBoxes = extractBoxes(
+            from: data,
+            candidateKeys: ["bounding_boxes", "boxes", "objects"],
+            source: "vision",
+            defaultLabel: "object"
+        )
+    }
+
+    func captureOCRDebug(_ data: [String: Any]) {
+        ocrBoxes = extractBoxes(
+            from: data,
+            candidateKeys: ["text_regions", "regions", "boxes"],
+            source: "ocr",
+            defaultLabel: "text"
+        )
+    }
+
+    func captureFaceDebug(_ data: [String: Any]) {
+        faceBoxes = extractBoxes(
+            from: data,
+            candidateKeys: ["face_boxes", "faces", "detections"],
+            source: "face",
+            defaultLabel: "face"
+        )
+    }
+
+    func captureFrameAck(frameId: Int, queuedAgents: [String]) {
+        lastFrameAckId = frameId
+        lastFrameQueuedAgents = queuedAgents
+    }
+
+    func clearNetworkEvents() {
+        networkEvents.removeAll()
+    }
+
+    private func extractBoxes(
+        from data: [String: Any],
+        candidateKeys: [String],
+        source: String,
+        defaultLabel: String
+    ) -> [DebugBoundingBox] {
+        let candidates = candidatePayloadArray(from: data, keys: candidateKeys)
+        return candidates.compactMap { item in
+            guard let rect = parseNormalizedRect(from: item) else { return nil }
+            let label = (item["label"] as? String)
+                ?? (item["name"] as? String)
+                ?? (item["person_name"] as? String)
+                ?? defaultLabel
+            let confidence = (item["confidence"] as? Double)
+                ?? (item["score"] as? Double)
+                ?? (item["similarity"] as? Double)
+                ?? 0.0
+            return DebugBoundingBox(
+                source: source,
+                label: label,
+                confidence: confidence,
+                normalizedRect: rect
+            )
+        }
+    }
+
+    private func candidatePayloadArray(from data: [String: Any], keys: [String]) -> [[String: Any]] {
+        for key in keys {
+            if let items = data[key] as? [[String: Any]] {
+                return items
+            }
+        }
+        if let nested = data["data"] as? [String: Any] {
+            for key in keys {
+                if let items = nested[key] as? [[String: Any]] {
+                    return items
+                }
+            }
+        }
+        return []
+    }
+
+    private func parseNormalizedRect(from item: [String: Any]) -> CGRect? {
+        if let box2D = item["box_2d"] as? [Double], box2D.count == 4 {
+            let scale = (box2D.max() ?? 1.0) > 1.0 ? 1000.0 : 1.0
+            return normalizedRect(
+                xmin: box2D[1] / scale,
+                ymin: box2D[0] / scale,
+                xmax: box2D[3] / scale,
+                ymax: box2D[2] / scale
+            )
+        }
+
+        if let bbox = item["bbox"] as? [Double], bbox.count == 4 {
+            let maxVal = bbox.max() ?? 1.0
+            let scale = maxVal > 1.0 ? 768.0 : 1.0
+            return normalizedRect(
+                xmin: bbox[0] / scale,
+                ymin: bbox[1] / scale,
+                xmax: bbox[2] / scale,
+                ymax: bbox[3] / scale
+            )
+        }
+
+        return nil
+    }
+
+    private func normalizedRect(xmin: Double, ymin: Double, xmax: Double, ymax: Double) -> CGRect? {
+        let clampedMinX = min(max(xmin, 0), 1)
+        let clampedMinY = min(max(ymin, 0), 1)
+        let clampedMaxX = min(max(xmax, 0), 1)
+        let clampedMaxY = min(max(ymax, 0), 1)
+        let width = clampedMaxX - clampedMinX
+        let height = clampedMaxY - clampedMinY
+        guard width > 0, height > 0 else { return nil }
+        return CGRect(x: clampedMinX, y: clampedMinY, width: width, height: height)
+    }
 }
 
 // MARK: - Camera Preview (UIViewRepresentable)
@@ -265,7 +408,7 @@ struct DeveloperConsoleView: View {
     @State private var selectedTab = 0
     @Environment(\.dismiss) private var dismiss
 
-    private let tabs = ["Log", "Context", "Status", "Controls"]
+    private let tabs = ["Log", "Context", "Status", "Controls", "Video", "Network"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -277,6 +420,8 @@ struct DeveloperConsoleView: View {
                 contextTab.tag(1)
                 systemStatusTab.tag(2)
                 controlsTab.tag(3)
+                videoDebugTab.tag(4)
+                networkTab.tag(5)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
         }

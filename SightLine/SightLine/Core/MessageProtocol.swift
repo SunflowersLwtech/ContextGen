@@ -95,9 +95,16 @@ enum DownstreamMessage {
     case goAway(retryMs: Int)
     case sessionResumption(handle: String)
     case sessionReady                               // Gemini Live API ready
+    case faceLibraryReloaded(count: Int)
+    case faceLibraryCleared(deletedCount: Int)
+    case error(message: String)
     case toolEvent(tool: String, behavior: ToolBehaviorMode, payload: [String: Any])
     case visionResult(summary: String, behavior: ToolBehaviorMode)
     case ocrResult(summary: String, behavior: ToolBehaviorMode)
+    case visionDebug(data: [String: Any])
+    case ocrDebug(data: [String: Any])
+    case faceDebug(data: [String: Any])
+    case frameAck(frameId: Int, queuedAgents: [String])
     case navigationResult(summary: String, behavior: ToolBehaviorMode)
     case searchResult(summary: String, behavior: ToolBehaviorMode)
     case personIdentified(name: String, behavior: ToolBehaviorMode)
@@ -161,6 +168,18 @@ enum DownstreamMessage {
             return .sessionResumption(handle: handle)
         case "session_ready":
             return .sessionReady
+        case "face_library_reloaded":
+            let count = (json["count"] as? Int) ?? (dataPayload["count"] as? Int) ?? 0
+            return .faceLibraryReloaded(count: count)
+        case "face_library_cleared":
+            let deletedCount = (json["deleted_count"] as? Int) ?? (dataPayload["deleted_count"] as? Int) ?? 0
+            return .faceLibraryCleared(deletedCount: deletedCount)
+        case "error":
+            let message = (json["error"] as? String)
+                ?? (json["message"] as? String)
+                ?? (dataPayload["error"] as? String)
+                ?? "Unknown server error."
+            return .error(message: message)
         case "tool_event", "tool_result", "tool_status":
             let tool = (json["tool"] as? String)
                 ?? (json["name"] as? String)
@@ -171,6 +190,16 @@ enum DownstreamMessage {
             return .visionResult(summary: extractSummary(), behavior: behavior)
         case "ocr_result":
             return .ocrResult(summary: extractSummary(), behavior: behavior)
+        case "vision_debug":
+            return .visionDebug(data: json["data"] as? [String: Any] ?? json)
+        case "ocr_debug":
+            return .ocrDebug(data: json["data"] as? [String: Any] ?? json)
+        case "face_debug":
+            return .faceDebug(data: json["data"] as? [String: Any] ?? json)
+        case "frame_ack":
+            let frameId = (json["frame_id"] as? Int) ?? (dataPayload["frame_id"] as? Int) ?? -1
+            let queuedAgents = (json["queued_agents"] as? [String]) ?? (dataPayload["queued_agents"] as? [String]) ?? []
+            return .frameAck(frameId: frameId, queuedAgents: queuedAgents)
         case "navigation_result", "navigate_result":
             return .navigationResult(summary: extractSummary(), behavior: behavior)
         case "search_result", "grounding_result":
