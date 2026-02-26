@@ -144,6 +144,50 @@ def test_concise_pref_decreases_lod(stationary_ephemeral, default_session, defau
 
 
 # =====================================================================
+# decide_lod() — Rule 5: Concise collapse fix (regression tests)
+# =====================================================================
+
+
+def test_concise_does_not_collapse_slow_walk(default_session, concise_profile):
+    """Slow walk (LOD 2) + concise should stay LOD 2, not collapse to LOD 1."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=50)
+    lod, log = decide_lod(ctx, default_session, concise_profile)
+    assert lod == 2
+    assert not any("concise_pref" in r for r in log.triggered_rules)
+
+
+def test_concise_does_not_collapse_commute(default_session, concise_profile):
+    """Stationary + morning_commute (LOD 2 after Rule2b) + concise → stays LOD 2."""
+    ctx = EphemeralContext(motion_state="stationary", time_context="morning_commute")
+    lod, log = decide_lod(ctx, default_session, concise_profile)
+    assert lod == 2
+    assert not any("concise_pref" in r for r in log.triggered_rules)
+
+
+def test_concise_still_reduces_stationary(default_session, concise_profile):
+    """Stationary (LOD 3) + concise → LOD 2 (correct reduction from LOD 3)."""
+    ctx = EphemeralContext(motion_state="stationary")
+    lod, log = decide_lod(ctx, default_session, concise_profile)
+    assert lod == 2
+    assert any("concise_pref" in r for r in log.triggered_rules)
+
+
+def test_concise_fast_walk_stays_lod1(default_session, concise_profile):
+    """Fast walk (LOD 1) + concise → stays LOD 1, not reduced further."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=80)
+    lod, _ = decide_lod(ctx, default_session, concise_profile)
+    assert lod == 1
+
+
+def test_minimal_still_reduces_unconditionally(default_session, minimal_profile):
+    """Minimal should still reduce unconditionally (unlike concise)."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=50)
+    lod, log = decide_lod(ctx, default_session, minimal_profile)
+    assert lod == 1  # base LOD 2 - 1 = 1
+    assert any("minimal_pref" in r for r in log.triggered_rules)
+
+
+# =====================================================================
 # decide_lod() — Rule 6: Advanced O&M
 # =====================================================================
 

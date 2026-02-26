@@ -16,30 +16,44 @@ from lod.models import EphemeralContext, GPSData
 logger = logging.getLogger(__name__)
 
 
+def _noise_bucket(noise_db: float) -> str:
+    """Classify ambient noise level into a bucket label."""
+    if noise_db < 40:
+        return "quiet"
+    elif noise_db < 65:
+        return "moderate"
+    elif noise_db < 80:
+        return "loud"
+    else:
+        return "very_loud"
+
+
+def _hr_bucket(hr: float) -> str:
+    """Classify heart rate into a bucket label."""
+    if hr > 120:
+        return "high"
+    elif hr > 100:
+        return "elevated"
+    else:
+        return "normal"
+
+
 def parse_telemetry(data: dict) -> str:
-    """Convert raw telemetry JSON to semantic text for Gemini context injection.
+    """Convert raw telemetry JSON to structured KV text for Gemini context injection.
 
     Args:
         data: Raw telemetry dict from iOS client containing fields like
               motion_state, step_cadence, ambient_noise_db, heart_rate, gps.
 
     Returns:
-        Human-readable semantic string describing the user's physical state.
+        Structured key=value string with ``[TELEMETRY UPDATE]`` prefix.
     """
-    parts: list[str] = []
+    pairs: list[str] = []
 
     # Motion state
     motion_state = data.get("motion_state")
     if motion_state:
-        motion_descriptions = {
-            "stationary": "The user is stationary.",
-            "walking": "The user is walking.",
-            "running": "The user is running.",
-            "automotive": "The user is in a vehicle.",
-            "cycling": "The user is cycling.",
-            "unknown": "The user's motion state is unknown.",
-        }
-        parts.append(motion_descriptions.get(motion_state, f"Motion state: {motion_state}."))
+        pairs.append(f"motion={motion_state}")
 
     # Step cadence
     step_cadence = data.get("step_cadence")
@@ -47,7 +61,7 @@ def parse_telemetry(data: dict) -> str:
         try:
             cadence = float(step_cadence)
             if cadence > 0:
-                parts.append(f"Step cadence: {cadence:.0f} steps/min.")
+                pairs.append(f"cadence={cadence:.0f}spm")
         except (ValueError, TypeError):
             pass
 
@@ -56,14 +70,8 @@ def parse_telemetry(data: dict) -> str:
     if ambient_noise_db is not None:
         try:
             noise = float(ambient_noise_db)
-            if noise < 40:
-                parts.append(f"Environment is quiet ({noise:.0f} dB).")
-            elif noise < 65:
-                parts.append(f"Moderate ambient noise ({noise:.0f} dB).")
-            elif noise < 80:
-                parts.append(f"Noisy environment ({noise:.0f} dB).")
-            else:
-                parts.append(f"Very loud environment ({noise:.0f} dB). The user may have difficulty hearing.")
+            bucket = _noise_bucket(noise)
+            pairs.append(f"noise={noise:.0f}dB/{bucket}")
         except (ValueError, TypeError):
             pass
 
@@ -73,12 +81,8 @@ def parse_telemetry(data: dict) -> str:
         try:
             hr = float(heart_rate)
             if hr > 0:
-                if hr > 120:
-                    parts.append(f"Heart rate is elevated at {hr:.0f} bpm. The user may be stressed or exerting.")
-                elif hr > 100:
-                    parts.append(f"Heart rate: {hr:.0f} bpm (slightly elevated).")
-                else:
-                    parts.append(f"Heart rate: {hr:.0f} bpm (normal).")
+                bucket = _hr_bucket(hr)
+                pairs.append(f"hr={hr:.0f}/{bucket}")
         except (ValueError, TypeError):
             pass
 
@@ -91,17 +95,16 @@ def parse_telemetry(data: dict) -> str:
         speed = gps.get("speed")
 
         if lat is not None and lon is not None:
-            location_str = f"Location: ({lat:.6f}, {lon:.6f})"
+            loc = f"loc={lat:.6f},{lon:.6f}"
             if accuracy is not None:
-                location_str += f", accuracy {accuracy:.0f}m"
-            location_str += "."
-            parts.append(location_str)
+                loc += f"/acc={accuracy:.0f}m"
+            pairs.append(loc)
 
         if speed is not None:
             try:
                 spd = float(speed)
                 if spd > 0:
-                    parts.append(f"Moving at {spd:.1f} m/s.")
+                    pairs.append(f"speed={spd:.1f}m/s")
             except (ValueError, TypeError):
                 pass
 
@@ -111,15 +114,15 @@ def parse_telemetry(data: dict) -> str:
         try:
             h = float(heading)
             cardinal = _degrees_to_cardinal(h)
-            parts.append(f"Facing {cardinal} ({h:.0f} degrees).")
+            pairs.append(f"heading={cardinal}/{h:.0f}deg")
         except (ValueError, TypeError):
             pass
 
-    if not parts:
+    if not pairs:
         logger.debug("Telemetry data had no parseable fields: %s", json.dumps(data))
         return "[TELEMETRY UPDATE] No sensor data available."
 
-    return "[TELEMETRY UPDATE] " + " ".join(parts)
+    return "[TELEMETRY UPDATE] " + " ".join(pairs)
 
 
 def _degrees_to_cardinal(degrees: float) -> str:

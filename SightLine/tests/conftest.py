@@ -97,6 +97,13 @@ def detailed_profile() -> UserProfile:
 
 
 @pytest.fixture
+def concise_profile() -> UserProfile:
+    p = UserProfile.default()
+    p.verbosity_preference = "concise"
+    return p
+
+
+@pytest.fixture
 def advanced_daily_profile() -> UserProfile:
     p = UserProfile.default()
     p.om_level = "advanced"

@@ -75,3 +75,10 @@ def forget_memory(user_id: str, memory_id: str) -> dict:
         "deleted": success,
         "status": "ok" if success else "not_found",
     }
+
+
+MEMORY_FUNCTIONS = {
+    "preload_memory": preload_memory,
+    "forget_recent_memory": forget_recent_memory,
+    "forget_memory": forget_memory,
+}

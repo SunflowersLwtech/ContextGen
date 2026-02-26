@@ -88,4 +88,17 @@ final class HapticManager {
     func connectionLost() {
         notification.notificationOccurred(.warning)
     }
+
+    /// Camera on: medium impact simulating a shutter click.
+    func cameraOn() {
+        mediumImpact.impactOccurred()
+    }
+
+    /// Camera off: light impact confirming deactivation.
+    func cameraOff() {
+        lightImpact.impactOccurred()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            self?.lightImpact.impactOccurred()
+        }
+    }
 }

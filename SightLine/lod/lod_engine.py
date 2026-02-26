@@ -244,12 +244,15 @@ def decide_lod(
         base_lod = max(base_lod, 2)
 
     # ── Rule 5: User verbosity preference ─────────────────────────────
-    if verbosity_preference in ("minimal", "concise"):
+    if verbosity_preference == "minimal":
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
-            rule = "Rule5:concise_pref→-1" if verbosity_preference == "concise" else "Rule5:minimal_pref→-1"
-            log.triggered_rules.append(rule)
+            log.triggered_rules.append("Rule5:minimal_pref→-1")
+    elif verbosity_preference == "concise":
+        if base_lod >= 3:
+            base_lod -= 1
+            log.triggered_rules.append("Rule5:concise_pref→-1")
     elif verbosity_preference == "detailed":
         prev = base_lod
         base_lod = min(3, base_lod + 1)

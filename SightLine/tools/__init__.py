@@ -37,6 +37,7 @@ from tools.search import (
     SEARCH_TOOL_DECLARATIONS,
     google_search,
 )
+from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
 
@@ -99,6 +100,7 @@ ALL_FUNCTIONS = {
     **NAVIGATION_FUNCTIONS,
     **SEARCH_FUNCTIONS,
     **FACE_FUNCTIONS,
+    **MEMORY_FUNCTIONS,
 }
 
 __all__ = [
@@ -131,6 +133,8 @@ __all__ = [
     "resolve_tool_behavior",
     "FACE_TOOL_DECLARATIONS",
     "FACE_FUNCTIONS",
+    # Memory
+    "MEMORY_FUNCTIONS",
     # Aggregated
     "ALL_TOOL_DECLARATIONS",
     "ALL_FUNCTIONS",

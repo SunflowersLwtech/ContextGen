@@ -69,11 +69,9 @@ LOD_INSTRUCTIONS: dict[int, str] = {
 LOD_COT_PROMPT = (
     "Before responding, internally reason about the right response depth:\n"
     "<think>\n"
-    "1. User physical state: {motion_state} at {cadence:.0f} steps/min\n"
-    "2. Environment: {noise_db:.0f} dB, {space_type}\n"
-    "3. Current task: {active_task}\n"
-    "4. Persona: {vision_status}, verbosity={verbosity}, O&M={om_level}\n"
-    "→ Respond at LOD {lod} because {reason}\n"
+    "1. Check latest sensor context for safety issues\n"
+    "2. Decide what information is most valuable right now\n"
+    "3. Confirm response fits LOD {lod} guidelines\n"
     "</think>\n"
     "Then respond according to LOD {lod}. "
     "Do NOT output the <think> block — it is for internal reasoning only."
@@ -203,18 +201,7 @@ def build_lod_update_message(
 
     # 7. CoT (only LOD 2/3, not LOD 1 — latency matters)
     if lod >= 2:
-        cot = LOD_COT_PROMPT.format(
-            motion_state=ephemeral.motion_state,
-            cadence=ephemeral.step_cadence,
-            noise_db=ephemeral.ambient_noise_db,
-            space_type=session.space_type,
-            active_task=session.active_task or "none",
-            vision_status=profile.vision_status,
-            verbosity=profile.verbosity_preference,
-            om_level=profile.om_level,
-            lod=lod,
-            reason=reason,
-        )
+        cot = LOD_COT_PROMPT.format(lod=lod)
         parts.append(f"\n{cot}")
 
     return "\n".join(parts)

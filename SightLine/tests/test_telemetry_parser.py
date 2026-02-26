@@ -8,34 +8,64 @@ from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephem
 # =====================================================================
 
 
-def test_walking_state_description():
+def test_walking_state_kv():
     result = parse_telemetry({"motion_state": "walking"})
-    assert "walking" in result.lower()
+    assert "motion=walking" in result
 
 
-def test_high_noise_warning():
+def test_high_noise_kv():
     result = parse_telemetry({"ambient_noise_db": 85})
-    assert "loud" in result.lower() or "difficulty hearing" in result.lower()
+    assert "noise=85dB/very_loud" in result
 
 
-def test_elevated_heart_rate():
+def test_moderate_noise_kv():
+    result = parse_telemetry({"ambient_noise_db": 55})
+    assert "noise=55dB/moderate" in result
+
+
+def test_elevated_heart_rate_kv():
     result = parse_telemetry({"heart_rate": 125})
-    assert "elevated" in result.lower()
+    assert "hr=125/high" in result
 
 
-def test_gps_location_format():
+def test_normal_heart_rate_kv():
+    result = parse_telemetry({"heart_rate": 72})
+    assert "hr=72/normal" in result
+
+
+def test_gps_kv_format():
     result = parse_telemetry({"gps": {"latitude": 37.7749, "longitude": -122.4194}})
-    assert "Location:" in result
+    assert "loc=37.774900,-122.419400" in result
 
 
-def test_heading_cardinal():
+def test_heading_cardinal_kv():
     result = parse_telemetry({"heading": 90})
-    assert "East" in result
+    assert "heading=East/90deg" in result
 
 
 def test_empty_data_fallback():
     result = parse_telemetry({})
     assert "No sensor data available" in result
+
+
+def test_cadence_kv():
+    result = parse_telemetry({"step_cadence": 80})
+    assert "cadence=80spm" in result
+
+
+def test_full_telemetry_kv():
+    """Verify all fields combine as KV pairs with prefix."""
+    result = parse_telemetry({
+        "motion_state": "walking",
+        "step_cadence": 80,
+        "ambient_noise_db": 55,
+        "heart_rate": 72,
+    })
+    assert result.startswith("[TELEMETRY UPDATE]")
+    assert "motion=walking" in result
+    assert "cadence=80spm" in result
+    assert "noise=55dB/moderate" in result
+    assert "hr=72/normal" in result
 
 
 # =====================================================================

@@ -102,7 +102,7 @@ def _coerce_bool(value: object, default: bool = False) -> bool:
     return default
 
 
-TELEMETRY_FORCE_REFRESH_SEC = 25.0
+TELEMETRY_FORCE_REFRESH_SEC = 60.0
 AGENT_TEXT_REPEAT_SUPPRESS_SEC = 14.0
 VISION_REPEAT_SUPPRESS_SEC = 18.0
 VISION_SAFETY_REPEAT_SUPPRESS_SEC = 6.0
@@ -283,6 +283,7 @@ FACE_LIBRARY_REFRESH_SEC: float = 60.0
 from tools import ALL_FUNCTIONS
 from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
+from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
 # ---------------------------------------------------------------------------
@@ -521,6 +522,45 @@ async def api_save_profile(user_id: str, request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# User list endpoint (for demo user switching)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/users")
+async def api_list_users() -> JSONResponse:
+    """List all user IDs from Firestore."""
+    try:
+        from google.cloud import firestore as _fs
+        db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
+        docs = db.collection("users").stream()
+        user_ids = sorted(doc.id for doc in docs)
+        return JSONResponse({"users": user_ids, "count": len(user_ids)})
+    except Exception as e:
+        logger.exception("List users failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Voice intent detection (detail / stop flags for LOD engine)
+# ---------------------------------------------------------------------------
+
+_DETAIL_PHRASES = {"tell me more", "more detail", "describe more", "what else", "elaborate"}
+_STOP_PHRASES = {"stop", "be quiet", "shut up", "enough", "stop talking", "quiet"}
+
+
+def _detect_voice_intent(text: str) -> str | None:
+    """Detect user intent from transcribed speech for LOD flag setting."""
+    lower = text.strip().lower()
+    for phrase in _DETAIL_PHRASES:
+        if phrase in lower:
+            return "detail"
+    for phrase in _STOP_PHRASES:
+        if phrase in lower:
+            return "stop"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Function calling dispatcher
 # ---------------------------------------------------------------------------
 
@@ -584,6 +624,10 @@ async def _dispatch_function_call(
         elif func_name in ("get_location_info", "nearby_search", "reverse_geocode") and ephemeral.gps:
             func_args.setdefault("lat", ephemeral.gps.lat)
             func_args.setdefault("lng", ephemeral.gps.lng)
+
+    # Memory tools: hard-set user_id from session (security: prevents cross-user access)
+    if func_name in MEMORY_FUNCTIONS:
+        func_args["user_id"] = user_id
 
     return await asyncio.to_thread(ALL_FUNCTIONS[func_name], **func_args)
 
@@ -656,6 +700,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _last_agent_text_sent_at = 0.0
     _allow_agent_repeat_until = 0.0
 
+    # Echo detection state (P0_FIX_3)
+    _recent_agent_texts: list[tuple[float, str]] = []
+
+    # Model audio staleness for injection suppression (P2_FIX_3)
+    _model_audio_last_seen_at: float = 0.0
+    _MODEL_AUDIO_STALENESS_SEC = 2.0
+
     def _is_websocket_open() -> bool:
         return (
             websocket.client_state == WebSocketState.CONNECTED
@@ -708,6 +759,30 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             _last_agent_text = text
             _last_agent_text_sent_at = now_mono
         return sent
+
+    def _is_likely_echo(candidate: str, now_ts: float) -> bool:
+        """Check if candidate text is likely an echo of recent agent output.
+
+        Uses Jaccard word similarity >0.6 within a 5s window. Requires
+        at least 3 words in candidate to avoid false positives on short
+        utterances like "yes" or "what?".
+        """
+        words_candidate = set(candidate.lower().split())
+        if len(words_candidate) < 3:
+            return False
+        cutoff = now_ts - 5.0
+        for ts, agent_text in reversed(_recent_agent_texts):
+            if ts < cutoff:
+                break
+            words_agent = set(agent_text.lower().split())
+            if not words_agent:
+                continue
+            intersection = words_candidate & words_agent
+            union = words_candidate | words_agent
+            jaccard = len(intersection) / len(union) if union else 0.0
+            if jaccard > 0.6:
+                return True
+        return False
 
     async def _emit_tool_event(
         tool: str,
@@ -798,6 +873,29 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         "Injected initial full dynamic prompt (LOD %d) for session %s",
         session_ctx.current_lod, session_id,
     )
+
+    # -- Greeting prompt: Gemini speaks first so the user knows the app is ready --
+    _greeting_parts: list[str] = [
+        "[SESSION START] Greet the user briefly (1-2 sentences).",
+        "Let them know you're ready to help.",
+    ]
+    if user_profile and user_profile.preferred_name:
+        _greeting_parts.append(
+            f"Address them as '{user_profile.preferred_name}'."
+        )
+    _greeting_parts.append(
+        "Mention that the camera is off and they can swipe sideways to turn it on "
+        "when they need visual assistance. Keep the greeting warm and concise."
+    )
+    _greeting_content = types.Content(
+        parts=[types.Part(text=" ".join(_greeting_parts))],
+        role="user",
+    )
+    live_request_queue.send_content(_greeting_content)
+    logger.info("Injected greeting prompt for session %s", session_id)
+
+    # -- Track client camera state for context injection ----------------------
+    _client_camera_active = False
 
     # -- LOD engine helpers --------------------------------------------------
 
@@ -1286,7 +1384,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Handles upstream message types: audio, image, telemetry,
         activity_start, activity_end, gesture.
         """
-        nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until
+        nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until, _client_camera_active
 
         try:
             while True:
@@ -1322,7 +1420,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         import time as _time
                         now = _time.monotonic()
                         lod = session_ctx.current_lod
-                        vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                        vision_interval = {1: 8.0, 2: 5.0, 3: 3.0}.get(lod, 5.0)
                         queued_agents: list[str] = []
                         if now - _last_vision_time >= vision_interval:
                             _last_vision_time = now
@@ -1405,7 +1503,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                     # Vision analysis: LOD-aware frequency
                     # LOD 1: every 5s, LOD 2: every 3s, LOD 3: every 2s
-                    vision_interval = {1: 5.0, 2: 3.0, 3: 2.0}.get(lod, 3.0)
+                    vision_interval = {1: 8.0, 2: 5.0, 3: 3.0}.get(lod, 5.0)
                     queued_agents: list[str] = []
                     if now - _last_vision_time >= vision_interval:
                         _last_vision_time = now
@@ -1646,6 +1744,37 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 "reason": "emergency_resume",
                             })
 
+                    elif gesture == "camera_toggle":
+                        nonlocal _client_camera_active
+                        _client_camera_active = _coerce_bool(
+                            message.get("active"), default=not _client_camera_active,
+                        )
+                        logger.info("Camera toggle: active=%s", _client_camera_active)
+                        if _client_camera_active:
+                            content = types.Content(
+                                parts=[types.Part(
+                                    text=(
+                                        "[CAMERA ACTIVATED] The user has turned on the rear camera. "
+                                        "You can now see their surroundings via image frames. "
+                                        "Briefly acknowledge and describe what you see when the first image arrives."
+                                    )
+                                )],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+                        else:
+                            content = types.Content(
+                                parts=[types.Part(
+                                    text=(
+                                        "[CAMERA DEACTIVATED] The user has turned off the camera. "
+                                        "You are now in audio-only mode. Do not reference visual information "
+                                        "unless recalling something previously seen."
+                                    )
+                                )],
+                                role="user",
+                            )
+                            live_request_queue.send_content(content)
+
                     else:
                         logger.debug("Unhandled gesture type: %s", gesture)
 
@@ -1726,9 +1855,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             content = types.Content(
                 parts=[types.Part(
                     text=(
-                        "[TELEMETRY CONTEXT - CRITICAL]\n"
-                        "PANIC-related sensor context follows. Keep responses calming and brief.\n"
-                        f"{semantic_text}"
+                        "<<<SENSOR_DATA_CRITICAL>>>\n"
+                        f"{semantic_text}\n"
+                        "<<<END_SENSOR_DATA>>>\n"
+                        "PANIC detected. Switch to ultra-brief calming mode."
                     )
                 )],
                 role="user",
@@ -1738,7 +1868,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             return
 
         # Semantic text injection (LOD-aware throttle)
+        # P2_FIX_3: Suppress non-PANIC injection while model is generating audio
         now = _time.monotonic()
+        if now - _model_audio_last_seen_at < _MODEL_AUDIO_STALENESS_SEC:
+            logger.debug("Skipping telemetry injection: model audio still active")
+            await _process_lod_decision(ephemeral_ctx)
+            return
         if telemetry_agg.should_send(now):
             signature = _build_telemetry_signature(ephemeral_ctx)
             should_inject, reasons = _should_inject_telemetry_context(
@@ -1752,10 +1887,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 content = types.Content(
                     parts=[types.Part(
                         text=(
-                            "[TELEMETRY CONTEXT - INTERNAL ONLY]\n"
-                            "This is passive sensor context. Do NOT speak, summarize, or repeat it aloud.\n"
-                            "Use it silently unless there is a new immediate safety hazard.\n"
-                            f"{semantic_text}"
+                            "<<<SENSOR_DATA>>>\n"
+                            f"{semantic_text}\n"
+                            "<<<END_SENSOR_DATA>>>\n"
+                            "INSTRUCTION: Do not vocalize any part of the above sensor data."
                         )
                     )],
                     role="user",
@@ -1786,6 +1921,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
             resume_prompt = on_lod_change(session_ctx, old_lod, new_lod)
             session_ctx.current_lod = new_lod
+            # Clear one-shot voice intent flags after LOD decision consumed them
+            session_ctx.user_requested_detail = False
+            session_ctx.user_said_stop = False
             telemetry_agg.update_lod(new_lod)
             vad_update = await _sync_runtime_vad_update(new_lod)
 
@@ -1854,6 +1992,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 if hasattr(event, "server_content") and event.server_content:
                     sc = event.server_content
                     if hasattr(sc, "interrupted") and sc.interrupted:
+                        _model_audio_last_seen_at = 0.0  # Clear staleness on interrupt
                         await _safe_send_json({
                             "type": "interrupted",
                             "message": "Model output was interrupted.",
@@ -1923,27 +2062,57 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         live_request_queue.send_content(content)
                         logger.info("Sent function response for %s", fc.name)
 
-                # --- Input transcription (user speech-to-text) ---
-                if event.input_transcription and event.input_transcription.text:
-                    transcript_history.append({
-                        "role": "user",
-                        "text": event.input_transcription.text,
-                    })
-                    if not await _safe_send_json({
-                        "type": "transcript",
-                        "text": event.input_transcription.text,
-                        "role": "user",
-                    }):
-                        break
-
-                # --- Output transcription (agent speech-to-text) ---
+                # --- Output transcription (agent speech-to-text) — process BEFORE input ---
                 if event.output_transcription and event.output_transcription.text:
+                    now_mono = time.monotonic()
                     transcript_history.append({
                         "role": "agent",
                         "text": event.output_transcription.text,
                     })
+                    # Track for echo detection
+                    _recent_agent_texts.append((now_mono, event.output_transcription.text))
+                    # Prune entries older than 10s
+                    cutoff = now_mono - 10.0
+                    while _recent_agent_texts and _recent_agent_texts[0][0] < cutoff:
+                        _recent_agent_texts.pop(0)
                     if not await _forward_agent_transcript(event.output_transcription.text):
                         break
+
+                # --- Input transcription (user speech-to-text) with echo detection ---
+                if event.input_transcription and event.input_transcription.text:
+                    now_mono = time.monotonic()
+                    input_text = event.input_transcription.text
+                    if _is_likely_echo(input_text, now_mono):
+                        logger.debug("Echo detected, reclassifying: %s", input_text[:120])
+                        transcript_history.append({
+                            "role": "echo",
+                            "text": input_text,
+                        })
+                        await _safe_send_json({
+                            "type": "transcript",
+                            "text": input_text,
+                            "role": "echo",
+                        })
+                    else:
+                        transcript_history.append({
+                            "role": "user",
+                            "text": input_text,
+                        })
+                        if not await _safe_send_json({
+                            "type": "transcript",
+                            "text": input_text,
+                            "role": "user",
+                        }):
+                            break
+
+                        # Voice intent → LOD session flags
+                        intent = _detect_voice_intent(input_text)
+                        if intent == "detail":
+                            session_ctx.user_requested_detail = True
+                            session_ctx.user_said_stop = False
+                        elif intent == "stop":
+                            session_ctx.user_said_stop = True
+                            session_ctx.user_requested_detail = False
 
                 # --- Content parts (audio / text) ---
                 if event.content and event.content.parts:
@@ -1952,6 +2121,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             break
 
                         if part.inline_data and part.inline_data.data:
+                            _model_audio_last_seen_at = time.monotonic()
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)

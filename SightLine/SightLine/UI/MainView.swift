@@ -38,7 +38,10 @@ struct MainView: View {
     @State private var showDevConsole = false
     @State private var showFaceRegistration = false
     @State private var showUserProfile = false
+    @State private var showUserSwitcher = false
+    @State private var availableUsers: [String] = []
     @State private var isMuted = false
+    @State private var isCameraActive = false
     @State private var isEmergencyPaused = false
     @State private var lastAgentTranscript = ""
     @State private var sessionResumptionHandle = UserDefaults.standard.string(
@@ -59,15 +62,22 @@ struct MainView: View {
                 Spacer()
 
                 // Breathing indicator - pulses when active
-                Circle()
-                    .fill(isActive ? Color.green.opacity(0.6) : Color.gray.opacity(0.3))
-                    .frame(width: 80, height: 80)
-                    .scaleEffect(isActive ? 1.1 : 0.9)
-                    .animation(
-                        .easeInOut(duration: 2).repeatForever(autoreverses: true),
-                        value: isActive
-                    )
-                    .accessibilityHidden(true)
+                ZStack {
+                    Circle()
+                        .fill(isActive ? Color.green.opacity(0.6) : Color.gray.opacity(0.3))
+                        .frame(width: 80, height: 80)
+                        .scaleEffect(isActive ? 1.1 : 0.9)
+                        .animation(
+                            .easeInOut(duration: 2).repeatForever(autoreverses: true),
+                            value: isActive
+                        )
+                    if isCameraActive {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                }
+                .accessibilityHidden(true)
 
                 Spacer()
 
@@ -106,6 +116,15 @@ struct MainView: View {
                         accessibilityLabel: "Upload family and friend photos"
                     ) {
                         showFaceRegistration = true
+                    }
+
+                    quickActionButton(
+                        title: "Switch",
+                        systemImage: "person.2.fill",
+                        accessibilityLabel: "Switch user profile"
+                    ) {
+                        Task { await fetchUsers() }
+                        showUserSwitcher = true
                     }
                 }
                 .padding(.horizontal, 24)
@@ -207,7 +226,17 @@ struct MainView: View {
         .sheet(isPresented: $showUserProfile) {
             UserProfileOnboardingView()
         }
-        .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")")
+        .sheet(isPresented: $showUserSwitcher) {
+            UserSwitcherSheet(
+                availableUsers: availableUsers,
+                currentUserId: SightLineConfig.defaultUserId,
+                onSelect: { userId in
+                    switchToUser(userId)
+                    showUserSwitcher = false
+                }
+            )
+        }
+        .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")\(isCameraActive ? ", camera on" : "")")
     }
 
     // MARK: - Setup Action Buttons
@@ -266,10 +295,15 @@ struct MainView: View {
         if isEmergencyPaused {
             audioCapture.stopCapture()
             audioPlayback.stopImmediately()
+            if isCameraActive {
+                cameraManager.stopCapture()
+                isCameraActive = false
+            }
         } else {
             if !isMuted {
                 audioCapture.startCapture()
             }
+            // Camera is NOT auto-resumed — user must explicitly re-enable via swipe.
         }
         webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(isEmergencyPaused)}")
         UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
@@ -277,19 +311,21 @@ struct MainView: View {
     }
 
     private func handleSwipe(translation: CGSize) {
-        // Require primarily vertical movement
-        guard abs(translation.height) > abs(translation.width) else { return }
-        HapticManager.shared.swipe()
-        if translation.height < 0 {
-            // Swipe up -> LOD upgrade
-            webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_up").toJSON())
-            UIAccessibility.post(notification: .announcement, argument: "Detail level increasing")
-            logger.info("Gesture: lod_up")
+        if abs(translation.height) > abs(translation.width) {
+            // Vertical swipe: LOD upgrade/downgrade
+            HapticManager.shared.swipe()
+            if translation.height < 0 {
+                webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_up").toJSON())
+                UIAccessibility.post(notification: .announcement, argument: "Detail level increasing")
+                logger.info("Gesture: lod_up")
+            } else {
+                webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_down").toJSON())
+                UIAccessibility.post(notification: .announcement, argument: "Detail level decreasing")
+                logger.info("Gesture: lod_down")
+            }
         } else {
-            // Swipe down -> LOD downgrade
-            webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_down").toJSON())
-            UIAccessibility.post(notification: .announcement, argument: "Detail level decreasing")
-            logger.info("Gesture: lod_down")
+            // Horizontal swipe: toggle camera on/off
+            toggleCamera()
         }
     }
 
@@ -360,6 +396,7 @@ struct MainView: View {
                 } else {
                     audioCapture.stopCapture()
                     cameraManager.stopCapture()
+                    isCameraActive = false
                 }
             }
         }
@@ -421,15 +458,17 @@ struct MainView: View {
         telemetryAggregator.start(sensorManager: sensorManager, webSocket: webSocketManager)
     }
 
-    private func startMediaCapture() {
+    /// Start audio-only capture on session ready.
+    /// Camera is deferred until the user explicitly activates it (horizontal swipe).
+    private func startAudioCapture() {
         Task {
-            let granted = await mediaPermissionGate.preflightMediaPermissions()
-            guard granted else {
+            let micGranted = await mediaPermissionGate.ensureMicPermission()
+            guard micGranted else {
                 await MainActor.run {
-                    connectionStatus = "Enable camera and microphone in Settings"
-                    transcript = "Please enable camera and microphone permissions."
+                    connectionStatus = "Enable microphone in Settings"
+                    transcript = "Please enable microphone permission."
                 }
-                logger.error("Media capture blocked: camera/microphone permission denied")
+                logger.error("Audio capture blocked: microphone permission denied")
                 return
             }
 
@@ -439,7 +478,42 @@ struct MainView: View {
                 if !isMuted {
                     audioCapture.startCapture()
                 }
-                cameraManager.startCapture()
+                // Camera is NOT started here — user activates via horizontal swipe.
+            }
+        }
+    }
+
+    /// Toggle camera on/off. Triggered by horizontal swipe gesture.
+    private func toggleCamera() {
+        guard isActive, !isEmergencyPaused else { return }
+
+        if isCameraActive {
+            // Turn off
+            cameraManager.stopCapture()
+            isCameraActive = false
+            HapticManager.shared.cameraOff()
+            webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":false}")
+            UIAccessibility.post(notification: .announcement, argument: "Camera off")
+            logger.info("Camera deactivated by user")
+        } else {
+            // Turn on — check permission first
+            Task {
+                let camGranted = await mediaPermissionGate.ensureCamPermission()
+                guard camGranted else {
+                    await MainActor.run {
+                        transcript = "Camera permission required. Enable in Settings."
+                    }
+                    logger.error("Camera activation blocked: permission denied")
+                    return
+                }
+                await MainActor.run {
+                    cameraManager.startCapture()
+                    isCameraActive = true
+                    HapticManager.shared.cameraOn()
+                    webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":true}")
+                    UIAccessibility.post(notification: .announcement, argument: "Camera on")
+                    logger.info("Camera activated by user")
+                }
             }
         }
     }
@@ -447,9 +521,9 @@ struct MainView: View {
     private func handleDownstreamMessage(_ msg: DownstreamMessage) {
         switch msg {
         case .sessionReady:
-            logger.info("Session ready, starting media capture")
+            logger.info("Session ready, starting audio capture (camera deferred)")
             DispatchQueue.main.async {
-                startMediaCapture()
+                startAudioCapture()
             }
         case .faceLibraryReloaded(let count):
             DispatchQueue.main.async {
@@ -476,12 +550,20 @@ struct MainView: View {
             logger.error("Server error message: \(message, privacy: .public)")
         case .transcript(let text, let role):
             DispatchQueue.main.async {
-                transcript = text
-                if role == "agent" {
-                    lastAgentTranscript = text
+                if role == "echo" {
+                    // Echo-classified transcripts go to dev console only
+                    devConsoleModel.captureTranscript(text: text, role: "echo")
+                } else if role == "user" && audioPlayback.isPlaying {
+                    // Reclassify user transcript as echo when model audio is playing
+                    devConsoleModel.captureTranscript(text: text, role: "echo")
+                } else {
+                    transcript = text
+                    if role == "agent" {
+                        lastAgentTranscript = text
+                    }
+                    devConsoleModel.captureTranscript(text: text, role: role)
+                    drainWhenIdleToolQueueIfPossible()
                 }
-                devConsoleModel.captureTranscript(text: text, role: role)
-                drainWhenIdleToolQueueIfPossible()
             }
         case .lodUpdate(let lod):
             DispatchQueue.main.async {
@@ -705,6 +787,36 @@ struct MainView: View {
         webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
     }
 
+    // MARK: - User Switching
+
+    private func fetchUsers() async {
+        let baseURL = SightLineConfig.serverBaseURL
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "ws://", with: "http://")
+        guard let url = URL(string: "\(baseURL)/api/users") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let users = json["users"] as? [String] {
+                await MainActor.run { availableUsers = users }
+            }
+        } catch {
+            logger.error("Failed to fetch users: \(error.localizedDescription)")
+        }
+    }
+
+    private func switchToUser(_ userId: String) {
+        guard userId != SightLineConfig.defaultUserId else { return }
+        teardownPipeline()
+        SightLineConfig.defaultUserId = userId
+        SightLineConfig.defaultSessionId = UUID().uuidString.lowercased()
+        sessionResumptionHandle = ""
+        UserDefaults.standard.removeObject(forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
+        connectionStatus = "Switching to \(userId)..."
+        logger.info("Switching user to \(userId)")
+        setupPipeline()
+    }
+
     // MARK: - Teardown
 
     private func teardownPipeline() {
@@ -712,6 +824,7 @@ struct MainView: View {
         sensorManager.stopAll()
         audioCapture.stopCapture()
         cameraManager.stopCapture()
+        isCameraActive = false
         audioPlayback.teardown()
         webSocketManager.disconnect()
     }
@@ -741,6 +854,16 @@ private final class MediaPermissionGate: ObservableObject {
         let microphoneGranted = await ensureMicrophonePermission()
         hasMediaPermissions = cameraGranted && microphoneGranted
         return hasMediaPermissions
+    }
+
+    /// Check/request microphone permission only.
+    func ensureMicPermission() async -> Bool {
+        return await ensureMicrophonePermission()
+    }
+
+    /// Check/request camera permission only.
+    func ensureCamPermission() async -> Bool {
+        return await ensureCameraPermission()
     }
 
     private func ensureCameraPermission() async -> Bool {

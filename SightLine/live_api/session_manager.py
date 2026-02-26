@@ -113,15 +113,15 @@ LOD_VAD_PRESETS: dict[int, dict] = {
     2: {
         "voice_name": "Aoede",
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_HIGH,
-        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
-        "silence_duration_ms": 800,
-        "prefix_padding_ms": 200,
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
+        "silence_duration_ms": 1000,
+        "prefix_padding_ms": 250,
     },
     3: {
         "voice_name": "Aoede",
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
         "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
-        "silence_duration_ms": 1300,
+        "silence_duration_ms": 1500,
         "prefix_padding_ms": 300,
     },
 }
@@ -239,7 +239,7 @@ class SessionManager:
                     )
                 )
             ),
-            proactivity=types.ProactivityConfig(proactive_audio=True),
+            proactivity=types.ProactivityConfig(proactive_audio=(lod >= 2)),
             enable_affective_dialog=True,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),

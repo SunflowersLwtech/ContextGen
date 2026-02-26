@@ -40,6 +40,10 @@ def test_lod_update_lod1_no_cot():
 def test_lod_update_lod2_has_cot():
     msg = build_lod_update_message(**_default_args(lod=2))
     assert "internally reason" in msg
+    # CoT should NOT contain raw sensor placeholders
+    assert "{motion_state}" not in msg
+    assert "{cadence" not in msg
+    assert "{noise_db" not in msg
 
 
 def test_lod_update_with_memories():

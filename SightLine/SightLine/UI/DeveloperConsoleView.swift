@@ -517,7 +517,7 @@ struct DeveloperConsoleView: View {
 
                             Text(entry.role.uppercased())
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(entry.role == "user" ? .cyan : .green)
+                                .foregroundColor(entry.role == "echo" ? .gray : (entry.role == "user" ? .cyan : .green))
                                 .frame(width: 40, alignment: .leading)
 
                             Text(entry.text)

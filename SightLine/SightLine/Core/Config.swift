@@ -34,7 +34,14 @@ enum SightLineConfig {
     static let jpegQuality: CGFloat = 0.7
     static let defaultFrameInterval: TimeInterval = 1.0  // 1 FPS
 
-    // User defaults
-    static let defaultUserId = "default_user"
-    static let defaultSessionId: String = UUID().uuidString.lowercased()
+    // User defaults (mutable for demo user switching)
+    static var defaultUserId: String {
+        get { UserDefaults.standard.string(forKey: "sightline.current_user_id") ?? "default_user" }
+        set { UserDefaults.standard.set(newValue, forKey: "sightline.current_user_id") }
+    }
+    private static var _sessionId: String = UUID().uuidString.lowercased()
+    static var defaultSessionId: String {
+        get { _sessionId }
+        set { _sessionId = newValue }
+    }
 }
