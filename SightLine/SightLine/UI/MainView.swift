@@ -36,10 +36,7 @@ struct MainView: View {
     @State private var whenIdleToolQueue: [String] = []
     @State private var showDebugOverlay = false
     @State private var showDevConsole = false
-    @State private var showFaceRegistration = false
-    @State private var showUserProfile = false
-    @State private var showUserSwitcher = false
-    @State private var availableUsers: [String] = []
+    @State private var showProfileSettings = false
     @State private var isMuted = false
     @State private var isCameraActive = false
     @State private var isEmergencyPaused = false
@@ -105,32 +102,16 @@ struct MainView: View {
                         .accessibilityLabel("Last message: \(transcript)")
                 }
 
-                // Direct caregiver setup actions (non-debug flow).
-                HStack(spacing: 12) {
-                    quickActionButton(
-                        title: "Profile",
-                        systemImage: "person.crop.circle",
-                        accessibilityLabel: "Edit user profile"
-                    ) {
-                        showUserProfile = true
+                // Minimal settings entry point (bottom-right)
+                HStack {
+                    Spacer()
+                    Button(action: { showProfileSettings = true }) {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 22))
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(12)
                     }
-
-                    quickActionButton(
-                        title: "Familiar Faces",
-                        systemImage: "person.2.crop.square.stack",
-                        accessibilityLabel: "Upload family and friend photos"
-                    ) {
-                        showFaceRegistration = true
-                    }
-
-                    quickActionButton(
-                        title: "Switch",
-                        systemImage: "person.2.fill",
-                        accessibilityLabel: "Switch user profile"
-                    ) {
-                        Task { await fetchUsers() }
-                        showUserSwitcher = true
-                    }
+                    .accessibilityLabel("Open settings")
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
@@ -239,49 +220,16 @@ struct MainView: View {
                 webSocketManager: webSocketManager,
                 cameraManager: cameraManager,
                 telemetryAggregator: telemetryAggregator,
-                showFaceRegistration: $showFaceRegistration,
-                showUserProfile: $showUserProfile,
                 isMuted: $isMuted,
                 isEmergencyPaused: $isEmergencyPaused
             )
         }
-        .sheet(isPresented: $showFaceRegistration) {
-            FaceRegistrationView()
-        }
-        .sheet(isPresented: $showUserProfile) {
-            UserProfileOnboardingView()
-        }
-        .sheet(isPresented: $showUserSwitcher) {
-            UserSwitcherSheet(
-                availableUsers: availableUsers,
-                currentUserId: SightLineConfig.defaultUserId,
-                onSelect: { userId in
-                    switchToUser(userId)
-                    showUserSwitcher = false
-                }
-            )
+        .sheet(isPresented: $showProfileSettings) {
+            ProfileSettingsView(onSwitchUser: { userId in
+                switchToUser(userId)
+            })
         }
         .accessibilityLabel(buildAccessibilityDescription())
-    }
-
-    // MARK: - Setup Action Buttons
-
-    private func quickActionButton(
-        title: String,
-        systemImage: String,
-        accessibilityLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.14))
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .accessibilityLabel(accessibilityLabel)
     }
 
     // MARK: - Gesture Handlers
@@ -935,22 +883,6 @@ struct MainView: View {
     }
 
     // MARK: - User Switching
-
-    private func fetchUsers() async {
-        let baseURL = SightLineConfig.serverBaseURL
-            .replacingOccurrences(of: "wss://", with: "https://")
-            .replacingOccurrences(of: "ws://", with: "http://")
-        guard let url = URL(string: "\(baseURL)/api/users") else { return }
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let users = json["users"] as? [String] {
-                await MainActor.run { availableUsers = users }
-            }
-        } catch {
-            logger.error("Failed to fetch users: \(error.localizedDescription)")
-        }
-    }
 
     private func switchToUser(_ userId: String) {
         guard userId != SightLineConfig.defaultUserId else { return }

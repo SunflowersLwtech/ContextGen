@@ -52,9 +52,14 @@ struct ConfigTests {
         #expect(SightLineConfig.audioBufferSize == 1600)
     }
 
-    @Test("audio jitter buffer keeps 2-3 chunks")
+    @Test("audio jitter buffer keeps 2-4 chunks")
     func audioJitterBufferChunks() {
-        #expect((2...3).contains(SightLineConfig.audioJitterBufferChunks))
+        #expect((2...4).contains(SightLineConfig.audioJitterBufferChunks))
+    }
+
+    @Test("audio schedule-ahead count is 2-4 buffers")
+    func audioScheduleAheadCount() {
+        #expect((2...4).contains(SightLineConfig.audioScheduleAheadCount))
     }
 
     @Test("audio jitter max wait is under 100ms")

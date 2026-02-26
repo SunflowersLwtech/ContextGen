@@ -435,14 +435,26 @@ async def api_delete_face(user_id: str, face_id: str) -> JSONResponse:
 
 
 @app.delete("/api/face/{user_id}")
-async def api_clear_face_library(user_id: str) -> JSONResponse:
-    """Clear all faces in the user's library."""
+async def api_clear_face_library(user_id: str, request: Request) -> JSONResponse:
+    """Clear all faces or delete a specific person from the user's library.
+
+    Query params:
+        person_name: Optional. If provided, only delete that person's entries.
+    """
     if not _face_available:
         return JSONResponse({"error": "Face recognition not available"}, status_code=503)
 
+    person_name = request.query_params.get("person_name")
+
     try:
-        from tools.face_tools import clear_face_library
-        count = await asyncio.to_thread(clear_face_library, user_id)
+        from tools.face_tools import delete_all_faces
+        count = await asyncio.to_thread(delete_all_faces, user_id, person_name)
+        if person_name:
+            return JSONResponse({
+                "status": "deleted",
+                "person_name": person_name,
+                "deleted_count": count,
+            })
         return JSONResponse({"status": "cleared", "deleted_count": count})
     except Exception as e:
         logger.exception("Clear face library failed")
@@ -2089,6 +2101,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         logger.info("Sent function response for %s", fc.name)
 
                 # --- Output transcription (agent speech-to-text) — process BEFORE input ---
+                _output_transcription_forwarded = False
                 if event.output_transcription and event.output_transcription.text:
                     now_mono = time.monotonic()
                     transcript_history.append({
@@ -2103,6 +2116,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         _recent_agent_texts.pop(0)
                     if not await _forward_agent_transcript(event.output_transcription.text):
                         break
+                    _output_transcription_forwarded = True
 
                 # --- Input transcription (user speech-to-text) with echo detection ---
                 if event.input_transcription and event.input_transcription.text:
@@ -2156,6 +2170,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 break
 
                         elif part.text:
+                            # Skip if output_transcription already forwarded
+                            # the same text in this event (avoids double-send)
+                            if _output_transcription_forwarded:
+                                logger.debug(
+                                    "Skipped content.parts text (already sent via output_transcription): %s",
+                                    part.text[:80],
+                                )
+                                continue
                             if not await _forward_agent_transcript(part.text):
                                 break
 

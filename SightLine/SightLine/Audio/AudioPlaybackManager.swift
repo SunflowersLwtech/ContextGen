@@ -24,6 +24,7 @@ class AudioPlaybackManager: ObservableObject {
     )
     private var pendingChunks: [Data] = []
     private var isDrainActive = false
+    private var scheduledBufferCount: Int = 0
     private var jitterKickoffWorkItem: DispatchWorkItem?
 
     func setup() {
@@ -61,6 +62,7 @@ class AudioPlaybackManager: ObservableObject {
                 guard let self = self else { return }
                 self.pendingChunks.removeAll()
                 self.isDrainActive = false
+                self.scheduledBufferCount = 0
                 self.jitterKickoffWorkItem?.cancel()
                 self.jitterKickoffWorkItem = nil
             }
@@ -81,8 +83,10 @@ class AudioPlaybackManager: ObservableObject {
             guard self.playerNode === player else { return }
             self.pendingChunks.append(data)
 
-            guard !self.isDrainActive else { return }
-            if self.pendingChunks.count >= SightLineConfig.audioJitterBufferChunks {
+            if self.isDrainActive {
+                // Feed the sliding window immediately — avoids underrun recovery delay
+                self.drainPendingChunks(player: player, format: format)
+            } else if self.pendingChunks.count >= SightLineConfig.audioJitterBufferChunks {
                 self.startDrain(player: player, format: format)
             } else {
                 self.scheduleDrainFallback(player: player, format: format)
@@ -96,6 +100,7 @@ class AudioPlaybackManager: ObservableObject {
             guard let self = self else { return }
             self.pendingChunks.removeAll(keepingCapacity: true)
             self.isDrainActive = false
+            self.scheduledBufferCount = 0
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
@@ -110,6 +115,7 @@ class AudioPlaybackManager: ObservableObject {
             guard let self = self else { return }
             self.pendingChunks.removeAll()
             self.isDrainActive = false
+            self.scheduledBufferCount = 0
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
@@ -133,31 +139,39 @@ class AudioPlaybackManager: ObservableObject {
         }
     }
 
-    private func scheduleNextChunk(player: AVAudioPlayerNode, format: AVAudioFormat) {
+    /// Fill the sliding window: schedule up to `audioScheduleAheadCount` buffers
+    /// to AVAudioPlayerNode so there is always a next buffer queued.
+    private func drainPendingChunks(player: AVAudioPlayerNode, format: AVAudioFormat) {
         guard isDrainActive else { return }
-        guard playerNode === player else { return }
-        guard !pendingChunks.isEmpty else {
+
+        while scheduledBufferCount < SightLineConfig.audioScheduleAheadCount,
+              !pendingChunks.isEmpty {
+            let chunk = pendingChunks.removeFirst()
+            guard let buffer = makePCMBuffer(from: chunk, format: format) else { continue }
+
+            scheduledBufferCount += 1
+            player.scheduleBuffer(buffer) { [weak self, weak player] in
+                guard let self = self else { return }
+                self.schedulingQueue.async {
+                    self.scheduledBufferCount -= 1
+                    guard self.isDrainActive, let player = player,
+                          self.playerNode === player else {
+                        if self.scheduledBufferCount <= 0 {
+                            self.scheduledBufferCount = 0
+                            self.isDrainActive = false
+                            DispatchQueue.main.async { self.isPlaying = false }
+                        }
+                        return
+                    }
+                    self.drainPendingChunks(player: player, format: format)
+                }
+            }
+        }
+
+        // All buffers drained and nothing left to play
+        if scheduledBufferCount == 0 && pendingChunks.isEmpty {
             isDrainActive = false
             DispatchQueue.main.async { self.isPlaying = false }
-            return
-        }
-
-        let chunk = pendingChunks.removeFirst()
-        guard let buffer = makePCMBuffer(from: chunk, format: format) else {
-            scheduleNextChunk(player: player, format: format)
-            return
-        }
-
-        player.scheduleBuffer(buffer) { [weak self, weak player] in
-            guard let self = self else { return }
-            self.schedulingQueue.async {
-                guard let player = player else {
-                    self.isDrainActive = false
-                    DispatchQueue.main.async { self.isPlaying = false }
-                    return
-                }
-                self.scheduleNextChunk(player: player, format: format)
-            }
         }
     }
 
@@ -169,7 +183,7 @@ class AudioPlaybackManager: ObservableObject {
         if !player.isPlaying {
             player.play()
         }
-        scheduleNextChunk(player: player, format: format)
+        drainPendingChunks(player: player, format: format)
     }
 
     private func scheduleDrainFallback(player: AVAudioPlayerNode, format: AVAudioFormat) {

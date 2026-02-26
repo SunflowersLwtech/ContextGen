@@ -187,7 +187,6 @@ struct UserProfileOnboardingView: View {
     @StateObject private var model = UserProfileModel()
     @Environment(\.dismiss) private var dismiss
     @State private var showQuickPresets = false
-    @State private var showFaceRegistration = false
 
     var body: some View {
         NavigationStack {
@@ -222,9 +221,6 @@ struct UserProfileOnboardingView: View {
             }
             .sheet(isPresented: $showQuickPresets) {
                 presetsSheet
-            }
-            .sheet(isPresented: $showFaceRegistration) {
-                FaceRegistrationView()
             }
             .task {
                 await model.loadProfile()
@@ -467,22 +463,6 @@ struct UserProfileOnboardingView: View {
                 .padding()
                 .background(Color(.systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Button {
-                    showFaceRegistration = true
-                } label: {
-                    HStack {
-                        Image(systemName: "person.2.crop.square.stack")
-                        Text("Manage Familiar Face Library")
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.blue)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .accessibilityLabel("Open familiar face registration")
 
                 if !model.errorMessage.isEmpty {
                     HStack {

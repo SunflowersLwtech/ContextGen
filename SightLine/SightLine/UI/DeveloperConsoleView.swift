@@ -419,8 +419,6 @@ struct DeveloperConsoleView: View {
     @ObservedObject var webSocketManager: WebSocketManager
     @ObservedObject var cameraManager: CameraManager
     @ObservedObject var telemetryAggregator: TelemetryAggregator
-    @Binding var showFaceRegistration: Bool
-    @Binding var showUserProfile: Bool
     @Binding var isMuted: Bool
     @Binding var isEmergencyPaused: Bool
 
@@ -720,24 +718,8 @@ struct DeveloperConsoleView: View {
                 Divider().background(Color.white.opacity(0.1))
 
                 sectionHeader("FACE LIBRARY")
-                controlButton("Register Face", color: .blue) {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        showFaceRegistration = true
-                    }
-                }
                 controlButton("Clear Face Library", color: .red) {
                     webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
-                }
-
-                Divider().background(Color.white.opacity(0.1))
-
-                sectionHeader("USER PROFILE")
-                controlButton("Edit User Profile", color: .blue) {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        showUserProfile = true
-                    }
                 }
 
                 Divider().background(Color.white.opacity(0.1))

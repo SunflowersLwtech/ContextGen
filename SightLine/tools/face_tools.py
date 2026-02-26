@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
 
-# Phase 3 SL-57 registration contract: enroll using 3-5 samples.
-MIN_FACE_SAMPLES = 3
+# Registration contract: enroll using 1-5 samples.
+MIN_FACE_SAMPLES = 1
 MAX_FACE_SAMPLES = 5
 
 _db_client: Optional[firestore.Client] = None

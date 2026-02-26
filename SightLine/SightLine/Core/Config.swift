@@ -25,7 +25,8 @@ enum SightLineConfig {
     static let audioInputSampleRate: Double = 16000   // Gemini requires 16kHz
     static let audioOutputSampleRate: Double = 24000   // Gemini outputs 24kHz
     static let audioBufferSize: UInt32 = 1600          // 100ms at 16kHz
-    static let audioJitterBufferChunks: Int = 2        // ~60-90ms depending server chunk size
+    static let audioJitterBufferChunks: Int = 3        // chunks needed before starting drain
+    static let audioScheduleAheadCount: Int = 3       // sliding window: buffers pre-scheduled to player
     static let audioJitterMaxWait: TimeInterval = 0.09 // 90ms fallback for short utterances
 
     // Video

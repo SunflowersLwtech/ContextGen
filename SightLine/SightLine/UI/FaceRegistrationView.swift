@@ -36,7 +36,16 @@ final class FaceRegistrationModel: ObservableObject {
         let consentConfirmed: Bool
     }
 
-    let minFaceSamples = 3
+    /// A person with one or more registered face embeddings, grouped by name.
+    struct RegisteredPerson: Identifiable {
+        let id: String          // person_name (unique key)
+        let personName: String
+        let relationship: String
+        let photoCount: Int
+        let faces: [RegisteredFace]
+    }
+
+    let minFaceSamples = 1
     let maxFaceSamples = 5
 
     @Published var personName: String = ""
@@ -54,6 +63,21 @@ final class FaceRegistrationModel: ObservableObject {
 
     @Published var registeredFaces: [RegisteredFace] = []
     @Published var isLoadingFaces: Bool = false
+
+    /// Faces grouped by person name for display.
+    var registeredPersons: [RegisteredPerson] {
+        let grouped = Dictionary(grouping: registeredFaces) { $0.personName }
+        return grouped.map { name, faces in
+            RegisteredPerson(
+                id: name,
+                personName: name,
+                relationship: faces.first?.relationship ?? "",
+                photoCount: faces.count,
+                faces: faces
+            )
+        }
+        .sorted { $0.personName.localizedCaseInsensitiveCompare($1.personName) == .orderedAscending }
+    }
 
     let relationships = ["friend", "family", "spouse", "colleague", "caregiver", "other"]
 
@@ -177,7 +201,7 @@ final class FaceRegistrationModel: ObservableObject {
         isRegistering = false
         registrationProgress = ""
 
-        if successCount >= minFaceSamples {
+        if successCount >= 1 {
             registrationSuccess = true
             registrationResult = "Registered \(trimmedName) with \(successCount) photo(s)."
             logger.info("Face registration completed: \(trimmedName), success=\(successCount)")
@@ -193,12 +217,8 @@ final class FaceRegistrationModel: ObservableObject {
         }
 
         registrationSuccess = false
-        if failures.isEmpty {
-            errorMessage = "Only \(successCount) photo(s) were registered. Minimum is \(minFaceSamples)."
-        } else {
-            errorMessage = "Registered \(successCount) photo(s). Need at least \(minFaceSamples). \(failures.prefix(2).joined(separator: " | "))"
-        }
-        logger.error("Face registration incomplete: success=\(successCount), failures=\(failures.count)")
+        errorMessage = "Registration failed. \(failures.prefix(2).joined(separator: " | "))"
+        logger.error("Face registration failed: success=\(successCount), failures=\(failures.count)")
     }
 
     private func encodeImageForUpload(_ image: UIImage) -> String? {
@@ -285,6 +305,30 @@ final class FaceRegistrationModel: ObservableObject {
             logger.error("Delete face failed: \(error.localizedDescription)")
         }
     }
+
+    /// Delete all face entries for a person (all their embeddings).
+    func deletePerson(_ person: RegisteredPerson) async {
+        let userId = SightLineConfig.defaultUserId
+        guard let encodedName = person.personName
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "\(baseURL)/api/face/\(userId)?person_name=\(encodedName)") else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                logger.info("Deleted person: \(person.personName) (\(person.photoCount) photos)")
+                NotificationCenter.default.post(name: .faceLibraryChanged, object: nil)
+                await loadFaces()
+            }
+        } catch {
+            logger.error("Delete person failed: \(error.localizedDescription)")
+        }
+    }
 }
 
 // MARK: - Camera Capture View (UIImagePickerController wrapper)
@@ -332,6 +376,10 @@ struct CameraCaptureView: UIViewControllerRepresentable {
 // MARK: - Face Registration View
 
 struct FaceRegistrationView: View {
+    /// When `true` (default), wraps content in its own NavigationStack with a Close button.
+    /// When `false`, omits NavigationStack — suitable for NavigationLink push from a parent.
+    var isStandalone: Bool = true
+
     @StateObject private var model = FaceRegistrationModel()
     @Environment(\.dismiss) private var dismiss
 
@@ -344,58 +392,66 @@ struct FaceRegistrationView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    instructionHeader
-
-                    photoSection
-
-                    formSection
-
-                    consentSection
-
-                    registerButton
-
-                    if !model.registrationProgress.isEmpty {
-                        progressBanner
+        if isStandalone {
+            NavigationStack {
+                content
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Close") { dismiss() }
+                        }
                     }
+            }
+        } else {
+            content
+        }
+    }
 
-                    if !model.errorMessage.isEmpty {
-                        errorBanner
-                    }
+    private var content: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                instructionHeader
 
-                    if model.registrationSuccess {
-                        successBanner
-                    }
+                photoSection
 
-                    registeredFacesSection
+                formSection
+
+                consentSection
+
+                registerButton
+
+                if !model.registrationProgress.isEmpty {
+                    progressBanner
                 }
-                .padding()
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Register Familiar Faces")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
+
+                if !model.errorMessage.isEmpty {
+                    errorBanner
                 }
+
+                if model.registrationSuccess {
+                    successBanner
+                }
+
+                registeredFacesSection
             }
-            .sheet(isPresented: $model.showCamera) {
-                CameraCaptureView(image: $latestCameraImage)
-            }
-            .onChange(of: latestCameraImage) { _, newImage in
-                guard let newImage else { return }
-                model.addSelectedImage(newImage)
-                latestCameraImage = nil
-            }
-            .onChange(of: selectedPhotoItems) { _, newItems in
-                guard !newItems.isEmpty else { return }
-                Task { await importPhotoPickerItems(newItems) }
-            }
-            .task {
-                await model.loadFaces()
-            }
+            .padding()
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Register Familiar Faces")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $model.showCamera) {
+            CameraCaptureView(image: $latestCameraImage)
+        }
+        .onChange(of: latestCameraImage) { _, newImage in
+            guard let newImage else { return }
+            model.addSelectedImage(newImage)
+            latestCameraImage = nil
+        }
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            guard !newItems.isEmpty else { return }
+            Task { await importPhotoPickerItems(newItems) }
+        }
+        .task {
+            await model.loadFaces()
         }
     }
 
@@ -410,7 +466,7 @@ struct FaceRegistrationView: View {
             Text("Upload Familiar Faces")
                 .font(.title2.bold())
 
-            Text("Add 3-5 clear photos for each person. SightLine uses these samples to recognize family members and friends.")
+            Text("Add 1-5 clear photos for each person. More photos with different angles improve recognition accuracy.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -432,7 +488,7 @@ struct FaceRegistrationView: View {
                     .foregroundStyle(model.selectedImages.count >= model.minFaceSamples ? .green : .orange)
             }
 
-            Text("At least \(model.minFaceSamples) photos are required. Use different angles and lighting for better recognition.")
+            Text("At least 1 photo is required (up to 5). Use different angles and lighting for better recognition.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -664,43 +720,37 @@ struct FaceRegistrationView: View {
                 .accessibilityLabel("Refresh face list")
             }
 
-            if model.registeredFaces.isEmpty && !model.isLoadingFaces {
+            if model.registeredPersons.isEmpty && !model.isLoadingFaces {
                 Text("No faces registered yet")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 20)
             } else {
-                ForEach(model.registeredFaces) { face in
+                ForEach(model.registeredPersons) { person in
                     HStack(spacing: 12) {
                         Image(systemName: "person.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.blue)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(face.personName)
+                            Text(person.personName)
                                 .font(.body.bold())
 
-                            Text("\(face.relationship.capitalized) • Photo \(face.photoIndex + 1)")
+                            Text("\(person.relationship.capitalized) · \(person.photoCount) photo\(person.photoCount == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-
-                            if face.hasReferencePhoto && face.consentConfirmed {
-                                Text("Stored reference photo")
-                                    .font(.caption2)
-                                    .foregroundStyle(.green)
-                            }
                         }
 
                         Spacer()
 
                         Button(role: .destructive) {
-                            Task { await model.deleteFace(face) }
+                            Task { await model.deletePerson(person) }
                         } label: {
                             Image(systemName: "trash")
                                 .font(.subheadline)
                         }
-                        .accessibilityLabel("Delete \(face.personName)")
+                        .accessibilityLabel("Delete \(person.personName)")
                     }
                     .padding(.vertical, 8)
                     .padding(.horizontal, 12)
