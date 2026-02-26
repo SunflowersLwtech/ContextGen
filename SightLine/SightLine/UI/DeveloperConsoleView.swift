@@ -421,6 +421,8 @@ struct DeveloperConsoleView: View {
     @ObservedObject var telemetryAggregator: TelemetryAggregator
     @Binding var showFaceRegistration: Bool
     @Binding var showUserProfile: Bool
+    @Binding var isMuted: Bool
+    @Binding var isEmergencyPaused: Bool
 
     @State private var selectedTab = 0
     @Environment(\.dismiss) private var dismiss
@@ -517,7 +519,7 @@ struct DeveloperConsoleView: View {
 
                             Text(entry.role.uppercased())
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(entry.role == "echo" ? .gray : (entry.role == "user" ? .cyan : .green))
+                                .foregroundColor(entry.role == "echo" ? .gray : (entry.role == "user" ? .cyan : (entry.role == "gesture" ? .yellow : .green)))
                                 .frame(width: 40, alignment: .leading)
 
                             Text(entry.text)
@@ -579,6 +581,17 @@ struct DeveloperConsoleView: View {
     private var systemStatusTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                sectionHeader("GESTURE STATES")
+                dataRow("Microphone", value: isMuted ? "MUTED" : "ACTIVE",
+                         color: isMuted ? .red : .green)
+                dataRow("Emergency", value: isEmergencyPaused ? "PAUSED" : "NORMAL",
+                         color: isEmergencyPaused ? .orange : .green)
+                dataRow("Camera", value: model.isCameraRunning ? "ON" : "OFF",
+                         color: model.isCameraRunning ? .green : .red)
+                dataRow("LOD", value: "\(model.currentLOD)", color: lodColor)
+
+                Divider().background(Color.white.opacity(0.1))
+
                 sectionHeader("CONNECTION")
                 dataRow("WebSocket", value: model.isConnected ? "Connected" : "Disconnected",
                          color: model.isConnected ? .green : .red)

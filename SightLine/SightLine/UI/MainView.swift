@@ -44,6 +44,7 @@ struct MainView: View {
     @State private var isCameraActive = false
     @State private var isEmergencyPaused = false
     @State private var lastAgentTranscript = ""
+    @State private var toastMessage: String?
     @State private var sessionResumptionHandle = UserDefaults.standard.string(
         forKey: SightLineConfig.sessionResumptionHandleDefaultsKey
     ) ?? ""
@@ -85,8 +86,12 @@ struct MainView: View {
                 Text(connectionStatus)
                     .font(.caption)
                     .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 4)
                     .accessibilityLabel(connectionStatus)
+
+                // Gesture state badges
+                statusStrip
+                    .padding(.bottom, 8)
 
                 // Latest transcript from agent or user
                 if !transcript.isEmpty {
@@ -139,6 +144,24 @@ struct MainView: View {
                 }
                 .padding(.top, 60)
                 .transition(.opacity)
+            }
+
+            // Toast for transient gesture feedback
+            if let toast = toastMessage {
+                VStack {
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.7))
+                        .cornerRadius(8)
+                        .transition(.opacity)
+                    Spacer()
+                }
+                .padding(.top, 100)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.2), value: toastMessage)
             }
 
             // Developer Console gear icon (DEBUG builds only)
@@ -217,7 +240,9 @@ struct MainView: View {
                 cameraManager: cameraManager,
                 telemetryAggregator: telemetryAggregator,
                 showFaceRegistration: $showFaceRegistration,
-                showUserProfile: $showUserProfile
+                showUserProfile: $showUserProfile,
+                isMuted: $isMuted,
+                isEmergencyPaused: $isEmergencyPaused
             )
         }
         .sheet(isPresented: $showFaceRegistration) {
@@ -236,7 +261,7 @@ struct MainView: View {
                 }
             )
         }
-        .accessibilityLabel("SightLine is \(isActive ? "active" : "connecting")\(isCameraActive ? ", camera on" : "")")
+        .accessibilityLabel(buildAccessibilityDescription())
     }
 
     // MARK: - Setup Action Buttons
@@ -271,6 +296,7 @@ struct MainView: View {
         }
         webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":\(isMuted)}")
         UIAccessibility.post(notification: .announcement, argument: isMuted ? "Microphone muted" : "Microphone unmuted")
+        devConsoleModel.captureTranscript(text: "Gesture: mute_toggle (muted=\(isMuted))", role: "gesture")
         logger.info("Gesture: mute_toggle (isMuted=\(isMuted))")
     }
 
@@ -279,6 +305,8 @@ struct MainView: View {
         audioPlayback.stopImmediately()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "interrupt").toJSON())
         UIAccessibility.post(notification: .announcement, argument: "Speech interrupted")
+        devConsoleModel.captureTranscript(text: "Gesture: interrupt", role: "gesture")
+        showToast("Speech interrupted")
         logger.info("Gesture: interrupt")
     }
 
@@ -286,6 +314,8 @@ struct MainView: View {
         HapticManager.shared.tripleTap()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "repeat_last").toJSON())
         UIAccessibility.post(notification: .announcement, argument: "Repeating last message")
+        devConsoleModel.captureTranscript(text: "Gesture: repeat_last", role: "gesture")
+        showToast("Repeating last message")
         logger.info("Gesture: repeat_last")
     }
 
@@ -307,6 +337,7 @@ struct MainView: View {
         }
         webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(isEmergencyPaused)}")
         UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
+        devConsoleModel.captureTranscript(text: "Gesture: emergency_pause (paused=\(isEmergencyPaused))", role: "gesture")
         logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
     }
 
@@ -317,14 +348,17 @@ struct MainView: View {
             if translation.height < 0 {
                 webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_up").toJSON())
                 UIAccessibility.post(notification: .announcement, argument: "Detail level increasing")
+                devConsoleModel.captureTranscript(text: "Gesture: lod_up", role: "gesture")
                 logger.info("Gesture: lod_up")
             } else {
                 webSocketManager.sendText(UpstreamMessage.gesture(type: "lod_down").toJSON())
                 UIAccessibility.post(notification: .announcement, argument: "Detail level decreasing")
+                devConsoleModel.captureTranscript(text: "Gesture: lod_down", role: "gesture")
                 logger.info("Gesture: lod_down")
             }
         } else {
             // Horizontal swipe: toggle camera on/off
+            devConsoleModel.captureTranscript(text: "Gesture: camera_toggle", role: "gesture")
             toggleCamera()
         }
     }
@@ -333,6 +367,8 @@ struct MainView: View {
         HapticManager.shared.sos()
         webSocketManager.sendText(UpstreamMessage.gesture(type: "sos").toJSON())
         UIAccessibility.post(notification: .announcement, argument: "SOS signal sent")
+        devConsoleModel.captureTranscript(text: "Gesture: sos", role: "gesture")
+        showToast("SOS signal sent")
         logger.info("Gesture: sos (shake)")
     }
 
@@ -344,6 +380,111 @@ struct MainView: View {
         case 2: return Color(red: 0.15, green: 0.10, blue: 0.05)  // Warm orange tint
         case 3: return Color(red: 0.10, green: 0.10, blue: 0.10)  // Soft grey
         default: return .black
+        }
+    }
+
+    // MARK: - Status Strip
+
+    private var statusStrip: some View {
+        HStack(spacing: 6) {
+            statusBadge(
+                icon: nil,
+                text: "LOD \(currentLOD)",
+                color: lodBadgeColor,
+                accessibilityLabel: "Detail level \(currentLOD)",
+                accessibilityHint: "Swipe up or down to change"
+            )
+
+            if isMuted {
+                statusBadge(
+                    icon: "mic.slash",
+                    text: "Muted",
+                    color: .red,
+                    accessibilityLabel: "Microphone muted",
+                    accessibilityHint: "Single tap to unmute"
+                )
+            }
+
+            if isEmergencyPaused {
+                statusBadge(
+                    icon: "pause.circle.fill",
+                    text: "Paused",
+                    color: .orange,
+                    accessibilityLabel: "Emergency pause active",
+                    accessibilityHint: "Long press to resume"
+                )
+            }
+
+            if isCameraActive {
+                statusBadge(
+                    icon: "camera.fill",
+                    text: "Cam",
+                    color: .green,
+                    accessibilityLabel: "Camera active",
+                    accessibilityHint: "Swipe sideways to turn off"
+                )
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.2), value: isMuted)
+        .animation(.easeInOut(duration: 0.2), value: isEmergencyPaused)
+        .animation(.easeInOut(duration: 0.2), value: isCameraActive)
+        .animation(.easeInOut(duration: 0.2), value: currentLOD)
+    }
+
+    private func statusBadge(
+        icon: String?,
+        text: String,
+        color: Color,
+        accessibilityLabel: String,
+        accessibilityHint: String
+    ) -> some View {
+        HStack(spacing: 3) {
+            if let icon = icon {
+                Image(systemName: icon)
+                    .font(.system(size: 9))
+            }
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.25))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(color.opacity(0.5), lineWidth: 1)
+        )
+        .cornerRadius(6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(accessibilityHint)
+    }
+
+    private var lodBadgeColor: Color {
+        switch currentLOD {
+        case 1: return .red
+        case 2: return .orange
+        case 3: return .green
+        default: return .gray
+        }
+    }
+
+    private func buildAccessibilityDescription() -> String {
+        var parts = ["SightLine is \(isActive ? "active" : "connecting")"]
+        parts.append("detail level \(currentLOD)")
+        if isMuted { parts.append("microphone muted") }
+        if isCameraActive { parts.append("camera on") }
+        if isEmergencyPaused { parts.append("emergency pause active") }
+        return parts.joined(separator: ", ")
+    }
+
+    private func showToast(_ message: String) {
+        toastMessage = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if toastMessage == message {
+                toastMessage = nil
+            }
         }
     }
 
@@ -664,7 +805,13 @@ struct MainView: View {
             }
             logger.warning("PANIC: \(message, privacy: .public)")
         case .interrupted:
-            logger.info("Model output interrupted")
+            logger.info("Model output interrupted — flushing playback buffer")
+            audioPlayback.stopImmediately()
+            HapticManager.shared.doubleTap()
+            DispatchQueue.main.async {
+                devConsoleModel.captureTranscript(
+                    text: "Model interrupted by user", role: "system")
+            }
         case .goAway(let retryMs):
             logger.info("GoAway received, reconnecting in \(retryMs)ms")
             DispatchQueue.main.async {

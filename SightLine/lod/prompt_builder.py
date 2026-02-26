@@ -129,7 +129,9 @@ def _build_persona_block(profile: UserProfile) -> str:
     # constraint follows the Google Live API best-practice template.
     if profile.language != "en-US":
         block += (
-            f"\n\nRESPOND IN {lang_name.upper()}. "
+            f"\n\nThe user speaks {lang_name}. "
+            f"Listen for {lang_name} in the user's audio input. "
+            f"RESPOND IN {lang_name.upper()}. "
             f"YOU MUST RESPOND UNMISTAKABLY IN {lang_name.upper()}."
         )
 

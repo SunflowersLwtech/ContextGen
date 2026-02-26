@@ -215,7 +215,7 @@ class SessionManager:
 
     # -- RunConfig ----------------------------------------------------------
 
-    def get_run_config(self, session_id: str, lod: int = 2) -> RunConfig:
+    def get_run_config(self, session_id: str, lod: int = 2, language_code: str = "") -> RunConfig:
         """Build a RunConfig for the given session."""
         cached_handle = self._session_handles.get(session_id)
 
@@ -237,7 +237,8 @@ class SessionManager:
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
                         voice_name=vad_preset["voice_name"],
                     )
-                )
+                ),
+                language_code=language_code or None,
             ),
             proactivity=types.ProactivityConfig(proactive_audio=(lod >= 2)),
             enable_affective_dialog=True,

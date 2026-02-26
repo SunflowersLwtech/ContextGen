@@ -110,6 +110,9 @@ def test_chinese_language_persona_block():
     assert "Simplified Chinese" in block
     assert "RESPOND IN SIMPLIFIED CHINESE" in block
     assert "YOU MUST RESPOND UNMISTAKABLY IN SIMPLIFIED CHINESE" in block
+    # Input language hint for native audio model
+    assert "The user speaks Simplified Chinese" in block
+    assert "Listen for Simplified Chinese" in block
 
 
 def test_english_language_persona_block():

@@ -846,7 +846,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         return
 
     live_request_queue = LiveRequestQueue()
-    run_config = session_manager.get_run_config(session_id, lod=session_ctx.current_lod)
+    run_config = session_manager.get_run_config(
+        session_id, lod=session_ctx.current_lod,
+        language_code=user_profile.language,
+    )
 
     # -- E-7: Initial LOD context injection at session start -----------------
     # Inject the full dynamic system prompt so the model has LOD context
@@ -1961,6 +1964,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
 
         live_events = await asyncio.to_thread(_start_live_events)
+        _is_interrupted = False
         try:
             async for event in live_events:
                 if stop_downstream.is_set():
@@ -1989,14 +1993,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     })
                     logger.warning("GoAway received, retry_ms=%d", retry_ms)
 
-                if hasattr(event, "server_content") and event.server_content:
-                    sc = event.server_content
-                    if hasattr(sc, "interrupted") and sc.interrupted:
-                        _model_audio_last_seen_at = 0.0  # Clear staleness on interrupt
-                        await _safe_send_json({
-                            "type": "interrupted",
-                            "message": "Model output was interrupted.",
-                        })
+                # --- Interrupt detection (barge-in) ---
+                _event_interrupted = (
+                    (hasattr(event, "server_content") and event.server_content
+                     and getattr(event.server_content, "interrupted", False))
+                    or event.interrupted
+                )
+                if _event_interrupted and not _is_interrupted:
+                    _is_interrupted = True
+                    _model_audio_last_seen_at = 0.0
+                    await _safe_send_json({
+                        "type": "interrupted",
+                        "message": "Model output was interrupted.",
+                    })
+                    logger.info("Interrupt detected — suppressing audio forwarding")
+
+                # --- Turn complete: resume audio forwarding ---
+                if event.turn_complete:
+                    if _is_interrupted:
+                        logger.info("Turn complete — resuming audio forwarding")
+                    _is_interrupted = False
 
                 # --- Function calls from Gemini (Phase 3) ---
                 function_calls = _extract_function_calls(event)
@@ -2115,7 +2131,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             session_ctx.user_requested_detail = False
 
                 # --- Content parts (audio / text) ---
-                if event.content and event.content.parts:
+                if event.content and event.content.parts and not _is_interrupted:
                     for part in event.content.parts:
                         if stop_downstream.is_set():
                             break
