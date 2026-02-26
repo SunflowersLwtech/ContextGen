@@ -2,11 +2,9 @@
 //  DebugOverlay.swift
 //  SightLine
 //
-//  Transparent overlay showing LOD state, telemetry, latency, and sub-agent
-//  status. Intended for demo judges to observe the system's internal decisions.
-//
-//  Toggle: triple-tap gesture on MainView, or always-on under #if DEBUG.
-//  SL-77: Phase 4 – DebugOverlay for iOS.
+//  Debug data model (DebugOverlayModel) and camera preview UIViewRepresentable.
+//  DebugOverlayModel is the data hub consumed by DeveloperConsoleModel.
+//  CameraPreviewView is used by both MainView and DeveloperConsoleView.
 //
 
 import SwiftUI

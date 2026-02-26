@@ -116,14 +116,35 @@ struct MainView: View {
                 .padding(.bottom, 24)
             }
 
-            // Debug overlay (SL-77) - top-aligned
-            if showDebugOverlay {
+            // Camera preview with detection overlays — visible when camera is active
+            if isCameraActive, let session = cameraManager.previewSession {
                 VStack {
-                    DebugOverlay(model: debugModel)
+                    ZStack(alignment: .topLeading) {
+                        CameraPreviewView(session: session)
+                            .frame(height: 200)
+                            .clipShape(.rect(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            )
+
+                        #if DEBUG
+                        boundingBoxOverlay(boxes: devConsoleModel.visionBoxes, color: .green)
+                            .frame(height: 200)
+                        boundingBoxOverlay(boxes: devConsoleModel.ocrBoxes, color: .yellow)
+                            .frame(height: 200)
+                        boundingBoxOverlay(boxes: devConsoleModel.faceBoxes, color: .cyan)
+                            .frame(height: 200)
+                        #endif
+                    }
+                    .padding(.horizontal, 12)
                     Spacer()
                 }
                 .padding(.top, 60)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
                 .transition(.opacity)
+                .animation(.easeInOut(duration: 0.3), value: isCameraActive)
             }
 
             // Toast for transient gesture feedback
@@ -190,9 +211,6 @@ struct MainView: View {
                 }
         )
         .onAppear {
-            #if DEBUG
-            showDebugOverlay = true
-            #endif
             HapticManager.shared.prepare()
             setupPipeline()
             devConsoleModel.bind(
@@ -434,6 +452,45 @@ struct MainView: View {
             }
         }
     }
+
+    // MARK: - Bounding Box Overlay
+
+    #if DEBUG
+    private func boundingBoxOverlay(
+        boxes: [DeveloperConsoleModel.DebugBoundingBox],
+        color: Color
+    ) -> some View {
+        GeometryReader { geometry in
+            ForEach(Array(boxes.enumerated()), id: \.element.id) { _, box in
+                let rect = box.normalizedRect
+                let x = rect.minX * geometry.size.width
+                let y = rect.minY * geometry.size.height
+                let w = rect.width * geometry.size.width
+                let h = rect.height * geometry.size.height
+                let labelText = box.confidence > 0
+                    ? "\(box.label) \(String(format: "%.2f", box.confidence))"
+                    : box.label
+
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(color, lineWidth: 2)
+                        .frame(width: max(w, 2), height: max(h, 2))
+
+                    Text(labelText)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(color.opacity(0.9))
+                        .clipShape(.rect(cornerRadius: 2))
+                        .offset(x: 0, y: -12)
+                }
+                .position(x: x + (w / 2), y: y + (h / 2))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+    #endif
 
     // MARK: - Pipeline Setup
 
