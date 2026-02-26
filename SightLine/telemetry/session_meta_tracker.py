@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -87,6 +88,26 @@ class SessionMetaTracker:
 
     # -- Firestore I/O (async, non-blocking) --------------------------------
 
+    _firestore_client = None  # Lazy-initialized, shared across calls
+
+    def _get_firestore(self):
+        """Return a lazily-initialized Firestore client (cached)."""
+        if self._firestore_client is None:
+            from google.cloud import firestore
+            project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
+            self._firestore_client = firestore.Client(project=project)
+        return self._firestore_client
+
+    def _get_doc_ref(self):
+        """Return the Firestore document reference for this session."""
+        db = self._get_firestore()
+        return (
+            db.collection("user_profiles")
+            .document(self.user_id)
+            .collection("sessions_meta")
+            .document(self.session_id)
+        )
+
     async def write_session_start(self) -> None:
         """Write the session start document to Firestore."""
         try:
@@ -108,20 +129,6 @@ class SessionMetaTracker:
                 self.session_id,
                 exc_info=True,
             )
-
-    def _get_doc_ref(self):
-        """Return the Firestore document reference for this session."""
-        import os
-        from google.cloud import firestore
-
-        project = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
-        db = firestore.Client(project=project)
-        return (
-            db.collection("user_profiles")
-            .document(self.user_id)
-            .collection("sessions_meta")
-            .document(self.session_id)
-        )
 
     def _write_start_sync(self) -> None:
         """Synchronous Firestore write for session start."""

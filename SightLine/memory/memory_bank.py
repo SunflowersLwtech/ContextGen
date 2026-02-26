@@ -184,18 +184,23 @@ class MemoryBankService:
             query_vector=Vector(query_embedding),
             distance_measure=DistanceMeasure.COSINE,
             limit=top_k,
+            distance_result_field="vector_distance",
         )
 
         results = []
         for doc in vector_query.stream():
             data = doc.to_dict()
+            # Firestore COSINE distance: 0 = identical, 2 = opposite.
+            # Convert to similarity: 1 - (distance / 2) → range [0, 1].
+            raw_distance = float(data.pop("vector_distance", 0.4))
+            relevance = max(0.0, min(1.0, 1.0 - raw_distance / 2.0))
             results.append({
                 "memory_id": doc.id,
                 "content": data.get("content", ""),
                 "category": data.get("category", "general"),
                 "importance": float(data.get("importance", 0.5)),
                 "timestamp": float(data.get("timestamp", 0)),
-                "relevance_score": 0.8,  # Vector search results are inherently relevant
+                "relevance_score": relevance,
             })
 
         return results

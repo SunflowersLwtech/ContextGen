@@ -140,7 +140,7 @@ def _is_repeated_text(
     now_ts: float,
     previous_ts: float,
     cooldown_sec: float,
-    min_chars: int = 20,
+    min_chars: int = 6,
 ) -> bool:
     """Return True when the same meaningful text repeats inside cooldown."""
     if not previous_text:
@@ -721,6 +721,33 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _model_audio_last_seen_at: float = 0.0
     _MODEL_AUDIO_STALENESS_SEC = 2.0
 
+    # Output transcription buffering (avoid flooding client with fragments)
+    _transcript_buffer: str = ""
+    _transcript_buffer_last_update: float = 0.0
+    _TRANSCRIPT_FLUSH_TIMEOUT_SEC = 1.5
+
+    _SENTENCE_BOUNDARY_RE = re.compile(r"[。！？.!?\n]")
+
+    def _has_sentence_boundary(text: str) -> bool:
+        """Return True if text contains a sentence-ending punctuation mark."""
+        return bool(_SENTENCE_BOUNDARY_RE.search(text))
+
+    async def _flush_transcript_buffer() -> bool:
+        """Flush the accumulated transcript buffer to the client."""
+        nonlocal _transcript_buffer, _transcript_buffer_last_update
+        text = _transcript_buffer.strip()
+        _transcript_buffer = ""
+        _transcript_buffer_last_update = 0.0
+        if not text:
+            return True
+        # Track for echo detection
+        now_mono = time.monotonic()
+        _recent_agent_texts.append((now_mono, text))
+        cutoff = now_mono - 10.0
+        while _recent_agent_texts and _recent_agent_texts[0][0] < cutoff:
+            _recent_agent_texts.pop(0)
+        return await _forward_agent_transcript(text)
+
     def _is_websocket_open() -> bool:
         return (
             websocket.client_state == WebSocketState.CONNECTED
@@ -777,14 +804,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     def _is_likely_echo(candidate: str, now_ts: float) -> bool:
         """Check if candidate text is likely an echo of recent agent output.
 
-        Uses Jaccard word similarity >0.6 within a 5s window. Requires
-        at least 3 words in candidate to avoid false positives on short
-        utterances like "yes" or "what?".
+        When the model was recently speaking (within 3s), uses relaxed
+        thresholds (1 word min, Jaccard >0.35, 8s window) to catch echoes
+        more aggressively. Otherwise uses normal thresholds (3 words min,
+        Jaccard >0.6, 5s window).
         """
         words_candidate = set(candidate.lower().split())
-        if len(words_candidate) < 3:
+        # Relaxed mode when model was speaking recently
+        model_speaking = (now_ts - _model_audio_last_seen_at) < 3.0
+        min_words = 1 if model_speaking else 3
+        jaccard_threshold = 0.35 if model_speaking else 0.6
+        window_sec = 8.0 if model_speaking else 5.0
+
+        if len(words_candidate) < min_words:
             return False
-        cutoff = now_ts - 5.0
+        cutoff = now_ts - window_sec
         for ts, agent_text in reversed(_recent_agent_texts):
             if ts < cutoff:
                 break
@@ -794,7 +828,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             intersection = words_candidate & words_agent
             union = words_candidate | words_agent
             jaccard = len(intersection) / len(union) if union else 0.0
-            if jaccard > 0.6:
+            if jaccard > jaccard_threshold:
                 return True
         return False
 
@@ -1977,6 +2011,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Processes session_resumption_update events, transcriptions,
         function calls, and content parts (audio binary / text JSON).
         """
+        nonlocal _transcript_buffer, _transcript_buffer_last_update
+
         def _start_live_events():
             return runner.run_live(
                 session_id=session_id,
@@ -2019,7 +2055,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 _event_interrupted = (
                     (hasattr(event, "server_content") and event.server_content
                      and getattr(event.server_content, "interrupted", False))
-                    or event.interrupted
+                    or getattr(event, "interrupted", False)
                 )
                 if _event_interrupted and not _is_interrupted:
                     _is_interrupted = True
@@ -2030,11 +2066,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     })
                     logger.info("Interrupt detected — suppressing audio forwarding")
 
-                # --- Turn complete: resume audio forwarding ---
+                # --- Turn complete: resume audio forwarding + flush buffer ---
                 if event.turn_complete:
                     if _is_interrupted:
                         logger.info("Turn complete — resuming audio forwarding")
                     _is_interrupted = False
+                    # Flush any remaining transcript buffer
+                    if _transcript_buffer:
+                        if not await _flush_transcript_buffer():
+                            break
 
                 # --- Function calls from Gemini (Phase 3) ---
                 function_calls = _extract_function_calls(event)
@@ -2100,7 +2140,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         live_request_queue.send_content(content)
                         logger.info("Sent function response for %s", fc.name)
 
-                # --- Output transcription (agent speech-to-text) — process BEFORE input ---
+                # --- Output transcription (agent speech-to-text) — buffered ---
                 _output_transcription_forwarded = False
                 if event.output_transcription and event.output_transcription.text:
                     now_mono = time.monotonic()
@@ -2108,15 +2148,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         "role": "agent",
                         "text": event.output_transcription.text,
                     })
-                    # Track for echo detection
-                    _recent_agent_texts.append((now_mono, event.output_transcription.text))
-                    # Prune entries older than 10s
-                    cutoff = now_mono - 10.0
-                    while _recent_agent_texts and _recent_agent_texts[0][0] < cutoff:
-                        _recent_agent_texts.pop(0)
-                    if not await _forward_agent_transcript(event.output_transcription.text):
-                        break
-                    _output_transcription_forwarded = True
+                    # Buffer fragments instead of forwarding immediately
+                    _transcript_buffer += event.output_transcription.text
+                    _transcript_buffer_last_update = now_mono
+                    logger.debug("Buffered transcript fragment: %s", event.output_transcription.text[:80])
+                    # Flush on sentence boundary
+                    if _has_sentence_boundary(_transcript_buffer):
+                        if not await _flush_transcript_buffer():
+                            break
+                        _output_transcription_forwarded = True
+                    # Flush on timeout (stale buffer)
+                    elif (_transcript_buffer_last_update > 0
+                          and (now_mono - _transcript_buffer_last_update) > _TRANSCRIPT_FLUSH_TIMEOUT_SEC):
+                        if not await _flush_transcript_buffer():
+                            break
+                        _output_transcription_forwarded = True
 
                 # --- Input transcription (user speech-to-text) with echo detection ---
                 if event.input_transcription and event.input_transcription.text:
@@ -2133,6 +2179,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "text": input_text,
                             "role": "echo",
                         })
+                        # Tell Gemini to disregard the echo input
+                        cancel = types.Content(
+                            parts=[types.Part(text="[SYSTEM: The previous audio input was an echo of your own speech. Do not respond to it.]")],
+                            role="user",
+                        )
+                        live_request_queue.send_content(cancel)
+                        logger.info("Sent echo cancellation to Gemini")
                     else:
                         transcript_history.append({
                             "role": "user",
@@ -2210,7 +2263,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 extractor = MemoryExtractor()
                 bank = MemoryBankService(user_id)
                 budget = memory_budget or MemoryBudgetTracker()
-                count = extractor.extract_and_store(
+                count = await asyncio.to_thread(
+                    extractor.extract_and_store,
                     user_id=user_id,
                     session_id=session_id,
                     transcript_history=transcript_history,
