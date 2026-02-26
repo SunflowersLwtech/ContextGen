@@ -104,6 +104,9 @@ def _coerce_bool(value: object, default: bool = False) -> bool:
 
 
 TELEMETRY_FORCE_REFRESH_SEC = 60.0
+QUEUE_MAX_AGE_SEC = 15.0
+VISION_SPOKEN_COOLDOWN_SEC = 25.0
+QUEUE_FLUSH_CHECK_INTERVAL_SEC = 1.0
 AGENT_TEXT_REPEAT_SUPPRESS_SEC = 14.0
 VISION_REPEAT_SUPPRESS_SEC = 18.0
 VISION_SAFETY_REPEAT_SUPPRESS_SEC = 6.0
@@ -154,6 +157,159 @@ def _is_repeated_text(
     if normalized != previous_normalized:
         return False
     return (now_ts - previous_ts) < cooldown_sec
+
+
+# ---------------------------------------------------------------------------
+# Context Injection Queue — batches non-urgent context to avoid interrupting
+# the model mid-speech (clientContent unconditionally interrupts generation).
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field as dc_field
+
+
+@dataclass
+class _QueuedItem:
+    """A single queued context injection waiting for the model to finish."""
+    category: str
+    text: str
+    priority: int  # lower = more important
+    speak: bool
+    enqueued_at: float = dc_field(default_factory=time.monotonic)
+
+
+class ContextInjectionQueue:
+    """Queue that batches non-urgent send_content() calls.
+
+    When the model is speaking, enqueued items are held and merged into a
+    single Content message at the next turn_complete event.  Bypass items
+    (safety, gestures, function responses) skip the queue entirely.
+    """
+
+    def __init__(self, live_request_queue: "LiveRequestQueue") -> None:
+        self._lrq = live_request_queue
+        self._queue: dict[str, _QueuedItem] = {}
+        self._model_speaking = False
+        self._vision_spoken_at: float = 0.0
+        self._bg_task: asyncio.Task | None = None
+        self._stopped = False
+
+    # -- Model speaking state ------------------------------------------------
+
+    def set_model_speaking(self, speaking: bool) -> None:
+        self._model_speaking = speaking
+
+    @property
+    def model_speaking(self) -> bool:
+        return self._model_speaking
+
+    # -- Immediate bypass (safety / gestures / function responses) -----------
+
+    def inject_immediate(self, content: "types.Content") -> None:
+        """Send directly to LiveRequestQueue, bypassing the queue."""
+        self._lrq.send_content(content)
+
+    # -- Queued injection ----------------------------------------------------
+
+    def enqueue(
+        self,
+        category: str,
+        text: str,
+        priority: int = 5,
+        speak: bool = True,
+    ) -> None:
+        """Queue a context injection.  If the model is idle, send immediately."""
+        if not self._model_speaking:
+            # Model idle — send right away, zero latency
+            content = types.Content(
+                parts=[types.Part(text=text)],
+                role="user",
+            )
+            self._lrq.send_content(content)
+            logger.debug("Sent [%s] immediately (model idle)", category)
+            return
+
+        # Model speaking — enqueue (newer replaces older for same category)
+        self._queue[category] = _QueuedItem(
+            category=category,
+            text=text,
+            priority=priority,
+            speak=speak,
+        )
+        logger.info("Queued [%s] (priority=%d, speak=%s, queue_size=%d)",
+                     category, priority, speak, len(self._queue))
+
+    # -- Flush ---------------------------------------------------------------
+
+    def flush(self) -> bool:
+        """Merge and send all queued items as one Content message.
+
+        Returns True if anything was flushed.
+        """
+        if not self._queue:
+            return False
+
+        items = sorted(self._queue.values(), key=lambda it: it.priority)
+        self._queue.clear()
+
+        all_silent = all(not it.speak for it in items)
+        merged_parts: list[str] = []
+        for it in items:
+            merged_parts.append(it.text)
+
+        merged_text = "\n\n".join(merged_parts)
+        if all_silent:
+            merged_text = "[CONTEXT UPDATE - DO NOT SPEAK]\n" + merged_text
+
+        content = types.Content(
+            parts=[types.Part(text=merged_text)],
+            role="user",
+        )
+        self._lrq.send_content(content)
+        logger.info("Flushed %d queued items (all_silent=%s)", len(items), all_silent)
+        return True
+
+    def check_max_age(self) -> bool:
+        """Force-flush if the oldest item exceeds QUEUE_MAX_AGE_SEC."""
+        if not self._queue:
+            return False
+        oldest = min(it.enqueued_at for it in self._queue.values())
+        if (time.monotonic() - oldest) > QUEUE_MAX_AGE_SEC:
+            logger.info("Max-age flush triggered (oldest=%.1fs)",
+                        time.monotonic() - oldest)
+            return self.flush()
+        return False
+
+    # -- Vision spoken cooldown -----------------------------------------------
+
+    def record_vision_spoken(self) -> None:
+        """Record that the model just spoke about a vision result."""
+        self._vision_spoken_at = time.monotonic()
+
+    @property
+    def vision_spoken_cooldown_active(self) -> bool:
+        """True if a vision result was spoken recently."""
+        return (time.monotonic() - self._vision_spoken_at) < VISION_SPOKEN_COOLDOWN_SEC
+
+    # -- Background flush task ------------------------------------------------
+
+    def start_background_flush_task(self) -> None:
+        """Start the periodic max-age checker."""
+        if self._bg_task is None:
+            self._bg_task = asyncio.create_task(self._background_flush_loop())
+
+    async def _background_flush_loop(self) -> None:
+        try:
+            while not self._stopped:
+                await asyncio.sleep(QUEUE_FLUSH_CHECK_INTERVAL_SEC)
+                self.check_max_age()
+        except asyncio.CancelledError:
+            pass
+
+    def stop(self) -> None:
+        """Stop the background flush task."""
+        self._stopped = True
+        if self._bg_task and not self._bg_task.done():
+            self._bg_task.cancel()
 
 
 def _heart_rate_bucket(heart_rate: float | None) -> str:
@@ -721,6 +877,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _model_audio_last_seen_at: float = 0.0
     _MODEL_AUDIO_STALENESS_SEC = 2.0
 
+    # Vision spoken tracking for context injection queue
+    _turn_had_vision_content = False
+
     # Output transcription buffering (avoid flooding client with fragments)
     _transcript_buffer: str = ""
     _transcript_buffer_last_update: float = 0.0
@@ -896,6 +1055,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     asyncio.create_task(session_meta.write_session_start())
 
     live_request_queue = LiveRequestQueue()
+    ctx_queue = ContextInjectionQueue(live_request_queue)
+    ctx_queue.start_background_flush_task()
+
     run_config = session_manager.get_run_config(
         session_id, lod=session_ctx.current_lod,
         language_code=user_profile.language,
@@ -921,7 +1083,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         parts=[types.Part(text=_initial_prompt)],
         role="user",
     )
-    live_request_queue.send_content(_initial_content)
+    ctx_queue.inject_immediate(_initial_content)
     logger.info(
         "Injected initial full dynamic prompt (LOD %d) for session %s",
         session_ctx.current_lod, session_id,
@@ -944,7 +1106,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         parts=[types.Part(text=" ".join(_greeting_parts))],
         role="user",
     )
-    live_request_queue.send_content(_greeting_content)
+    ctx_queue.inject_immediate(_greeting_content)
     logger.info("Injected greeting prompt for session %s", session_id)
 
     # -- Track client camera state for context injection ----------------------
@@ -970,11 +1132,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             reason=reason,
             memories=memories,
         )
-        content = types.Content(
-            parts=[types.Part(text=lod_message)],
-            role="user",
+        ctx_queue.enqueue(
+            category="lod",
+            text=lod_message,
+            priority=3,
+            speak=False,
         )
-        live_request_queue.send_content(content)
         logger.info("Injected [LOD UPDATE] -> LOD %d (%s)", new_lod, reason)
 
     # -- Per-session memory state (Phase 4) -----------------------------------
@@ -1010,11 +1173,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         payload["runtime_hot_reconfig_supported"] = supported
         payload["runtime_note"] = "transport_hot_update_applied" if supported else reason
 
-        content = types.Content(
-            parts=[types.Part(text=build_vad_runtime_update_message(new_lod))],
-            role="user",
+        ctx_queue.enqueue(
+            category="vad",
+            text=build_vad_runtime_update_message(new_lod),
+            priority=7,
+            speak=False,
         )
-        live_request_queue.send_content(content)
 
         if supported:
             logger.info("Injected runtime VAD update payload for LOD %d: %s", new_lod, payload)
@@ -1186,25 +1350,31 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
 
             if result.get("confidence", 0) > 0 and not repeated:
-                # Determine info_type for should_speak gate
-                info_type = "safety_warning" if warnings else "spatial_description"
-                ephemeral = session_manager.get_ephemeral_context(session_id)
-                speak = should_speak(
-                    info_type=info_type,
-                    current_lod=session_ctx.current_lod,
-                    step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
-                    ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
-                )
+                # Vision spoken cooldown: suppress non-safety descriptions
+                # when model recently spoke about the scene.
+                if ctx_queue.vision_spoken_cooldown_active and not warnings:
+                    logger.info("Suppressed vision: vision_spoken_cooldown active")
+                else:
+                    # Determine info_type for should_speak gate
+                    info_type = "safety_warning" if warnings else "spatial_description"
+                    ephemeral = session_manager.get_ephemeral_context(session_id)
+                    speak = should_speak(
+                        info_type=info_type,
+                        current_lod=session_ctx.current_lod,
+                        step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
+                        ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
+                    )
 
-                if not speak:
-                    vision_text = "[SILENT - context only, do not speak aloud]\n" + vision_text
-                content = types.Content(
-                    parts=[types.Part(text=vision_text)],
-                    role="user",
-                )
-                live_request_queue.send_content(content)
-                logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f, speak=%s)",
-                            session_ctx.current_lod, result.get("confidence", 0), speak)
+                    if not speak:
+                        vision_text = "[SILENT - context only, do not speak aloud]\n" + vision_text
+                    ctx_queue.enqueue(
+                        category="vision",
+                        text=vision_text,
+                        priority=2 if warnings else 5,
+                        speak=speak,
+                    )
+                    logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f, speak=%s)",
+                                session_ctx.current_lod, result.get("confidence", 0), speak)
         except Exception as exc:
             logger.exception("Vision analysis failed")
             await _emit_tool_event(
@@ -1293,11 +1463,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 logger.debug("Failed to load memories for person %s", pname, exc_info=True)
                 if not speak:
                     face_text = "[SILENT - context only, do not speak aloud]\n" + face_text
-                content = types.Content(
-                    parts=[types.Part(text=face_text)],
-                    role="user",
+                ctx_queue.enqueue(
+                    category="face",
+                    text=face_text,
+                    priority=4,
+                    speak=speak,
                 )
-                live_request_queue.send_content(content)
                 logger.info("Injected [FACE ID] (speak=%s): %s",
                             speak, ", ".join(r["person_name"] for r in known))
                 best = max(known, key=lambda item: float(item.get("similarity", 0.0)))
@@ -1405,11 +1576,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 if not speak:
                     ocr_text = "[SILENT - context only, do not speak aloud]\n" + ocr_text
-                content = types.Content(
-                    parts=[types.Part(text=ocr_text)],
-                    role="user",
+                ctx_queue.enqueue(
+                    category="ocr",
+                    text=ocr_text,
+                    priority=3 if safety_only else 5,
+                    speak=speak,
                 )
-                live_request_queue.send_content(content)
                 logger.info("Injected [OCR RESULT] (%s, confidence %.2f, speak=%s)",
                             result.get("text_type", "unknown"), result.get("confidence", 0), speak)
         except Exception as exc:
@@ -1720,7 +1892,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 parts=[types.Part(text=resume_prompt)],
                                 role="user",
                             )
-                            live_request_queue.send_content(resume_content)
+                            ctx_queue.inject_immediate(resume_content)
 
                     elif gesture == "interrupt":
                         logger.info("User interrupt gesture received")
@@ -1728,7 +1900,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             parts=[types.Part(text="[USER INTERRUPT] The user has interrupted. Stop current output immediately and wait for their next input.")],
                             role="user",
                         )
-                        live_request_queue.send_content(content)
+                        ctx_queue.inject_immediate(content)
 
                     elif gesture == "repeat_last":
                         _allow_agent_repeat_until = time.monotonic() + 12.0
@@ -1743,14 +1915,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 parts=[types.Part(text=f'[REPEAT REQUEST] The user wants you to repeat your last response. Please repeat: "{last_agent}"')],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
                         else:
                             logger.info("Repeat last gesture: no previous agent utterance found")
                             content = types.Content(
                                 parts=[types.Part(text="[REPEAT REQUEST] The user wants you to repeat your last response, but no previous response was found. Let the user know.")],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
 
                     elif gesture == "mute_toggle":
                         # Support explicit state from iOS and legacy toggle-only payloads.
@@ -1778,7 +1950,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
                             await _safe_send_json({
                                 "type": "lod_update",
                                 "lod": 1,
@@ -1795,7 +1967,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 parts=[types.Part(text="[EMERGENCY RESUME] The user has deactivated emergency pause. Resume normal operation at LOD 2 (balanced mode). You may speak again.")],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
                             await _safe_send_json({
                                 "type": "lod_update",
                                 "lod": resume_lod,
@@ -1819,7 +1991,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 )],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
                         else:
                             content = types.Content(
                                 parts=[types.Part(
@@ -1831,7 +2003,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 )],
                                 role="user",
                             )
-                            live_request_queue.send_content(content)
+                            ctx_queue.inject_immediate(content)
 
                     else:
                         logger.debug("Unhandled gesture type: %s", gesture)
@@ -1921,17 +2093,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 )],
                 role="user",
             )
-            live_request_queue.send_content(content)
+            ctx_queue.inject_immediate(content)
             await _handle_panic(ephemeral_ctx)
             return
 
         # Semantic text injection (LOD-aware throttle)
-        # P2_FIX_3: Suppress non-PANIC injection while model is generating audio
+        # Old P2_FIX_3 staleness guard removed — ctx_queue handles batching.
         now = _time.monotonic()
-        if now - _model_audio_last_seen_at < _MODEL_AUDIO_STALENESS_SEC:
-            logger.debug("Skipping telemetry injection: model audio still active")
-            await _process_lod_decision(ephemeral_ctx)
-            return
         if telemetry_agg.should_send(now):
             signature = _build_telemetry_signature(ephemeral_ctx)
             should_inject, reasons = _should_inject_telemetry_context(
@@ -1942,18 +2110,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             if should_inject:
                 semantic_text = parse_telemetry(telemetry_data)
-                content = types.Content(
-                    parts=[types.Part(
-                        text=(
-                            "<<<SENSOR_DATA>>>\n"
-                            f"{semantic_text}\n"
-                            "<<<END_SENSOR_DATA>>>\n"
-                            "INSTRUCTION: Do not vocalize any part of the above sensor data."
-                        )
-                    )],
-                    role="user",
+                telemetry_text = (
+                    "<<<SENSOR_DATA>>>\n"
+                    f"{semantic_text}\n"
+                    "<<<END_SENSOR_DATA>>>\n"
+                    "INSTRUCTION: Do not vocalize any part of the above sensor data."
                 )
-                live_request_queue.send_content(content)
+                ctx_queue.enqueue(
+                    category="telemetry",
+                    text=telemetry_text,
+                    priority=8,
+                    speak=False,
+                )
                 _last_telemetry_context_sent_at = now
                 logger.debug("Telemetry context injected: reasons=%s", ",".join(reasons))
             _last_telemetry_signature = signature
@@ -1989,11 +2157,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             await _send_lod_update(new_lod, ephemeral_ctx, decision_log.reason)
 
             if resume_prompt:
-                resume_content = types.Content(
-                    parts=[types.Part(text=resume_prompt)],
-                    role="user",
+                ctx_queue.enqueue(
+                    category="lod_resume",
+                    text=resume_prompt,
+                    priority=3,
+                    speak=True,
                 )
-                live_request_queue.send_content(resume_content)
                 logger.info("Injected [RESUME] prompt for session %s", session_id)
 
             await _notify_ios_lod_change(
@@ -2011,7 +2180,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Processes session_resumption_update events, transcriptions,
         function calls, and content parts (audio binary / text JSON).
         """
-        nonlocal _transcript_buffer, _transcript_buffer_last_update
+        nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content
 
         def _start_live_events():
             return runner.run_live(
@@ -2060,6 +2229,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 if _event_interrupted and not _is_interrupted:
                     _is_interrupted = True
                     _model_audio_last_seen_at = 0.0
+                    ctx_queue.set_model_speaking(False)
+                    # Note: do NOT flush queue on interrupt — user is speaking
                     await _safe_send_json({
                         "type": "interrupted",
                         "message": "Model output was interrupted.",
@@ -2071,10 +2242,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if _is_interrupted:
                         logger.info("Turn complete — resuming audio forwarding")
                     _is_interrupted = False
+                    ctx_queue.set_model_speaking(False)
+                    # Track vision spoken cooldown
+                    if _turn_had_vision_content:
+                        ctx_queue.record_vision_spoken()
+                        _turn_had_vision_content = False
                     # Flush any remaining transcript buffer
                     if _transcript_buffer:
                         if not await _flush_transcript_buffer():
                             break
+                    # Flush queued context injections
+                    ctx_queue.flush()
 
                 # --- Function calls from Gemini (Phase 3) ---
                 function_calls = _extract_function_calls(event)
@@ -2137,7 +2315,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             parts=[types.Part(function_response=fr)],
                             role="user",
                         )
-                        live_request_queue.send_content(content)
+                        ctx_queue.inject_immediate(content)
                         logger.info("Sent function response for %s", fc.name)
 
                 # --- Output transcription (agent speech-to-text) — buffered ---
@@ -2148,6 +2326,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         "role": "agent",
                         "text": event.output_transcription.text,
                     })
+                    # Detect if model is speaking about vision/scene
+                    _out_lower = event.output_transcription.text.lower()
+                    if any(kw in _out_lower for kw in (
+                        "i see", "i can see", "looking at", "in front of",
+                        "ahead of", "around you", "your surroundings",
+                        "to your left", "to your right", "on the left", "on the right",
+                    )):
+                        _turn_had_vision_content = True
                     # Buffer fragments instead of forwarding immediately
                     _transcript_buffer += event.output_transcription.text
                     _transcript_buffer_last_update = now_mono
@@ -2184,7 +2370,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             parts=[types.Part(text="[SYSTEM: The previous audio input was an echo of your own speech. Do not respond to it.]")],
                             role="user",
                         )
-                        live_request_queue.send_content(cancel)
+                        ctx_queue.inject_immediate(cancel)
                         logger.info("Sent echo cancellation to Gemini")
                     else:
                         transcript_history.append({
@@ -2216,6 +2402,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                         if part.inline_data and part.inline_data.data:
                             _model_audio_last_seen_at = time.monotonic()
+                            ctx_queue.set_model_speaking(True)
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
@@ -2286,6 +2473,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         session_meta.set_trip_purpose(session_ctx.trip_purpose or "")
         await session_meta.write_session_end()
 
+        ctx_queue.stop()
         live_request_queue.close()
         session_manager.remove_session(session_id)
         logger.info("Session cleaned up: user=%s session=%s", user_id, session_id)

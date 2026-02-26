@@ -34,7 +34,6 @@ struct MainView: View {
     @State private var connectionStatus: String = "Connecting..."
     @State private var isSafeMode = false
     @State private var whenIdleToolQueue: [String] = []
-    @State private var showDebugOverlay = false
     @State private var showDevConsole = false
     @State private var showProfileSettings = false
     @State private var isMuted = false

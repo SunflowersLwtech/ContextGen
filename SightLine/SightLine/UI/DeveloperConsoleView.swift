@@ -376,42 +376,6 @@ final class DeveloperConsoleModel: ObservableObject {
     }
 }
 
-// MARK: - Camera Preview (UIViewRepresentable)
-
-struct CameraPreviewView: UIViewRepresentable {
-    let session: AVCaptureSession
-
-    final class PreviewContainerView: UIView {
-        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-
-        var previewLayer: AVCaptureVideoPreviewLayer {
-            // Safe by construction: layerClass is AVCaptureVideoPreviewLayer.
-            layer as! AVCaptureVideoPreviewLayer
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            previewLayer.frame = bounds
-        }
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = PreviewContainerView(frame: .zero)
-        view.backgroundColor = .black
-        view.previewLayer.videoGravity = .resizeAspectFill
-        view.previewLayer.session = session
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        guard let previewView = uiView as? PreviewContainerView else { return }
-        if previewView.previewLayer.session !== session {
-            previewView.previewLayer.session = session
-        }
-        previewView.previewLayer.frame = previewView.bounds
-    }
-}
-
 // MARK: - Developer Console View
 
 struct DeveloperConsoleView: View {
@@ -425,7 +389,7 @@ struct DeveloperConsoleView: View {
     @State private var selectedTab = 0
     @Environment(\.dismiss) private var dismiss
 
-    private let tabs = ["Log", "Context", "Status", "Controls", "Video", "Network"]
+    private let tabs = ["Log", "Status", "Controls", "Network"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -434,11 +398,9 @@ struct DeveloperConsoleView: View {
 
             TabView(selection: $selectedTab) {
                 conversationLogTab.tag(0)
-                contextTab.tag(1)
-                systemStatusTab.tag(2)
-                controlsTab.tag(3)
-                videoDebugTab.tag(4)
-                networkTab.tag(5)
+                systemStatusTab.tag(1)
+                controlsTab.tag(2)
+                networkTab.tag(3)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
         }
@@ -540,45 +502,12 @@ struct DeveloperConsoleView: View {
         }
     }
 
-    // MARK: - Tab 1: Context Panel
-
-    private var contextTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                sectionHeader("WATCH DATA")
-                dataRow("Heart Rate", value: model.heartRate.map { String(format: "%.0f BPM", $0) } ?? "--")
-                dataRow("Watch Reachable", value: model.isWatchReachable ? "YES" : "NO",
-                         color: model.isWatchReachable ? .green : .red)
-                dataRow("Watch Monitoring", value: model.isWatchMonitoring ? "ACTIVE" : "OFF",
-                         color: model.isWatchMonitoring ? .green : .yellow)
-                dataRow("Motion State", value: model.motionState)
-                dataRow("Step Cadence", value: String(format: "%.0f", model.stepCadence))
-
-                Divider().background(Color.white.opacity(0.1))
-
-                sectionHeader("GPS")
-                dataRow("Lat", value: String(format: "%.6f", model.latitude))
-                dataRow("Lng", value: String(format: "%.6f", model.longitude))
-                dataRow("Accuracy", value: String(format: "%.1f m", model.gpsAccuracy))
-                dataRow("Speed", value: String(format: "%.1f m/s", model.gpsSpeed))
-
-                Divider().background(Color.white.opacity(0.1))
-
-                sectionHeader("ENVIRONMENT")
-                dataRow("Noise", value: String(format: "%.0f dB", model.noiseDb))
-                dataRow("Heading", value: String(format: "%.0f\u{00B0}", model.heading))
-                dataRow("LOD", value: "\(model.currentLOD)", color: lodColor)
-                dataRow("Time Context", value: model.timeContext)
-            }
-            .padding(8)
-        }
-    }
-
-    // MARK: - Tab 2: System Status
+    // MARK: - Tab 1: System Status (merged with Context)
 
     private var systemStatusTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // 1. GESTURE STATES
                 sectionHeader("GESTURE STATES")
                 dataRow("Microphone", value: isMuted ? "MUTED" : "ACTIVE",
                          color: isMuted ? .red : .green)
@@ -590,6 +519,7 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
+                // 2. CONNECTION
                 sectionHeader("CONNECTION")
                 dataRow("WebSocket", value: model.isConnected ? "Connected" : "Disconnected",
                          color: model.isConnected ? .green : .red)
@@ -598,6 +528,7 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
+                // 3. SUB-AGENTS
                 sectionHeader("SUB-AGENTS")
                 capabilityRow("Vision", status: model.visionStatus)
                 capabilityRow("OCR", status: model.ocrStatus)
@@ -605,6 +536,50 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
+                // 4. CAMERA DEBUG (from Video tab)
+                sectionHeader("CAMERA DEBUG")
+                dataRow("Vision Boxes", value: "\(model.visionBoxes.count)", color: .green)
+                dataRow("OCR Boxes", value: "\(model.ocrBoxes.count)", color: .yellow)
+                dataRow("Face Boxes", value: "\(model.faceBoxes.count)", color: .cyan)
+                dataRow("Last Frame Ack", value: model.lastFrameAckId >= 0 ? "#\(model.lastFrameAckId)" : "--")
+                dataRow(
+                    "Queued Agents",
+                    value: model.lastFrameQueuedAgents.isEmpty ? "--" : model.lastFrameQueuedAgents.joined(separator: ", ")
+                )
+
+                Divider().background(Color.white.opacity(0.1))
+
+                // 5. WATCH DATA (from Context tab)
+                sectionHeader("WATCH DATA")
+                dataRow("Heart Rate", value: model.heartRate.map { String(format: "%.0f BPM", $0) } ?? "--")
+                dataRow("Watch Reachable", value: model.isWatchReachable ? "YES" : "NO",
+                         color: model.isWatchReachable ? .green : .red)
+                dataRow("Watch Monitoring", value: model.isWatchMonitoring ? "ACTIVE" : "OFF",
+                         color: model.isWatchMonitoring ? .green : .yellow)
+                dataRow("Motion State", value: model.motionState)
+                dataRow("Step Cadence", value: String(format: "%.0f", model.stepCadence))
+
+                Divider().background(Color.white.opacity(0.1))
+
+                // 6. GPS (from Context tab)
+                sectionHeader("GPS")
+                dataRow("Lat", value: String(format: "%.6f", model.latitude))
+                dataRow("Lng", value: String(format: "%.6f", model.longitude))
+                dataRow("Accuracy", value: String(format: "%.1f m", model.gpsAccuracy))
+                dataRow("Speed", value: String(format: "%.1f m/s", model.gpsSpeed))
+
+                Divider().background(Color.white.opacity(0.1))
+
+                // 7. ENVIRONMENT (from Context tab)
+                sectionHeader("ENVIRONMENT")
+                dataRow("Noise", value: String(format: "%.0f dB", model.noiseDb))
+                dataRow("Heading", value: String(format: "%.0f\u{00B0}", model.heading))
+                dataRow("LOD", value: "\(model.currentLOD)", color: lodColor)
+                dataRow("Time Context", value: model.timeContext)
+
+                Divider().background(Color.white.opacity(0.1))
+
+                // 8. MEMORY TOP 3
                 sectionHeader("MEMORY TOP 3")
                 if model.memoryTop3Detailed.isEmpty && model.memoryTop3.isEmpty {
                     Text("No memories loaded")
@@ -652,6 +627,7 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
+                // 9. LOD HISTORY
                 sectionHeader("LOD HISTORY")
                 ForEach(Array(model.lodHistory.suffix(10).reversed().enumerated()), id: \.offset) { _, entry in
                     HStack(spacing: 6) {
@@ -668,6 +644,7 @@ struct DeveloperConsoleView: View {
                     }
                 }
 
+                // 10. TRIGGERED RULES
                 if !model.triggeredRules.isEmpty {
                     Divider().background(Color.white.opacity(0.1))
                     sectionHeader("TRIGGERED RULES")
@@ -682,7 +659,7 @@ struct DeveloperConsoleView: View {
         }
     }
 
-    // MARK: - Tab 3: Debug Controls
+    // MARK: - Tab 2: Debug Controls
 
     private var controlsTab: some View {
         ScrollView {
@@ -720,6 +697,9 @@ struct DeveloperConsoleView: View {
                 sectionHeader("FACE LIBRARY")
                 controlButton("Clear Face Library", color: .red) {
                     webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
+                }
+                controlButton("Reload Face Library", color: .blue) {
+                    webSocketManager.sendText("{\"type\":\"reload_face_library\"}")
                 }
 
                 Divider().background(Color.white.opacity(0.1))
@@ -763,65 +743,7 @@ struct DeveloperConsoleView: View {
         }
     }
 
-    // MARK: - Tab 4: Video Debug
-
-    private var videoDebugTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("LIVE PREVIEW + OVERLAYS")
-
-            if let session = cameraManager.previewSession {
-                ZStack(alignment: .topLeading) {
-                    CameraPreviewView(session: session)
-                        .clipShape(.rect(cornerRadius: 10))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                        )
-
-                    geometryOverlay(boxes: model.visionBoxes, color: .green)
-                    geometryOverlay(boxes: model.ocrBoxes, color: .yellow)
-                    geometryOverlay(boxes: model.faceBoxes, color: .cyan)
-                }
-                .frame(maxWidth: .infinity, maxHeight: 420)
-            } else {
-                VStack(spacing: 12) {
-                    Text("Camera preview unavailable")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
-                    controlButton("Start Camera", color: .green) {
-                        cameraManager.startCapture()
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: 220)
-                .background(Color.white.opacity(0.04))
-                .clipShape(.rect(cornerRadius: 10))
-            }
-
-            Divider().background(Color.white.opacity(0.1))
-
-            dataRow("Vision Boxes", value: "\(model.visionBoxes.count)", color: .green)
-            dataRow("OCR Boxes", value: "\(model.ocrBoxes.count)", color: .yellow)
-            dataRow("Face Boxes", value: "\(model.faceBoxes.count)", color: .cyan)
-            dataRow(
-                "Camera Running",
-                value: model.isCameraRunning ? "YES" : "NO",
-                color: model.isCameraRunning ? .green : .red
-            )
-            dataRow(
-                "Preview Session",
-                value: previewSessionStatus,
-                color: previewSessionColor
-            )
-            dataRow("Last Frame Ack", value: model.lastFrameAckId >= 0 ? "#\(model.lastFrameAckId)" : "--")
-            dataRow(
-                "Queued Agents",
-                value: model.lastFrameQueuedAgents.isEmpty ? "--" : model.lastFrameQueuedAgents.joined(separator: ", ")
-            )
-        }
-        .padding(8)
-    }
-
-    // MARK: - Tab 5: Network Debug
+    // MARK: - Tab 3: Network Debug
 
     private var networkTab: some View {
         VStack(spacing: 8) {
@@ -910,38 +832,6 @@ struct DeveloperConsoleView: View {
         }
     }
 
-    private func geometryOverlay(boxes: [DeveloperConsoleModel.DebugBoundingBox], color: Color) -> some View {
-        GeometryReader { geometry in
-            ForEach(Array(boxes.enumerated()), id: \.element.id) { _, box in
-                let rect = box.normalizedRect
-                let x = rect.minX * geometry.size.width
-                let y = rect.minY * geometry.size.height
-                let width = rect.width * geometry.size.width
-                let height = rect.height * geometry.size.height
-                let labelText = box.confidence > 0
-                    ? "\(box.label) \(String(format: "%.2f", box.confidence))"
-                    : box.label
-
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(color, lineWidth: 2)
-                        .frame(width: max(width, 2), height: max(height, 2))
-
-                    Text(labelText)
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(color.opacity(0.9))
-                        .clipShape(.rect(cornerRadius: 3))
-                        .offset(x: 0, y: -14)
-                }
-                .position(x: x + (width / 2), y: y + (height / 2))
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
     private func lodButton(_ lod: Int) -> some View {
         Button(action: {
             webSocketManager.sendText(UpstreamMessage.gesture(type: "force_lod_\(lod)").toJSON())
@@ -975,22 +865,6 @@ struct DeveloperConsoleView: View {
     // MARK: - Helpers
 
     private var lodColor: Color { lodColorFor(model.currentLOD) }
-
-    private var previewSessionStatus: String {
-        guard let session = cameraManager.previewSession else { return "nil" }
-        return session.isRunning ? "running" : "stopped"
-    }
-
-    private var previewSessionColor: Color {
-        switch previewSessionStatus {
-        case "running":
-            return .green
-        case "stopped":
-            return .yellow
-        default:
-            return .red
-        }
-    }
 
     private func lodColorFor(_ lod: Int) -> Color {
         switch lod {

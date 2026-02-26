@@ -10,6 +10,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 import Combine
 import os
 
@@ -108,139 +109,38 @@ final class DebugOverlayModel: ObservableObject {
     }
 }
 
-// MARK: - Debug Overlay View
+// MARK: - Camera Preview (UIViewRepresentable)
 
-struct DebugOverlay: View {
-    @ObservedObject var model: DebugOverlayModel
+struct CameraPreviewView: UIViewRepresentable {
+    let session: AVCaptureSession
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // LOD header
-            HStack(spacing: 8) {
-                lodBadge
-                Text(model.lodReason.isEmpty ? "Initializing..." : model.lodReason)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(2)
-            }
+    final class PreviewContainerView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 
-            Divider().background(Color.white.opacity(0.2))
-
-            // Telemetry row
-            HStack(spacing: 12) {
-                label("Motion", value: model.motionState)
-                label("Noise", value: String(format: "%.0fdB", model.noiseDb))
-                if let hr = model.heartRate {
-                    label("HR", value: String(format: "%.0f", hr))
-                }
-                label("Cadence", value: String(format: "%.0f", model.stepCadence))
-            }
-
-            // GPS row
-            HStack(spacing: 12) {
-                label("GPS", value: String(format: "%.4f, %.4f", model.latitude, model.longitude))
-            }
-
-            // Sub-agent status row
-            HStack(spacing: 12) {
-                capabilityDot("Vision", status: model.visionStatus)
-                capabilityDot("OCR", status: model.ocrStatus)
-                capabilityDot("Face", status: model.faceStatus)
-                Spacer()
-                label("Latency", value: model.latencyText)
-            }
-
-            // Connection + FPS
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(model.isSafeMode ? Color.red : (model.isConnected ? Color.green : Color.yellow))
-                    .frame(width: 6, height: 6)
-                Text(model.isSafeMode ? "SAFE MODE" : (model.isConnected ? "Connected" : "Disconnected"))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
-                Spacer()
-                label("FPS", value: String(format: "%.1f", model.frameRate))
-            }
-
-            // Activity debug row
-            HStack(spacing: 12) {
-                label("Activity", value: model.activityState)
-                label("Event", value: model.activityEvent)
-                label("Queue", value: model.activityQueueStatus)
-            }
-
-            // Memory Top 3 (SL-77)
-            if !model.memoryTop3.isEmpty {
-                Divider().background(Color.white.opacity(0.2))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Memory Top 3")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
-                    ForEach(model.memoryTop3.prefix(3), id: \.self) { memory in
-                        Text("• \(memory)")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.6))
-                            .lineLimit(2)
-                    }
-                }
-            }
-
-            // Rules
-            if !model.triggeredRules.isEmpty {
-                Text(model.triggeredRules.joined(separator: " | "))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.5))
-                    .lineLimit(1)
-            }
+        var previewLayer: AVCaptureVideoPreviewLayer {
+            // Safe by construction: layerClass is AVCaptureVideoPreviewLayer.
+            layer as! AVCaptureVideoPreviewLayer
         }
-        .padding(10)
-        .background(Color.black.opacity(0.75))
-        .cornerRadius(8)
-        .padding(.horizontal, 12)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
 
-    // MARK: - Subviews
-
-    private var lodBadge: some View {
-        Text("LOD \(model.currentLOD)")
-            .font(.system(size: 14, weight: .bold, design: .monospaced))
-            .foregroundColor(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(lodColor)
-            .cornerRadius(4)
-    }
-
-    private var lodColor: Color {
-        switch model.currentLOD {
-        case 1: return .red
-        case 2: return .orange
-        case 3: return .green
-        default: return .gray
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            previewLayer.frame = bounds
         }
     }
 
-    private func label(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.white.opacity(0.4))
-            Text(value)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.8))
-        }
+    func makeUIView(context: Context) -> UIView {
+        let view = PreviewContainerView(frame: .zero)
+        view.backgroundColor = .black
+        view.previewLayer.videoGravity = .resizeAspectFill
+        view.previewLayer.session = session
+        return view
     }
 
-    private func capabilityDot(_ name: String, status: String) -> some View {
-        HStack(spacing: 3) {
-            Circle()
-                .fill(status == "ready" ? Color.green : Color.red)
-                .frame(width: 6, height: 6)
-            Text(name)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard let previewView = uiView as? PreviewContainerView else { return }
+        if previewView.previewLayer.session !== session {
+            previewView.previewLayer.session = session
         }
+        previewView.previewLayer.frame = previewView.bounds
     }
 }
