@@ -43,7 +43,7 @@ class LODDecisionLog:
     heart_rate: float | None = None
     panic: bool = False
     space_transition: bool = False
-    verbosity_preference: str = "standard"
+    verbosity_preference: str = "concise"
     om_level: str = "intermediate"
     travel_frequency: str = "weekly"
     user_override: str | None = None  # "detail" | "stop" | None
@@ -168,7 +168,7 @@ def decide_lod(
     user_said_stop = bool(getattr(session, "user_said_stop", False))
     previous_lod = int(getattr(session, "current_lod", 2) or 2)
 
-    verbosity_preference_raw = getattr(profile, "verbosity_preference", "standard") or "standard"
+    verbosity_preference_raw = getattr(profile, "verbosity_preference", "concise") or "concise"
     verbosity_preference = str(verbosity_preference_raw).strip().lower()
     om_level = getattr(profile, "om_level", "intermediate") or "intermediate"
     travel_frequency = getattr(profile, "travel_frequency", "weekly") or "weekly"
@@ -244,12 +244,7 @@ def decide_lod(
         base_lod = max(base_lod, 2)
 
     # ── Rule 5: User verbosity preference ─────────────────────────────
-    if verbosity_preference == "minimal":
-        prev = base_lod
-        base_lod = max(1, base_lod - 1)
-        if base_lod != prev:
-            log.triggered_rules.append("Rule5:minimal_pref→-1")
-    elif verbosity_preference == "concise":
+    if verbosity_preference == "concise":
         if base_lod >= 3:
             base_lod -= 1
             log.triggered_rules.append("Rule5:concise_pref→-1")

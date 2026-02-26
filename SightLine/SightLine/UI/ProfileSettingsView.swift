@@ -17,6 +17,7 @@ private let logger = Logger(subsystem: "com.sightline.app", category: "ProfileSe
 struct ProfileSettingsView: View {
     @StateObject private var profileModel = UserProfileModel()
     @StateObject private var faceModel = FaceRegistrationModel()
+    @ObservedObject var webSocketManager: WebSocketManager
 
     let onSwitchUser: (String) -> Void
 
@@ -239,6 +240,8 @@ struct ProfileSettingsView: View {
                 Task {
                     await profileModel.saveProfile()
                     if profileModel.saveSuccess {
+                        webSocketManager.sendText("{\"type\":\"profile_updated\"}")
+                        logger.info("Sent profile_updated notification via WebSocket")
                         showSaveBanner = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                             showSaveBanner = false

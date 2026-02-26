@@ -55,133 +55,11 @@ struct MainView: View {
                 .ignoresSafeArea()
                 .animation(.easeInOut(duration: 0.3), value: currentLOD)
 
-            VStack {
-                Spacer()
+            mainContent
 
-                // Breathing indicator - pulses when active
-                ZStack {
-                    Circle()
-                        .fill(isActive ? Color.green.opacity(0.6) : Color.gray.opacity(0.3))
-                        .frame(width: 80, height: 80)
-                        .scaleEffect(isActive ? 1.1 : 0.9)
-                        .animation(
-                            .easeInOut(duration: 2).repeatForever(autoreverses: true),
-                            value: isActive
-                        )
-                    if isCameraActive {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
-                }
-                .accessibilityHidden(true)
-
-                Spacer()
-
-                // Connection status
-                Text(connectionStatus)
-                    .font(.caption)
-                    .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
-                    .padding(.bottom, 4)
-                    .accessibilityLabel(connectionStatus)
-
-                // Gesture state badges
-                statusStrip
-                    .padding(.bottom, 8)
-
-                // Latest transcript from agent or user
-                if !transcript.isEmpty {
-                    Text(transcript)
-                        .font(.body)
-                        .foregroundColor(.white.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 32)
-                        .lineLimit(3)
-                        .accessibilityLabel("Last message: \(transcript)")
-                }
-
-                // Minimal settings entry point (bottom-right)
-                HStack {
-                    Spacer()
-                    Button(action: { showProfileSettings = true }) {
-                        Image(systemName: "person.crop.circle")
-                            .font(.system(size: 22))
-                            .foregroundColor(.white.opacity(0.5))
-                            .padding(12)
-                    }
-                    .accessibilityLabel("Open settings")
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 24)
-            }
-
-            // Camera preview with detection overlays — visible when camera is active
-            if isCameraActive, let session = cameraManager.previewSession {
-                VStack {
-                    ZStack(alignment: .topLeading) {
-                        CameraPreviewView(session: session)
-                            .frame(height: 200)
-                            .clipShape(.rect(cornerRadius: 12))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                            )
-
-                        #if DEBUG
-                        boundingBoxOverlay(boxes: devConsoleModel.visionBoxes, color: .green)
-                            .frame(height: 200)
-                        boundingBoxOverlay(boxes: devConsoleModel.ocrBoxes, color: .yellow)
-                            .frame(height: 200)
-                        boundingBoxOverlay(boxes: devConsoleModel.faceBoxes, color: .cyan)
-                            .frame(height: 200)
-                        #endif
-                    }
-                    .padding(.horizontal, 12)
-                    Spacer()
-                }
-                .padding(.top, 60)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .transition(.opacity)
-                .animation(.easeInOut(duration: 0.3), value: isCameraActive)
-            }
-
-            // Toast for transient gesture feedback
-            if let toast = toastMessage {
-                VStack {
-                    Text(toast)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.7))
-                        .cornerRadius(8)
-                        .transition(.opacity)
-                    Spacer()
-                }
-                .padding(.top, 100)
-                .allowsHitTesting(false)
-                .animation(.easeInOut(duration: 0.2), value: toastMessage)
-            }
-
-            // Developer Console gear icon (DEBUG builds only)
-            #if DEBUG
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: { showDevConsole = true }) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.3))
-                            .padding(10)
-                    }
-                    .accessibilityLabel("Developer Console")
-                }
-                Spacer()
-            }
-            .padding(.top, 50)
-            #endif
+            // Floating overlays (toast + DEV button)
+            toastOverlay
+            devConsoleButton
         }
         // MARK: - Gesture Recognizers
         // Triple tap: repeat last agent sentence
@@ -236,17 +114,180 @@ struct MainView: View {
                 model: devConsoleModel,
                 webSocketManager: webSocketManager,
                 cameraManager: cameraManager,
-                telemetryAggregator: telemetryAggregator,
                 isMuted: $isMuted,
                 isEmergencyPaused: $isEmergencyPaused
             )
         }
         .sheet(isPresented: $showProfileSettings) {
-            ProfileSettingsView(onSwitchUser: { userId in
+            ProfileSettingsView(webSocketManager: webSocketManager, onSwitchUser: { userId in
                 switchToUser(userId)
             })
         }
         .accessibilityLabel(buildAccessibilityDescription())
+    }
+
+    // MARK: - Main Content
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            // Camera preview — integrated in content flow at natural aspect ratio
+            if isCameraActive, let session = cameraManager.previewSession {
+                cameraSection(session: session)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            Spacer()
+
+            // Breathing indicator
+            breathingIndicator
+                .padding(.bottom, 20)
+
+            // Bottom info cluster
+            VStack(spacing: 8) {
+                Text(connectionStatus)
+                    .font(.caption)
+                    .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
+                    .accessibilityLabel(connectionStatus)
+
+                statusStrip
+
+                if !transcript.isEmpty {
+                    Text(transcript)
+                        .font(.body)
+                        .foregroundColor(.white.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .lineLimit(3)
+                        .accessibilityLabel("Last message: \(transcript)")
+                }
+            }
+            .padding(.bottom, 16)
+
+            // Bottom toolbar: profile button
+            HStack {
+                Spacer()
+                Button(action: { showProfileSettings = true }) {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 22))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(12)
+                }
+                .accessibilityLabel("Open settings")
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
+        }
+        .animation(.easeInOut(duration: 0.3), value: isCameraActive)
+    }
+
+    // MARK: - Camera Section
+
+    private func cameraSection(session: AVCaptureSession) -> some View {
+        CameraPreviewView(session: session)
+            .aspectRatio(3.0 / 4.0, contentMode: .fit)
+            .clipShape(.rect(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+            )
+            #if DEBUG
+            .overlay(
+                ZStack {
+                    boundingBoxOverlay(boxes: devConsoleModel.visionBoxes, color: .green)
+                    boundingBoxOverlay(boxes: devConsoleModel.ocrBoxes, color: .yellow)
+                    boundingBoxOverlay(boxes: devConsoleModel.faceBoxes, color: .cyan)
+                }
+                .clipShape(.rect(cornerRadius: 16))
+            )
+            #endif
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    // MARK: - Breathing Indicator
+
+    private var breathingIndicator: some View {
+        ZStack {
+            Circle()
+                .fill(isActive ? Color.green.opacity(0.6) : Color.gray.opacity(0.3))
+                .frame(
+                    width: isCameraActive ? 48 : 80,
+                    height: isCameraActive ? 48 : 80
+                )
+                .scaleEffect(isActive ? 1.1 : 0.9)
+                .animation(
+                    .easeInOut(duration: 2).repeatForever(autoreverses: true),
+                    value: isActive
+                )
+
+            if isCameraActive {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: isCameraActive ? 14 : 18))
+                    .foregroundColor(.white.opacity(0.85))
+            }
+        }
+        .accessibilityHidden(true)
+        .animation(.easeInOut(duration: 0.3), value: isCameraActive)
+    }
+
+    // MARK: - Toast Overlay
+
+    private var toastOverlay: some View {
+        Group {
+            if let toast = toastMessage {
+                VStack {
+                    Spacer()
+                    Text(toast)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(.capsule)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                .padding(.bottom, 120)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.25), value: toastMessage)
+            }
+        }
+    }
+
+    // MARK: - Dev Console Button
+
+    private var devConsoleButton: some View {
+        Group {
+            #if DEBUG
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: { showDevConsole = true }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "ant.fill")
+                                .font(.system(size: 11))
+                            Text("DEV")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(.green)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(.capsule)
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.green.opacity(0.3), lineWidth: 0.5)
+                        )
+                    }
+                    .accessibilityLabel("Developer Console")
+                }
+                .padding(.trailing, 16)
+                Spacer()
+            }
+            .padding(.top, 54)
+            #endif
+        }
     }
 
     // MARK: - Gesture Handlers

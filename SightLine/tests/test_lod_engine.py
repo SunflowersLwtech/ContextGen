@@ -72,14 +72,14 @@ def test_walking_slow_is_lod2(default_session, default_profile):
     assert lod == 2
 
 
-def test_stationary_is_lod3(stationary_ephemeral, default_session, default_profile):
+def test_stationary_is_lod2_with_concise(stationary_ephemeral, default_session, default_profile):
     lod, _ = decide_lod(stationary_ephemeral, default_session, default_profile)
-    assert lod == 3
+    assert lod == 2  # base LOD 3, concise -1 → LOD 2
 
 
-def test_vehicle_is_lod3(vehicle_ephemeral, default_session, default_profile):
+def test_vehicle_is_lod2_with_concise(vehicle_ephemeral, default_session, default_profile):
     lod, _ = decide_lod(vehicle_ephemeral, default_session, default_profile)
-    assert lod == 3
+    assert lod == 2  # base LOD 3, concise -1 → LOD 2
 
 
 def test_cycling_is_lod1(default_session, default_profile):
@@ -103,7 +103,7 @@ def test_loud_noise_caps_lod1(default_session, default_profile):
 def test_moderate_noise_no_effect(default_session, default_profile):
     ctx = EphemeralContext(motion_state="stationary", ambient_noise_db=65)
     lod, _ = decide_lod(ctx, default_session, default_profile)
-    assert lod == 3
+    assert lod == 2  # base LOD 3, concise -1 → LOD 2; noise 65dB has no effect
 
 
 # =====================================================================
@@ -124,8 +124,8 @@ def test_space_transition_boosts_to_lod2(default_profile):
 # =====================================================================
 
 
-def test_minimal_pref_decreases_lod(stationary_ephemeral, default_session, minimal_profile):
-    lod, log = decide_lod(stationary_ephemeral, default_session, minimal_profile)
+def test_concise_pref_decreases_lod_from_3(stationary_ephemeral, default_session, concise_profile):
+    lod, log = decide_lod(stationary_ephemeral, default_session, concise_profile)
     assert lod == 2  # 3 - 1 = 2
 
 
@@ -179,12 +179,12 @@ def test_concise_fast_walk_stays_lod1(default_session, concise_profile):
     assert lod == 1
 
 
-def test_minimal_still_reduces_unconditionally(default_session, minimal_profile):
-    """Minimal should still reduce unconditionally (unlike concise)."""
+def test_concise_does_not_reduce_below_3(default_session, concise_profile):
+    """Concise only reduces from LOD >= 3, should not reduce LOD 2."""
     ctx = EphemeralContext(motion_state="walking", step_cadence=50)
-    lod, log = decide_lod(ctx, default_session, minimal_profile)
-    assert lod == 1  # base LOD 2 - 1 = 1
-    assert any("minimal_pref" in r for r in log.triggered_rules)
+    lod, log = decide_lod(ctx, default_session, concise_profile)
+    assert lod == 2  # base LOD 2, concise doesn't reduce
+    assert not any("concise_pref" in r for r in log.triggered_rules)
 
 
 # =====================================================================
@@ -194,7 +194,7 @@ def test_minimal_still_reduces_unconditionally(default_session, minimal_profile)
 
 def test_advanced_daily_decreases_lod(stationary_ephemeral, default_session, advanced_daily_profile):
     lod, _ = decide_lod(stationary_ephemeral, default_session, advanced_daily_profile)
-    assert lod == 2  # 3 - 1 = 2
+    assert lod == 1  # base LOD 3, concise -1 → 2, advanced_daily -1 → 1
 
 
 # =====================================================================
@@ -282,8 +282,8 @@ def test_gesture_takes_priority_over_voice_detail(default_profile):
     ctx = EphemeralContext(motion_state="stationary", user_gesture="lod_down")
     session = SessionContext(user_requested_detail=True)
     lod, log = decide_lod(ctx, session, default_profile)
-    # Stationary base is LOD 3, gesture lod_down → LOD 2 (not overridden to LOD 3)
-    assert lod == 2
+    # Stationary base LOD 3, concise → 2, gesture lod_down → 1 (not overridden)
+    assert lod == 1
     assert any("lod_down" in r for r in log.triggered_rules)
     assert not any("user_requested_detail" in r for r in log.triggered_rules)
 
@@ -308,7 +308,7 @@ def test_unknown_gesture_ignored(default_session, default_profile):
     """Unknown gesture strings should be silently ignored."""
     ctx = EphemeralContext(motion_state="stationary", user_gesture="triple_tap")
     lod, log = decide_lod(ctx, default_session, default_profile)
-    assert lod == 3  # stationary default, no gesture effect
+    assert lod == 2  # stationary LOD 3, concise -1 → 2, no gesture effect
     assert not any("Gesture" in r for r in log.triggered_rules)
 
 

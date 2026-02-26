@@ -26,6 +26,9 @@ class AudioPlaybackManager: ObservableObject {
     private var isDrainActive = false
     private var scheduledBufferCount: Int = 0
     private var jitterKickoffWorkItem: DispatchWorkItem?
+    /// Set when drain stops due to chunk starvation (not barge-in).
+    /// Allows faster restart with fewer buffered chunks.
+    private var wasStarved = false
 
     func setup() {
         // Make setup idempotent: permission dialogs / route changes can invalidate
@@ -63,6 +66,7 @@ class AudioPlaybackManager: ObservableObject {
                 self.pendingChunks.removeAll()
                 self.isDrainActive = false
                 self.scheduledBufferCount = 0
+                self.wasStarved = false
                 self.jitterKickoffWorkItem?.cancel()
                 self.jitterKickoffWorkItem = nil
             }
@@ -81,11 +85,23 @@ class AudioPlaybackManager: ObservableObject {
         schedulingQueue.async { [weak self] in
             guard let self = self else { return }
             guard self.playerNode === player else { return }
+
+            // Overflow guard: drop oldest chunks to prevent memory spike
+            if self.pendingChunks.count >= SightLineConfig.audioMaxPendingChunks {
+                let drop = self.pendingChunks.count - SightLineConfig.audioMaxPendingChunks / 2
+                Self.logger.warning("Audio buffer overflow (\(self.pendingChunks.count) chunks), dropping \(drop) oldest")
+                self.pendingChunks.removeFirst(drop)
+            }
+
             self.pendingChunks.append(data)
 
             if self.isDrainActive {
                 // Feed the sliding window immediately — avoids underrun recovery delay
                 self.drainPendingChunks(player: player, format: format)
+            } else if self.wasStarved {
+                // Previous drain starved — restart immediately with whatever we have
+                self.wasStarved = false
+                self.startDrain(player: player, format: format)
             } else if self.pendingChunks.count >= SightLineConfig.audioJitterBufferChunks {
                 self.startDrain(player: player, format: format)
             } else {
@@ -96,17 +112,23 @@ class AudioPlaybackManager: ObservableObject {
 
     /// Stop playback immediately for barge-in support
     func stopImmediately() {
+        // Capture node reference before async — avoids race with teardown
+        guard let player = playerNode else { return }
+        player.stop()
+        player.reset()
+
         schedulingQueue.async { [weak self] in
             guard let self = self else { return }
             self.pendingChunks.removeAll(keepingCapacity: true)
             self.isDrainActive = false
             self.scheduledBufferCount = 0
+            self.wasStarved = false
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
-        playerNode?.stop()
-        playerNode?.reset()
-        playerNode?.play()  // Re-ready for next audio
+
+        // Re-ready for next utterance after state is cleared
+        player.play()
         DispatchQueue.main.async { self.isPlaying = false }
     }
 
@@ -116,6 +138,7 @@ class AudioPlaybackManager: ObservableObject {
             self.pendingChunks.removeAll()
             self.isDrainActive = false
             self.scheduledBufferCount = 0
+            self.wasStarved = false
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
@@ -168,9 +191,11 @@ class AudioPlaybackManager: ObservableObject {
             }
         }
 
-        // All buffers drained and nothing left to play
+        // All buffers drained and nothing left to play — mark starved so next
+        // incoming chunk restarts drain immediately without waiting for full jitter buffer.
         if scheduledBufferCount == 0 && pendingChunks.isEmpty {
             isDrainActive = false
+            wasStarved = true
             DispatchQueue.main.async { self.isPlaying = false }
         }
     }

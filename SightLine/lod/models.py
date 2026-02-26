@@ -6,6 +6,7 @@ ephemeral context, session context, and user profile.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -107,13 +108,21 @@ class UserProfile:
     has_guide_dog: bool = False
     has_white_cane: bool = True
     tts_speed: float = 1.5  # 1.0 ~ 3.0
-    verbosity_preference: str = "standard"  # minimal | standard | detailed
+    verbosity_preference: str = "concise"  # concise | detailed
     language: str = "en-US"
     description_priority: str = "spatial"  # spatial | object | text
     color_description: bool = True
     om_level: str = "intermediate"  # beginner | intermediate | advanced
     travel_frequency: str = "weekly"  # daily | weekly | rarely
     preferred_name: str = ""
+
+    def update_from_dict(self, doc: dict) -> None:
+        """Update fields in-place from a Firestore-style dict."""
+        for f in dataclasses.fields(self):
+            if f.name == "user_id":
+                continue
+            if f.name in doc:
+                setattr(self, f.name, doc[f.name])
 
     @classmethod
     def default(cls) -> UserProfile:
@@ -131,7 +140,7 @@ class UserProfile:
             has_guide_dog=doc.get("has_guide_dog", False),
             has_white_cane=doc.get("has_white_cane", True),
             tts_speed=doc.get("tts_speed", 1.5),
-            verbosity_preference=doc.get("verbosity_preference", "standard"),
+            verbosity_preference=doc.get("verbosity_preference", "concise"),
             language=doc.get("language", "en-US"),
             description_priority=doc.get("description_priority", "spatial"),
             color_description=doc.get("color_description", True),

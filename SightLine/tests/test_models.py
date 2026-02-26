@@ -29,7 +29,7 @@ def test_user_profile_default_factory():
     p = UserProfile.default()
     assert p.vision_status == "totally_blind"
     assert p.blindness_onset == "congenital"
-    assert p.verbosity_preference == "standard"
+    assert p.verbosity_preference == "concise"
     assert p.om_level == "intermediate"
     assert p.travel_frequency == "weekly"
     assert p.tts_speed == 1.5

@@ -307,6 +307,10 @@ class SessionManager:
         self._user_profiles[user_id] = profile
         return profile
 
+    def invalidate_user_profile(self, user_id: str) -> None:
+        """Remove cached profile so next load_user_profile fetches fresh data."""
+        self._user_profiles.pop(user_id, None)
+
     def get_user_profile(self, user_id: str) -> UserProfile:
         """Get cached UserProfile (sync). Use load_user_profile for initial load."""
         if user_id not in self._user_profiles:

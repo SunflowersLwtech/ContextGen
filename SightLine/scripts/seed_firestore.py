@@ -6,8 +6,9 @@ Usage:
     python scripts/seed_firestore.py
 
 Creates:
-    - user_profiles/demo_user_001  — default demo user profile
-    - user_profiles/demo_user_002  — congenital-blind variant (for testing colour-free descriptions)
+    - user_profiles/demo_user_001  — congenital blind, expert user (Sarah)
+    - user_profiles/demo_user_002  — acquired low vision, beginner (Marcus)
+    - user_profiles/demo_user_004  — acquired low vision, Chinese (小明)
 
 Requires:
     - GOOGLE_CLOUD_PROJECT env var or gcloud default project
@@ -42,17 +43,18 @@ DEMO_USERS = [
         "doc_id": "demo_user_001",
         "data": {
             "vision_status": "totally_blind",
-            "blindness_onset": "acquired",
-            "onset_age": 25,
-            "has_guide_dog": False,
-            "has_white_cane": True,
-            "tts_speed": 1.5,
-            "verbosity_preference": "standard",
+            "blindness_onset": "congenital",
+            "onset_age": None,
+            "has_guide_dog": True,
+            "has_white_cane": False,
+            "tts_speed": 2.0,
+            "verbosity_preference": "concise",
             "language": "en-US",
             "description_priority": "spatial",
-            "color_description": True,
-            "om_level": "intermediate",
-            "travel_frequency": "weekly",
+            "color_description": False,  # Congenital blind — no colour descriptions
+            "om_level": "advanced",
+            "travel_frequency": "daily",
+            "preferred_name": "Sarah",
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
         },
@@ -60,30 +62,11 @@ DEMO_USERS = [
     {
         "doc_id": "demo_user_002",
         "data": {
-            "vision_status": "totally_blind",
-            "blindness_onset": "congenital",
-            "onset_age": None,
-            "has_guide_dog": True,
-            "has_white_cane": False,
-            "tts_speed": 2.0,
-            "verbosity_preference": "minimal",
-            "language": "en-US",
-            "description_priority": "spatial",
-            "color_description": False,  # Congenital blind — no colour descriptions
-            "om_level": "advanced",
-            "travel_frequency": "daily",
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "updated_at": firestore.SERVER_TIMESTAMP,
-        },
-    },
-    {
-        "doc_id": "demo_user_003",
-        "data": {
             "vision_status": "low_vision",
             "blindness_onset": "acquired",
             "onset_age": 40,
             "has_guide_dog": False,
-            "has_white_cane": False,
+            "has_white_cane": True,
             "tts_speed": 1.2,
             "verbosity_preference": "detailed",
             "language": "en-US",
@@ -91,6 +74,7 @@ DEMO_USERS = [
             "color_description": True,
             "om_level": "beginner",
             "travel_frequency": "rarely",
+            "preferred_name": "Marcus",
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
         },
@@ -104,12 +88,13 @@ DEMO_USERS = [
             "has_guide_dog": False,
             "has_white_cane": True,
             "tts_speed": 1.3,
-            "verbosity_preference": "standard",
+            "verbosity_preference": "concise",
             "language": "zh-CN",
             "description_priority": "spatial",
             "color_description": True,
             "om_level": "intermediate",
             "travel_frequency": "weekly",
+            "preferred_name": "小明",
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
         },

@@ -6,9 +6,8 @@ Usage:
     python scripts/seed_user_profile.py <user_id> [--preset <preset_name>]
 
 Examples:
-    python scripts/seed_user_profile.py demo_blind_001
-    python scripts/seed_user_profile.py demo_blind_001 --preset congenital_blind
-    python scripts/seed_user_profile.py demo_lv_001 --preset low_vision_acquired
+    python scripts/seed_user_profile.py demo_user_001 --preset congenital_blind
+    python scripts/seed_user_profile.py demo_user_002 --preset low_vision_acquired
     python scripts/seed_user_profile.py my_user --preset detailed_low_vision
 
 Presets:
@@ -126,7 +125,7 @@ def main() -> None:
     )
     parser.add_argument(
         "user_id",
-        help="Firestore document ID for the user (e.g. demo_blind_001)",
+        help="Firestore document ID for the user (e.g. demo_user_001)",
     )
     parser.add_argument(
         "--preset",

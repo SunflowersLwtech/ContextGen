@@ -70,7 +70,7 @@ class TestSessionManager:
         profile = mgr.get_user_profile("test_user")
         assert profile.user_id == "test_user"
         assert profile.vision_status == "totally_blind"
-        assert profile.verbosity_preference == "standard"
+        assert profile.verbosity_preference == "concise"
 
     def test_ephemeral_context_creation(self):
         from live_api.session_manager import SessionManager

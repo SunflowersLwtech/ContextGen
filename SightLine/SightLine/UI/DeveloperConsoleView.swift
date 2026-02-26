@@ -381,7 +381,6 @@ struct DeveloperConsoleView: View {
     @ObservedObject var model: DeveloperConsoleModel
     @ObservedObject var webSocketManager: WebSocketManager
     @ObservedObject var cameraManager: CameraManager
-    @ObservedObject var telemetryAggregator: TelemetryAggregator
     @Binding var isMuted: Bool
     @Binding var isEmergencyPaused: Bool
 
@@ -672,33 +671,12 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
-                sectionHeader("CAMERA")
-                controlButton(
-                    model.isCameraRunning ? "Stop Camera" : "Start Camera",
-                    color: model.isCameraRunning ? .red : .green
-                ) {
-                    if model.isCameraRunning {
-                        cameraManager.stopCapture()
-                    } else {
-                        cameraManager.startCapture()
-                    }
-                }
-
-                Divider().background(Color.white.opacity(0.1))
-
-                sectionHeader("TELEMETRY")
-                controlButton("Send Connectivity Telemetry", color: .blue) {
-                    telemetryAggregator.sendGesture("dev_console_test")
-                }
-
-                Divider().background(Color.white.opacity(0.1))
-
                 sectionHeader("FACE LIBRARY")
-                controlButton("Clear Face Library", color: .red) {
-                    webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
-                }
                 controlButton("Reload Face Library", color: .blue) {
                     webSocketManager.sendText("{\"type\":\"reload_face_library\"}")
+                }
+                controlButton("Clear Face Library", color: .red) {
+                    webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
                 }
 
                 Divider().background(Color.white.opacity(0.1))
@@ -721,7 +699,7 @@ struct DeveloperConsoleView: View {
 
                 Divider().background(Color.white.opacity(0.1))
 
-                sectionHeader("SESSION")
+                sectionHeader("DATA")
                 controlButton("Copy Session Info", color: .cyan) {
                     let info = """
                     Session: \(SightLineConfig.defaultSessionId)
@@ -733,9 +711,11 @@ struct DeveloperConsoleView: View {
                     """
                     UIPasteboard.general.string = info
                 }
-
                 controlButton("Clear Transcript Log", color: .yellow) {
                     model.transcripts.removeAll()
+                }
+                controlButton("Clear Network Log", color: .yellow) {
+                    model.clearNetworkEvents()
                 }
             }
             .padding(8)

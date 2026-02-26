@@ -683,7 +683,8 @@ async def api_save_profile(user_id: str, request: Request) -> JSONResponse:
         filtered["updated_at"] = _fs.SERVER_TIMESTAMP
         # Merge so we don't overwrite fields not included in this request
         doc_ref.set(filtered, merge=True)
-        logger.info("REST profile save for user %s: %s", user_id, list(filtered.keys()))
+        session_manager.invalidate_user_profile(user_id)
+        logger.info("REST profile save for user %s: %s (cache invalidated)", user_id, list(filtered.keys()))
         return JSONResponse({"status": "saved", "user_id": user_id, "fields": list(filtered.keys())})
     except Exception as e:
         logger.exception("Save profile failed for %s", user_id)
@@ -2053,6 +2054,46 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         await _safe_send_json({
                             "type": "error",
                             "error": "Face recognition not available",
+                        })
+
+                elif message.get("type") == "profile_updated":
+                    logger.info("profile_updated received for user=%s", user_id)
+                    try:
+                        # 1. Invalidate cache and reload from Firestore
+                        session_manager.invalidate_user_profile(user_id)
+                        fresh_profile = await session_manager.load_user_profile(user_id)
+
+                        # 2. Update the local variable in-place so all closures see new data
+                        user_profile.update_from_dict({
+                            f.name: getattr(fresh_profile, f.name)
+                            for f in __import__("dataclasses").fields(fresh_profile)
+                            if f.name != "user_id"
+                        })
+
+                        # 3. Inject updated persona context into Gemini session
+                        from lod.prompt_builder import _build_persona_block
+                        persona_block = _build_persona_block(user_profile)
+                        profile_ctx = (
+                            "[PROFILE UPDATE]\n"
+                            "The user just updated their profile. Use the new settings below "
+                            "for all subsequent interactions.\n"
+                            f"{persona_block}\n"
+                            "Do not narrate this block to the user."
+                        )
+                        content = types.Content(
+                            role="user",
+                            parts=[types.Part(text=profile_ctx)],
+                        )
+                        ctx_queue.inject_immediate(content)
+                        logger.info("Injected profile update context for user %s", user_id)
+
+                        # 4. Ack to client
+                        await _safe_send_json({"type": "profile_updated_ack"})
+                    except Exception:
+                        logger.exception("Failed to handle profile_updated for user %s", user_id)
+                        await _safe_send_json({
+                            "type": "error",
+                            "error": "Failed to apply profile update",
                         })
 
                 else:

@@ -83,9 +83,9 @@ def default_profile() -> UserProfile:
 
 
 @pytest.fixture
-def minimal_profile() -> UserProfile:
+def concise_profile() -> UserProfile:
     p = UserProfile.default()
-    p.verbosity_preference = "minimal"
+    p.verbosity_preference = "concise"
     return p
 
 
@@ -93,13 +93,6 @@ def minimal_profile() -> UserProfile:
 def detailed_profile() -> UserProfile:
     p = UserProfile.default()
     p.verbosity_preference = "detailed"
-    return p
-
-
-@pytest.fixture
-def concise_profile() -> UserProfile:
-    p = UserProfile.default()
-    p.verbosity_preference = "concise"
     return p
 
 
