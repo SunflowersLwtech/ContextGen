@@ -6,8 +6,8 @@ Usage:
     python scripts/seed_firestore.py
 
 Creates:
-    - users/demo_user_001  — default demo user profile
-    - users/demo_user_002  — congenital-blind variant (for testing colour-free descriptions)
+    - user_profiles/demo_user_001  — default demo user profile
+    - user_profiles/demo_user_002  — congenital-blind variant (for testing colour-free descriptions)
 
 Requires:
     - GOOGLE_CLOUD_PROJECT env var or gcloud default project
@@ -120,15 +120,15 @@ DEMO_USERS = [
 def seed_users(db: firestore.Client) -> None:
     """Create or overwrite demo user profiles in Firestore."""
     for user in DEMO_USERS:
-        doc_ref = db.collection("users").document(user["doc_id"])
+        doc_ref = db.collection("user_profiles").document(user["doc_id"])
         doc_ref.set(user["data"])
-        print(f"  [OK] users/{user['doc_id']}")
+        print(f"  [OK] user_profiles/{user['doc_id']}")
 
 
 def seed_session_meta(db: firestore.Client) -> None:
     """Create a sample session metadata document for demo_user_001."""
     doc_ref = (
-        db.collection("users")
+        db.collection("user_profiles")
         .document("demo_user_001")
         .collection("sessions_meta")
         .document("demo_session_001")
@@ -141,7 +141,7 @@ def seed_session_meta(db: firestore.Client) -> None:
         "space_transitions": ["outdoor→lobby", "lobby→cafe"],
         "total_interactions": 0,
     })
-    print("  [OK] users/demo_user_001/sessions_meta/demo_session_001")
+    print("  [OK] user_profiles/demo_user_001/sessions_meta/demo_session_001")
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ def seed_face_library(db: firestore.Client, user_id: str = "demo_user_001") -> N
     cluster so cosine similarity between samples of the same person is high.
     """
     now = datetime.now(timezone.utc)
-    face_coll = db.collection("users").document(user_id).collection("face_library")
+    face_coll = db.collection("user_profiles").document(user_id).collection("face_library")
 
     total = 0
     for person_idx, person in enumerate(DEMO_FACES):
@@ -229,7 +229,7 @@ def main() -> None:
     print("\n--- Done! ---")
     print(f"  Total users seeded: {len(DEMO_USERS)}")
     print(f"  Total face entries: {sum(f['num_samples'] for f in DEMO_FACES)}")
-    print("  Run `gcloud firestore documents list users --limit=5` to verify.")
+    print("  Run `gcloud firestore documents list user_profiles --limit=5` to verify.")
 
 
 if __name__ == "__main__":

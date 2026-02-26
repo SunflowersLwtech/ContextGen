@@ -103,14 +103,14 @@ def get_client() -> firestore.Client:
 def seed_user_profile(user_id: str, profile_data: dict) -> None:
     """Write a UserProfile document to Firestore."""
     db = get_client()
-    doc_ref = db.collection("users").document(user_id)
+    doc_ref = db.collection("user_profiles").document(user_id)
 
     data = {**profile_data}
     data["created_at"] = firestore.SERVER_TIMESTAMP
     data["updated_at"] = firestore.SERVER_TIMESTAMP
 
     doc_ref.set(data)
-    print(f"[OK] users/{user_id}")
+    print(f"[OK] user_profiles/{user_id}")
     print(f"     vision_status:        {data.get('vision_status')}")
     print(f"     blindness_onset:      {data.get('blindness_onset')}")
     print(f"     verbosity_preference: {data.get('verbosity_preference')}")

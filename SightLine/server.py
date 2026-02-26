@@ -49,6 +49,7 @@ from lod import (
 from lod.lod_engine import should_speak
 from lod.telemetry_aggregator import TelemetryAggregator
 from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephemeral
+from telemetry.session_meta_tracker import SessionMetaTracker
 
 # ---------------------------------------------------------------------------
 # Environment & logging
@@ -459,7 +460,7 @@ async def api_get_profile(user_id: str) -> JSONResponse:
     try:
         from google.cloud import firestore as _fs
         db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
-        doc = db.collection("users").document(user_id).get()
+        doc = db.collection("user_profiles").document(user_id).get()
         if not doc.exists:
             return JSONResponse({"error": "Profile not found"}, status_code=404)
         data = doc.to_dict()
@@ -510,7 +511,7 @@ async def api_save_profile(user_id: str, request: Request) -> JSONResponse:
     try:
         from google.cloud import firestore as _fs
         db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
-        doc_ref = db.collection("users").document(user_id)
+        doc_ref = db.collection("user_profiles").document(user_id)
         filtered["updated_at"] = _fs.SERVER_TIMESTAMP
         # Merge so we don't overwrite fields not included in this request
         doc_ref.set(filtered, merge=True)
@@ -532,7 +533,7 @@ async def api_list_users() -> JSONResponse:
     try:
         from google.cloud import firestore as _fs
         db = _fs.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon"))
-        docs = db.collection("users").stream()
+        docs = db.collection("user_profiles").stream()
         user_ids = sorted(doc.id for doc in docs)
         return JSONResponse({"users": user_ids, "count": len(user_ids)})
     except Exception as e:
@@ -670,6 +671,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     telemetry_agg = TelemetryAggregator()
     session_ctx = session_manager.get_session_context(session_id)
     user_profile = await session_manager.load_user_profile(user_id)
+    session_meta = SessionMetaTracker(user_id=user_id, session_id=session_id)
 
     # -- Per-session face library cache (Phase 3) ----------------------------
     face_library: list[dict] = []
@@ -844,6 +846,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     if not await _safe_send_json({"type": "session_ready"}):
         logger.info("WebSocket closed before session_ready: user=%s session=%s", user_id, session_id)
         return
+
+    asyncio.create_task(session_meta.write_session_start())
 
     live_request_queue = LiveRequestQueue()
     run_config = session_manager.get_run_config(
@@ -1037,6 +1041,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         old_lod = session_ctx.current_lod
         session_ctx.current_lod = 1
         on_lod_change(session_ctx, old_lod, 1)
+        session_meta.record_lod_time(1)
 
         panic_reason = "PANIC: safety mode activated"
         vad_update = await _sync_runtime_vad_update(1)
@@ -1610,6 +1615,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 elif message.get("type") == "gesture":
                     gesture = message.get("gesture")
+                    session_meta.record_interaction()
                     if gesture in ("lod_up", "lod_down"):
                         ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
                         ephemeral_ctx.user_gesture = gesture
@@ -1641,6 +1647,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         logger.info("Force LOD gesture received: %d -> %d", old_lod, forced_lod)
                         resume_prompt = on_lod_change(session_ctx, old_lod, forced_lod)
                         session_ctx.current_lod = forced_lod
+                        session_meta.record_lod_time(forced_lod)
                         telemetry_agg.update_lod(forced_lod)
 
                         vad_update = await _sync_runtime_vad_update(forced_lod)
@@ -1720,6 +1727,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
                             on_lod_change(session_ctx, old_lod, 1)
                             session_ctx.current_lod = 1
+                            session_meta.record_lod_time(1)
                             content = types.Content(
                                 parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
                                 role="user",
@@ -1736,6 +1744,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             logger.info("Emergency pause resumed: LOD %d -> %d", old_lod, resume_lod)
                             on_lod_change(session_ctx, old_lod, resume_lod)
                             session_ctx.current_lod = resume_lod
+                            session_meta.record_lod_time(resume_lod)
                             content = types.Content(
                                 parts=[types.Part(text="[EMERGENCY RESUME] The user has deactivated emergency pause. Resume normal operation at LOD 2 (balanced mode). You may speak again.")],
                                 role="user",
@@ -1924,6 +1933,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
             resume_prompt = on_lod_change(session_ctx, old_lod, new_lod)
             session_ctx.current_lod = new_lod
+            session_meta.record_lod_time(new_lod)
             # Clear one-shot voice intent flags after LOD decision consumed them
             session_ctx.user_requested_detail = False
             session_ctx.user_said_stop = False
@@ -2114,6 +2124,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "role": "user",
                             "text": input_text,
                         })
+                        session_meta.record_interaction()
                         if not await _safe_send_json({
                             "type": "transcript",
                             "text": input_text,
@@ -2193,6 +2204,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     "Memory auto-extraction failed for user=%s session=%s",
                     user_id, session_id,
                 )
+
+        # Write session metadata before cleanup
+        session_meta.space_transitions = list(session_ctx.space_transitions)
+        session_meta.set_trip_purpose(session_ctx.trip_purpose or "")
+        await session_meta.write_session_end()
 
         live_request_queue.close()
         session_manager.remove_session(session_id)

@@ -295,7 +295,7 @@ class SessionManager:
         db = _get_firestore()
         if db:
             try:
-                doc = db.collection("users").document(user_id).get()
+                doc = db.collection("user_profiles").document(user_id).get()
                 if doc.exists:
                     profile = UserProfile.from_firestore(doc.to_dict(), user_id=user_id)
                     logger.info("Loaded UserProfile from Firestore for user %s", user_id)

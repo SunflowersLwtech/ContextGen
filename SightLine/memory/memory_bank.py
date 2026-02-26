@@ -3,7 +3,7 @@
 Wraps Firestore-based storage for persistent cross-session memory.
 Uses Gemini embeddings for semantic retrieval via Firestore vector search.
 
-Firestore collection: users/{user_id}/memories/{memory_id}
+Firestore collection: user_profiles/{user_id}/memories/{memory_id}
 Embedding model: gemini-embedding-001 (truncated to 2048-D)
 """
 
@@ -85,7 +85,7 @@ class MemoryBankService:
     def _memories_collection(self):
         """Return the memories subcollection reference for this user."""
         return (
-            self._firestore.collection("users")
+            self._firestore.collection("user_profiles")
             .document(self.user_id)
             .collection("memories")
         )

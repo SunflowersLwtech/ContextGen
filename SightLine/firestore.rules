@@ -28,7 +28,7 @@ service cloud.firestore {
         );
     }
 
-    match /users/{userId} {
+    match /user_profiles/{userId} {
       allow read, write: if isOwner(userId);
 
       match /face_library/{faceId} {

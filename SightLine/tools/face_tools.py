@@ -3,7 +3,7 @@
 Manages the Firestore face library for per-user face registration,
 deletion, and loading. Embeddings are stored as Firestore Vectors.
 
-Firestore collection: users/{user_id}/face_library/{face_id}
+Firestore collection: user_profiles/{user_id}/face_library/{face_id}
 
 Privacy: stores 512-D L2-normalized embeddings by default; optional reference
 photo storage is only enabled when explicit consent is provided.
@@ -50,7 +50,7 @@ def set_db_client(client: firestore.Client) -> None:
 
 def _face_collection(user_id: str):
     """Return the face_library subcollection reference for a user."""
-    return _get_db().collection("users").document(user_id).collection("face_library")
+    return _get_db().collection("user_profiles").document(user_id).collection("face_library")
 
 
 def _encode_reference_photo(image_bgr: np.ndarray) -> tuple[str, str, int]:

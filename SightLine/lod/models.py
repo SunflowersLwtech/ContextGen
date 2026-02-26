@@ -95,7 +95,7 @@ class SessionContext:
 
 @dataclass
 class UserProfile:
-    """User profile loaded from Firestore ``users/{user_id}``.
+    """User profile loaded from Firestore ``user_profiles/{user_id}``.
 
     Design based on *Beyond the Cane* (ACM TACCESS 2022).
     """
