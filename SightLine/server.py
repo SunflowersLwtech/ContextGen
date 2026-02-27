@@ -237,11 +237,15 @@ class ContextInjectionQueue:
         self._vision_spoken_at: float = 0.0
         self._bg_task: asyncio.Task | None = None
         self._stopped = False
+        self._deferred_flush_handle: asyncio.TimerHandle | None = None
+        self._first_turn: bool = True
 
     # -- Model speaking state ------------------------------------------------
 
     def set_model_speaking(self, speaking: bool) -> None:
         self._model_speaking = speaking
+        if speaking:
+            self._cancel_deferred_flush()
 
     @property
     def model_speaking(self) -> bool:
@@ -262,26 +266,58 @@ class ContextInjectionQueue:
         priority: int = 5,
         speak: bool = True,
     ) -> None:
-        """Queue a context injection.  If the model is idle, send immediately."""
-        if not self._model_speaking:
-            # Model idle — send right away, zero latency
-            content = types.Content(
-                parts=[types.Part(text=text)],
-                role="user",
-            )
-            self._lrq.send_content(content)
-            logger.debug("Sent [%s] immediately (model idle)", category)
-            return
-
-        # Model speaking — enqueue (newer replaces older for same category)
+        """Queue a context injection.  Always queues; never sends immediately."""
+        # ALWAYS queue — never send immediately
         self._queue[category] = _QueuedItem(
-            category=category,
-            text=text,
-            priority=priority,
-            speak=speak,
+            category=category, text=text, priority=priority, speak=speak,
         )
         logger.info("Queued [%s] (priority=%d, speak=%s, queue_size=%d)",
                      category, priority, speak, len(self._queue))
+        # Model idle + no timer pending → schedule deferred flush
+        if not self._model_speaking and self._deferred_flush_handle is None:
+            self._schedule_deferred_flush()
+
+    # -- Deferred flush (batching window) ------------------------------------
+
+    BATCH_WINDOW_SEC = 0.4  # 400ms collection window for sub-agent results
+
+    def _schedule_deferred_flush(self, delay: float = BATCH_WINDOW_SEC):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("No running event loop; flushing immediately")
+            self.flush()
+            return
+        self._deferred_flush_handle = loop.call_later(delay, self._deferred_flush_callback)
+        logger.debug("Scheduled deferred flush in %.1fs", delay)
+
+    def _deferred_flush_callback(self):
+        self._deferred_flush_handle = None
+        if self._model_speaking:
+            logger.debug("Deferred flush skipped — model is now speaking")
+            return
+        if self._queue:
+            logger.info("Deferred flush firing (%d items)", len(self._queue))
+            self.flush()
+
+    def _cancel_deferred_flush(self):
+        if self._deferred_flush_handle is not None:
+            self._deferred_flush_handle.cancel()
+            self._deferred_flush_handle = None
+
+    def schedule_flush_after(self, delay: float):
+        """Schedule a flush after a fixed delay (used for post-greeting pause)."""
+        self._cancel_deferred_flush()
+        self._schedule_deferred_flush(delay=delay)
+
+    def flush_or_defer_first_turn(self, first_turn_delay: float = 1.0) -> None:
+        """Flush queued items, deferring if this is the post-greeting turn."""
+        if self._first_turn:
+            self._first_turn = False
+            self.schedule_flush_after(first_turn_delay)
+            logger.info("Post-greeting pause: flush deferred %.1fs", first_turn_delay)
+        else:
+            self.flush()
 
     # -- Flush ---------------------------------------------------------------
 
@@ -290,6 +326,7 @@ class ContextInjectionQueue:
 
         Returns True if anything was flushed.
         """
+        self._cancel_deferred_flush()  # prevent double-flush
         if not self._queue:
             return False
 
@@ -353,6 +390,7 @@ class ContextInjectionQueue:
     def stop(self) -> None:
         """Stop the background flush task."""
         self._stopped = True
+        self._cancel_deferred_flush()
         if self._bg_task and not self._bg_task.done():
             self._bg_task.cancel()
 
@@ -1173,6 +1211,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         role="user",
     )
     ctx_queue.inject_immediate(_combined_content)
+    # Pre-mark model as speaking so early telemetry/LOD injections are queued,
+    # not flushed to Gemini mid-greeting.  The real audio-chunk callback
+    # (set_model_speaking(True)) confirms this ~200ms later; turn_complete
+    # resets it when the greeting finishes.
+    ctx_queue.set_model_speaking(True)
     logger.info(
         "Injected combined context (LOD %d) + greeting for session %s",
         session_ctx.current_lod, session_id,
@@ -2407,7 +2450,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         if not await _flush_transcript_buffer():
                             break
                     # Flush queued context injections
-                    ctx_queue.flush()
+                    ctx_queue.flush_or_defer_first_turn()
 
                 # --- Function calls from Gemini (Phase 3) ---
                 function_calls = _extract_function_calls(event)
