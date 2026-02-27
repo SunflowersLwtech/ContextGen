@@ -29,6 +29,9 @@ class AudioCaptureManager: ObservableObject {
     var onAudioCaptured: ((Data) -> Void)?
     /// RMS audio level callback for NoiseMeter (ambient noise calculation).
     var onAudioLevelUpdate: ((Float) -> Void)?
+    /// Returns whether model audio is still actively playing on device.
+    /// Helps prevent echo leakage when playback queue is draining after network burst.
+    var isModelAudioPlaying: (() -> Bool)?
 
     /// Timestamp of the last model audio chunk received via WebSocket.
     /// Used with `modelSpeakingTimeout` to determine if the model is currently speaking.
@@ -39,7 +42,7 @@ class AudioCaptureManager: ObservableObject {
     /// How long after the last audio chunk we still consider the model "speaking".
     /// Covers: network jitter (~100ms) + function call pauses (~500ms) +
     /// natural speech pauses (~300ms) + AEC tail (~150ms) + margin (~350ms).
-    private let modelSpeakingTimeout: Double = 2.0
+    private let modelSpeakingTimeout: Double = 1.2
 
     /// RMS threshold for voice barge-in during model playback.
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
@@ -54,7 +57,15 @@ class AudioCaptureManager: ObservableObject {
     /// Barge-in confirmation counter: requires consecutive frames above threshold + VAD active.
     /// Prevents AEC residual echo bursts (< 200ms) from triggering false barge-in.
     private var bargeInConfirmCount: Int = 0
-    private let bargeInConfirmRequired: Int = 4  // ~400ms at 100ms/frame
+    private let bargeInConfirmRequired: Int = 6  // ~600ms at 100ms/frame
+
+    /// Ignore barge-in candidates immediately after each model audio chunk.
+    /// This protects against AEC tail and speaker leakage right after playback resumes.
+    private let bargeInGuardAfterModelChunkSec: Double = 0.5
+
+    /// Require stronger VAD confidence for barge-in while model is speaking.
+    /// `isSpeechActive` alone can remain true for a short hangover window.
+    private let bargeInVADProbabilityThreshold: Float = 0.75
 
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
@@ -167,16 +178,25 @@ class AudioCaptureManager: ObservableObject {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
                 let now = CFAbsoluteTimeGetCurrent()
+                let playbackActive = self.isModelAudioPlaying?() ?? false
                 let isModelCurrentlySpeaking =
-                    (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
+                    playbackActive || (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
 
                 if isModelCurrentlySpeaking {
                     // Model speaking: send silence to prevent echo reaching Gemini VAD.
                     // Multi-frame confirmation prevents AEC residual bursts from false barge-in.
+                    if (now - self.lastModelAudioReceivedAt) < self.bargeInGuardAfterModelChunkSec {
+                        self.bargeInConfirmCount = 0
+                        let silence = Data(count: byteCount)
+                        self.onAudioCaptured?(silence)
+                        return
+                    }
+
                     let rms = self.lastRMS
                     if rms > self.bargeInRMSThreshold {
                         SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
-                        if SileroVAD.shared.isSpeechActive {
+                        if SileroVAD.shared.isSpeechActive &&
+                            SileroVAD.shared.lastProbability >= self.bargeInVADProbabilityThreshold {
                             self.bargeInConfirmCount += 1
                             if self.bargeInConfirmCount >= self.bargeInConfirmRequired {
                                 // Sustained speech confirmed: real barge-in

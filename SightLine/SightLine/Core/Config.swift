@@ -34,7 +34,7 @@ enum SightLineConfig {
     static let audioJitterBufferChunks: Int = 2        // reduced startup latency (was 3→2, saves ~100ms)
     static let audioScheduleAheadCount: Int = 3        // reduced sliding window (was 4)
     static let audioJitterMaxWait: TimeInterval = 0.04 // 40ms fallback (was 50ms)
-    static let audioMaxPendingChunks: Int = 50         // overflow guard (~5s at 100ms/chunk)
+    static let audioMaxPendingChunks: Int = 40         // overflow guard (~4s at 100ms/chunk)
 
     // Video
     static let videoFrameWidth: Int = 768

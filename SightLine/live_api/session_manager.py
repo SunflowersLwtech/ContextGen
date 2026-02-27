@@ -83,28 +83,12 @@ def create_session_service():
                 "GOOGLE_GENAI_USE_VERTEXAI is FALSE; using local session service"
             )
 
-    # Cloud Run has an ephemeral filesystem — SQLite will always fail.
-    # Skip straight to in-memory to avoid noisy WARNING logs on every cold start.
-    if os.getenv("K_SERVICE"):
-        from google.adk.sessions import InMemorySessionService as _InMemory
-
-        logger.info("Cloud Run detected — using in-memory session service")
-        return _InMemory()
-
-    # Local development: try DatabaseSessionService, then in-memory
-    try:
-        from google.adk.sessions import DatabaseSessionService
-
-        svc = DatabaseSessionService(db_url="sqlite:///sightline_sessions.db")
-        logger.info("Using DatabaseSessionService (SQLite fallback)")
-        return svc
-    except (ImportError, Exception) as exc:
-        logger.warning("DatabaseSessionService unavailable (%s); using in-memory.", exc)
-
-    # Last resort — lightweight in-memory service
+    # Both local and Cloud Run use in-memory session service.
+    # Session continuity is handled by Gemini's session_resumption_handle,
+    # not by the ADK session service. All business data lives in Firestore.
     from google.adk.sessions import InMemorySessionService as _InMemory
 
-    logger.warning("Using in-memory session service (development only)")
+    logger.info("Using in-memory session service")
     return _InMemory()
 
 # ---------------------------------------------------------------------------

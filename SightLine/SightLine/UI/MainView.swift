@@ -382,6 +382,7 @@ struct MainView: View {
     private func handleDoubleTap() {
         HapticManager.shared.doubleTap()
         audioPlayback.stopImmediately()
+        audioPlayback.suppressIncomingAudio(for: 0.8)
         webSocketManager.sendText(UpstreamMessage.gesture(type: "interrupt").toJSON())
         UIAccessibility.post(notification: .announcement, argument: "Speech interrupted")
         devConsoleModel.captureTranscript(text: "Gesture: interrupt", role: "gesture")
@@ -692,9 +693,14 @@ struct MainView: View {
             audioPlayback?.playAudioData(data)
         }
 
+        audioCapture.isModelAudioPlaying = { [weak audioPlayback] in
+            audioPlayback?.isPlaying ?? false
+        }
+
         audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
             DispatchQueue.main.async {
                 audioPlayback?.stopImmediately()
+                audioPlayback?.suppressIncomingAudio(for: 0.8)
             }
             // activity_start removed: real audio frames trigger Gemini VAD naturally.
             // Sending activity_start with START_OF_ACTIVITY_INTERRUPTS caused
@@ -887,6 +893,10 @@ struct MainView: View {
         case .sessionReady:
             logger.info("Session ready, starting audio capture (camera deferred)")
             DispatchQueue.main.async {
+                // Pre-set model speaking timestamp so silence gate covers
+                // the 200-600ms greeting generation delay, preventing
+                // ambient noise from reaching Gemini VAD and interrupting the greeting.
+                audioCapture.lastModelAudioReceivedAt = CFAbsoluteTimeGetCurrent()
                 startAudioCapture()
             }
         case .faceLibraryReloaded(let count):
@@ -1029,6 +1039,7 @@ struct MainView: View {
             DispatchQueue.main.async {
                 audioCapture.lastModelAudioReceivedAt = 0  // Expire echo gate immediately
                 audioPlayback.stopImmediately()
+                audioPlayback.suppressIncomingAudio(for: 0.8)
                 HapticManager.shared.doubleTap()
                 devConsoleModel.captureTranscript(
                     text: "Model interrupted by user", role: "system")

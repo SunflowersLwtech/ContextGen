@@ -34,6 +34,7 @@ class AudioPlaybackManager: ObservableObject {
     /// Allows faster restart with fewer buffered chunks.
     private var wasStarved = false
     private var restartObserver: NSObjectProtocol?
+    private var suppressIncomingAudioUntil: CFAbsoluteTime = 0
 
     func setup() {
         // Gemini outputs PCM 24kHz mono 16-bit
@@ -100,14 +101,25 @@ class AudioPlaybackManager: ObservableObject {
         schedulingQueue.async { [weak self] in
             guard let self = self else { return }
 
-            // Overflow guard: drop oldest chunks to prevent memory spike
+            if CFAbsoluteTimeGetCurrent() < self.suppressIncomingAudioUntil {
+                return
+            }
+
+            // Overflow guard: clear all pending + mark starved for clean restart.
+            // Previous "drop oldest" strategy caused mid-sentence jumps that
+            // sounded like the agent was talking over itself.
             if self.pendingChunks.count >= SightLineConfig.audioMaxPendingChunks {
-                let drop = self.pendingChunks.count - SightLineConfig.audioMaxPendingChunks / 2
-                Self.logger.warning("Audio buffer overflow (\(self.pendingChunks.count) chunks), dropping \(drop) oldest")
-                self.pendingChunks.removeFirst(drop)
+                let overflowCount = self.pendingChunks.count
+                Self.logger.warning("Audio buffer overflow (\(overflowCount) chunks), clearing for clean restart")
+                self.pendingChunks.removeAll(keepingCapacity: true)
+                self.isDrainActive = false
+                self.scheduledBufferCount = 0
+                self.wasStarved = true
+                self.jitterKickoffWorkItem?.cancel()
+                self.jitterKickoffWorkItem = nil
                 let overflowCallback = self.onBufferOverflow
                 DispatchQueue.main.async {
-                    overflowCallback?(drop)
+                    overflowCallback?(overflowCount)
                     NotificationCenter.default.post(name: .audioBufferOverflow, object: nil)
                 }
             }
@@ -129,6 +141,18 @@ class AudioPlaybackManager: ObservableObject {
         }
     }
 
+    /// Temporarily drop newly received model audio chunks.
+    /// Used after local barge-in to prevent stale pre-interrupt chunks from re-entering playback.
+    func suppressIncomingAudio(for duration: TimeInterval) {
+        schedulingQueue.async { [weak self] in
+            guard let self = self else { return }
+            let until = CFAbsoluteTimeGetCurrent() + max(0, duration)
+            self.suppressIncomingAudioUntil = max(self.suppressIncomingAudioUntil, until)
+            self.pendingChunks.removeAll(keepingCapacity: true)
+            self.wasStarved = false
+        }
+    }
+
     /// Stop playback immediately for barge-in support.
     /// Uses sync dispatch so state is fully cleared before player.play() restarts.
     func stopImmediately() {
@@ -142,6 +166,7 @@ class AudioPlaybackManager: ObservableObject {
             self.isDrainActive = false
             self.scheduledBufferCount = 0
             self.wasStarved = false
+            self.suppressIncomingAudioUntil = 0
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
@@ -158,6 +183,7 @@ class AudioPlaybackManager: ObservableObject {
             self.isDrainActive = false
             self.scheduledBufferCount = 0
             self.wasStarved = false
+            self.suppressIncomingAudioUntil = 0
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }

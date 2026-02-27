@@ -239,6 +239,7 @@ class ContextInjectionQueue:
         self._stopped = False
         self._deferred_flush_handle: asyncio.TimerHandle | None = None
         self._first_turn: bool = True
+        self._model_audio_last_seen_at: float = 0.0
 
     # -- Model speaking state ------------------------------------------------
 
@@ -246,6 +247,10 @@ class ContextInjectionQueue:
         self._model_speaking = speaking
         if speaking:
             self._cancel_deferred_flush()
+
+    def set_model_audio_timestamp(self, ts: float) -> None:
+        """Record when the last model audio chunk was seen (monotonic clock)."""
+        self._model_audio_last_seen_at = ts
 
     @property
     def model_speaking(self) -> bool:
@@ -296,6 +301,14 @@ class ContextInjectionQueue:
         if self._model_speaking:
             logger.debug("Deferred flush skipped — model is now speaking")
             return
+        # Guard against flushing while model generation is ramping up
+        # (first audio chunk hasn't arrived yet, so _model_speaking is still False)
+        if self._model_audio_last_seen_at > 0:
+            staleness = time.monotonic() - self._model_audio_last_seen_at
+            if staleness < 2.0:
+                logger.debug("Deferred flush skipped — model audio seen %.1fs ago", staleness)
+                self._schedule_deferred_flush(delay=2.0 - staleness + 0.1)
+                return
         if self._queue:
             logger.info("Deferred flush firing (%d items)", len(self._queue))
             self.flush()
@@ -310,7 +323,7 @@ class ContextInjectionQueue:
         self._cancel_deferred_flush()
         self._schedule_deferred_flush(delay=delay)
 
-    def flush_or_defer_first_turn(self, first_turn_delay: float = 1.0) -> None:
+    def flush_or_defer_first_turn(self, first_turn_delay: float = 2.5) -> None:
         """Flush queued items, always deferring slightly to let audio drain."""
         if self._first_turn:
             self._first_turn = False
@@ -978,7 +991,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # Interrupt debounce (P3: prevent rapid-fire interrupts from echo)
     _last_interrupt_at: float = 0.0
-    _INTERRUPT_DEBOUNCE_SEC = 0.2
+    _INTERRUPT_DEBOUNCE_SEC = 0.5
 
     # Adaptive face detection: skip cycles when no faces are consistently detected
     _face_consecutive_misses: int = 0
@@ -2650,6 +2663,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         if part.inline_data and part.inline_data.data:
                             _model_audio_last_seen_at = time.monotonic()
                             ctx_queue.set_model_speaking(True)
+                            ctx_queue.set_model_audio_timestamp(_model_audio_last_seen_at)
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
