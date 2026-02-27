@@ -80,6 +80,9 @@ class AudioCaptureManager: ObservableObject {
         }
         converter = conv
 
+        // 🔧 修复: 在安装新 tap 前先移除旧的,避免重复调用导致崩溃
+        removeTap()
+
         inputNode.installTap(onBus: 0, bufferSize: SightLineConfig.audioBufferSize, format: inputFormat) {
             [weak self] buffer, _ in
             guard let self = self, let fmt = self.targetFormat, let converter = self.converter else { return }

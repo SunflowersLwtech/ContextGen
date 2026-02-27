@@ -176,6 +176,7 @@
 			);
 			name = SightLine;
 			packageProductDependencies = (
+				DD0010022F4B1BF10068374A /* onnxruntime */,
 			);
 			productName = SightLine;
 			productReference = 9656C1932F4A1BF00068374A /* SightLine.app */;
@@ -315,6 +316,9 @@
 			productRefGroup = 9656C1942F4A1BF00068374A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				DD0010012F4B1BF10068374A /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+			);
 			targets = (
 				9656C1922F4A1BF00068374A /* SightLine */,
 				9656C1AA2F4A1BF10068374A /* SightLineWatch */,
@@ -890,6 +894,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DD0010012F4B1BF10068374A /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager";
+			requirement = {
+				kind = exactVersion;
+				version = 1.20.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DD0010022F4B1BF10068374A /* onnxruntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD0010012F4B1BF10068374A /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9656C18B2F4A1BF00068374A /* Project object */;
 }

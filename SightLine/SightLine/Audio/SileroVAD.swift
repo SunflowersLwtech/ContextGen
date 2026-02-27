@@ -109,7 +109,7 @@ final class SileroVAD {
                 Self.logger.error("Failed to load Silero VAD model: \(error)")
             }
             #else
-            Self.logger.warning("OnnxRuntimeBindings not available — VAD disabled")
+            Self.logger.warning("onnxruntime not available — VAD disabled")
             #endif
         }
     }
