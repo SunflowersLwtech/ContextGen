@@ -107,15 +107,15 @@ LOD_VAD_PRESETS: dict[int, dict] = {
     1: {
         "voice_name": "Aoede",
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
-        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
-        "silence_duration_ms": 400,
-        "prefix_padding_ms": 200,  # was 100 — too sensitive, AEC residual triggers false starts
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
+        "silence_duration_ms": 800,
+        "prefix_padding_ms": 250,
     },
     2: {
         "voice_name": "Aoede",
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
         "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
-        "silence_duration_ms": 1000,
+        "silence_duration_ms": 1200,
         "prefix_padding_ms": 250,
     },
     3: {
@@ -261,7 +261,7 @@ class SessionManager:
                 ),
                 language_code=effective_lang,
             ),
-            proactivity=types.ProactivityConfig(proactive_audio=(lod >= 2)),
+            proactivity=types.ProactivityConfig(proactive_audio=True),
             enable_affective_dialog=True,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -278,7 +278,7 @@ class SessionManager:
                     silence_duration_ms=vad_preset.get("silence_duration_ms", 800),
                 ),
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
-                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
             ),
         )
 

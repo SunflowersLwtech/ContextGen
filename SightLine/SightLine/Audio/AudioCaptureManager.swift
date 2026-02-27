@@ -37,6 +37,11 @@ class AudioCaptureManager: ObservableObject {
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
     private let bargeInRMSThreshold: Float = 0.05
 
+    /// Called when client-side VAD detects speech onset — sends activity_start.
+    var onSpeechDetected: (() -> Void)?
+    /// Called when client-side VAD detects speech offset — sends activity_end.
+    var onSpeechEnded: (() -> Void)?
+
     /// Called when voice barge-in detected (RMS above threshold during model speech).
     var onVoiceBargeIn: (() -> Void)?
 
@@ -111,6 +116,11 @@ class AudioCaptureManager: ObservableObject {
                 }
             }
 
+            // Feed converted 16kHz Int16 samples to client-side VAD
+            if let int16Data = outputBuffer.int16ChannelData {
+                SileroVAD.shared.processAudioFrame(int16Data[0], count: Int(outputBuffer.frameLength))
+            }
+
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
@@ -122,8 +132,8 @@ class AudioCaptureManager: ObservableObject {
                 if isModelCurrentlySpeaking {
                     // During model speech: energy-gated — only pass genuine human voice
                     let rms = self.lastRMS
-                    if rms > self.bargeInRMSThreshold {
-                        // Genuine barge-in: send real audio + signal playback to stop
+                    if rms > self.bargeInRMSThreshold && SileroVAD.shared.isSpeechActive {
+                        // Genuine barge-in: RMS + VAD confirms human speech, not ambient noise
                         let data = Data(bytes: channelData[0], count: byteCount)
                         self.onAudioCaptured?(data)
                         self.lastModelAudioReceivedAt = 0  // Expire immediately
@@ -163,6 +173,12 @@ class AudioCaptureManager: ObservableObject {
             self.removeTap()
             self.startCapture()
         }
+
+        // Initialize client-side VAD for speech detection
+        SileroVAD.shared.loadModel()
+        SileroVAD.shared.reset()
+        SileroVAD.shared.onSpeechStart = { [weak self] in self?.onSpeechDetected?() }
+        SileroVAD.shared.onSpeechEnd = { [weak self] in self?.onSpeechEnded?() }
 
         DispatchQueue.main.async { self.isCapturing = true }
         Self.logger.info("Audio capture started (shared engine, VP=\(SharedAudioEngine.shared.isVoiceProcessingEnabled))")

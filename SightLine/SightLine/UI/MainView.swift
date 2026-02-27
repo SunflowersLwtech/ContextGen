@@ -688,10 +688,18 @@ struct MainView: View {
             audioPlayback?.playAudioData(data)
         }
 
-        audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
+        audioCapture.onVoiceBargeIn = { [weak audioPlayback, weak webSocketManager] in
             DispatchQueue.main.async {
                 audioPlayback?.stopImmediately()
             }
+            webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
+        }
+
+        audioCapture.onSpeechDetected = { [weak webSocketManager] in
+            webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
+        }
+        audioCapture.onSpeechEnded = { [weak webSocketManager] in
+            webSocketManager?.sendText(UpstreamMessage.activityEnd.toJSON())
         }
 
         webSocketManager.onTextReceived = { text in

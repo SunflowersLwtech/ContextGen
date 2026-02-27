@@ -934,7 +934,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # Interrupt debounce (P3: prevent rapid-fire interrupts from echo)
     _last_interrupt_at: float = 0.0
-    _INTERRUPT_DEBOUNCE_SEC = 0.5
+    _INTERRUPT_DEBOUNCE_SEC = 0.2
+
+    # Idle timeout: prompt Gemini to check in after prolonged silence
+    _last_user_activity_at: float = time.monotonic()
+    _last_idle_prompt_at: float = 0.0
+    _IDLE_TIMEOUT_SEC = 15.0
+    _IDLE_PROMPT_COOLDOWN_SEC = 60.0
 
     # Vision spoken tracking for context injection queue
     _turn_had_vision_content = False
@@ -1883,6 +1889,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     await _process_telemetry(telemetry_data)
 
                 elif message.get("type") == "activity_start":
+                    _last_user_activity_at = time.monotonic()
                     queue_status = "forwarded"
                     queue_note = ""
                     try:
@@ -1922,6 +1929,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 elif message.get("type") == "gesture":
                     gesture = message.get("gesture")
+                    _last_user_activity_at = time.monotonic()
                     session_meta.record_interaction()
                     if gesture in ("lod_up", "lod_down"):
                         ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
@@ -2468,18 +2476,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 source="tool_call",
                             )
 
-                        # Send function response back to the model
+                        # Send function response back to the model.
+                        # For INTERRUPT-behavior tools (safety-critical), prepend a
+                        # prompt prefix instructing Gemini to complete delivery without
+                        # stopping mid-sentence, since we cannot switch VAD to
+                        # NO_INTERRUPTION mid-session.
                         from google.genai.types import FunctionResponse
                         fr = FunctionResponse(
                             name=fc.name,
                             response=result,
                         )
-                        content = types.Content(
-                            parts=[types.Part(function_response=fr)],
-                            role="user",
-                        )
+                        parts = [types.Part(function_response=fr)]
+                        if behavior == ToolBehavior.INTERRUPT:
+                            parts.insert(0, types.Part(
+                                text="[SAFETY ALERT — COMPLETE DELIVERY] "
+                                     "Do not stop mid-sentence even if you detect user activity. "
+                                     "Deliver the full safety information before yielding."
+                            ))
+                        content = types.Content(parts=parts, role="user")
                         ctx_queue.inject_immediate(content)
-                        logger.info("Sent function response for %s", fc.name)
+                        logger.info("Sent function response for %s (behavior=%s)", fc.name, behavior_to_text(behavior))
 
                 # --- Output transcription (agent speech-to-text) — buffered ---
                 _output_transcription_forwarded = False
@@ -2540,6 +2556,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "role": "user",
                             "text": input_text,
                         })
+                        _last_user_activity_at = time.monotonic()
                         session_meta.record_interaction()
                         if not await _safe_send_json({
                             "type": MessageType.TRANSCRIPT,
@@ -2586,6 +2603,28 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                     if stop_downstream.is_set():
                         break
+
+                # --- Idle timeout: prompt check-in after prolonged silence ---
+                _now_idle = time.monotonic()
+                if (
+                    (_now_idle - _last_user_activity_at) > _IDLE_TIMEOUT_SEC
+                    and (_now_idle - _last_idle_prompt_at) > _IDLE_PROMPT_COOLDOWN_SEC
+                    and not _is_interrupted
+                ):
+                    _last_idle_prompt_at = _now_idle
+                    idle_content = types.Content(
+                        parts=[types.Part(
+                            text=(
+                                "[IDLE CHECK] The user has been silent for a while. "
+                                "Briefly check in — ask if they need anything or if everything is okay. "
+                                "Keep it short and natural."
+                            )
+                        )],
+                        role="user",
+                    )
+                    ctx_queue.inject_immediate(idle_content)
+                    logger.info("Idle timeout reached (%.0fs), injected check-in prompt",
+                                _now_idle - _last_user_activity_at)
 
         except WebSocketDisconnect:
             stop_downstream.set()
