@@ -104,7 +104,7 @@ logger = logging.getLogger("sightline.server")
 # ---------------------------------------------------------------------------
 
 LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
-PORT = int(os.getenv("PORT", "8080"))
+PORT = int(os.getenv("PORT", "8100"))
 SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT", "3600"))
 WS_INACTIVITY_TIMEOUT_SEC = int(os.getenv("WS_INACTIVITY_TIMEOUT", str(SESSION_TIMEOUT_SEC)))
 
@@ -311,13 +311,14 @@ class ContextInjectionQueue:
         self._schedule_deferred_flush(delay=delay)
 
     def flush_or_defer_first_turn(self, first_turn_delay: float = 1.0) -> None:
-        """Flush queued items, deferring if this is the post-greeting turn."""
+        """Flush queued items, always deferring slightly to let audio drain."""
         if self._first_turn:
             self._first_turn = False
             self.schedule_flush_after(first_turn_delay)
             logger.info("Post-greeting pause: flush deferred %.1fs", first_turn_delay)
         else:
-            self.flush()
+            # Defer 300ms to let audio pipeline drain before triggering new response
+            self.schedule_flush_after(0.3)
 
     # -- Flush ---------------------------------------------------------------
 
@@ -352,6 +353,8 @@ class ContextInjectionQueue:
 
     def check_max_age(self) -> bool:
         """Force-flush if the oldest item exceeds QUEUE_MAX_AGE_SEC."""
+        if self._model_speaking:
+            return False  # Don't force-flush while model is speaking
         if not self._queue:
             return False
         oldest = min(it.enqueued_at for it in self._queue.values())
@@ -947,6 +950,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         except Exception:
             logger.exception("Failed to load face library for user %s", user_id)
 
+    # -- WebSocket write lock (prevent interleaved frames from concurrent coroutines)
+    _ws_write_lock = asyncio.Lock()
+
     # -- Vision analysis state -----------------------------------------------
     _vision_lock = asyncio.Lock()
     _vision_in_progress = False
@@ -1023,7 +1029,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             stop_downstream.set()
             return False
         try:
-            await websocket.send_json(payload)
+            async with _ws_write_lock:
+                await websocket.send_json(payload)
             return True
         except (WebSocketDisconnect, RuntimeError):
             stop_downstream.set()
@@ -1034,7 +1041,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             stop_downstream.set()
             return False
         try:
-            await websocket.send_bytes(payload)
+            async with _ws_write_lock:
+                await websocket.send_bytes(payload)
             return True
         except (WebSocketDisconnect, RuntimeError):
             stop_downstream.set()
@@ -2232,12 +2240,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             f"{persona_block}\n"
                             "Do not narrate this block to the user."
                         )
-                        content = types.Content(
-                            role="user",
-                            parts=[types.Part(text=profile_ctx)],
+                        ctx_queue.enqueue(
+                            category="profile_update",
+                            text=profile_ctx,
+                            priority=3,
+                            speak=False,
                         )
-                        ctx_queue.inject_immediate(content)
-                        logger.info("Injected profile update context for user %s", user_id)
+                        logger.info("Queued profile update context for user %s", user_id)
 
                         # 4. Ack to client
                         await _safe_send_json({"type": MessageType.PROFILE_UPDATED_ACK})
@@ -2603,13 +2612,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "text": input_text,
                             "role": "echo",
                         })
-                        # Tell Gemini to disregard the echo input
-                        cancel = types.Content(
-                            parts=[types.Part(text="[SYSTEM: The previous audio input was an echo of your own speech. Do not respond to it.]")],
-                            role="user",
+                        # Tell Gemini to disregard the echo input (queued to avoid audio overlap)
+                        ctx_queue.enqueue(
+                            category="echo_cancel",
+                            text="[SYSTEM: The previous audio input was an echo of your own speech. Do not respond to it.]",
+                            priority=1,
+                            speak=False,
                         )
-                        ctx_queue.inject_immediate(cancel)
-                        logger.info("Sent echo cancellation to Gemini")
+                        logger.info("Queued echo cancellation for Gemini")
                     else:
                         transcript_history.append({
                             "role": "user",

@@ -8,8 +8,12 @@
 import Foundation
 
 enum SightLineConfig {
-    // Server URL - change for Cloud Run deployment
+    // Server URL — Debug builds connect to local Mac, Release to Cloud Run
+    #if DEBUG
+    static let serverBaseURL = "ws://Lius-MacBook-Air.local:8100"
+    #else
     static let serverBaseURL = "wss://sightline-backend-kp47ssyf4q-uc.a.run.app"
+    #endif
     static let sessionResumptionHandleDefaultsKey = "sightline.session_resumption_handle"
 
     // WebSocket path template

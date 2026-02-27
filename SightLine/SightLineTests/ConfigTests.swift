@@ -17,7 +17,11 @@ struct ConfigTests {
         let url = SightLineConfig.wsURL(userId: "user123", sessionId: "sess456")
         #expect(url != nil)
         #expect(url!.absoluteString.contains("/ws/user123/sess456"))
+        #if DEBUG
+        #expect(url!.scheme == "ws")
+        #else
         #expect(url!.scheme == "wss")
+        #endif
     }
 
     @Test("wsURL includes resume handle query item")
@@ -33,9 +37,13 @@ struct ConfigTests {
         #expect(resumeHandle == "resume-token-123")
     }
 
-    @Test("server base URL uses wss scheme")
+    @Test("server base URL uses correct scheme for build configuration")
     func serverBaseUrlScheme() {
+        #if DEBUG
+        #expect(SightLineConfig.serverBaseURL.hasPrefix("ws://"))
+        #else
         #expect(SightLineConfig.serverBaseURL.hasPrefix("wss://"))
+        #endif
     }
 
     @Test("audio input sample rate is 16kHz for Gemini")

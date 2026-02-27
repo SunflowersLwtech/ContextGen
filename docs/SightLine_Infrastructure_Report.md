@@ -327,15 +327,32 @@ FACE_MATCH_THRESHOLD=0.4                       # 余弦相似度匹配阈值
 MAX_FACES_IN_LIBRARY=100                       # 内存加载上限
 ```
 
-### 3.2 iOS 前端配置
+### 3.2 iOS 前端配置（Local / Cloud 零切换）
+
+`Config.swift` 使用 `#if DEBUG` 条件编译，Debug 连本地、Release 连 Cloud Run，无需改代码：
 
 ```swift
-// iOS App 配置 (Config.swift)
-// WebSocket 连接地址在 iOS App 的 Config.swift 中硬编码或通过 Info.plist 配置
-// 无需 .env 文件——iOS 原生 App 通过 Xcode Build Configuration 管理
-static let wsBaseURL = "wss://sightline-xxx.run.app/ws"
-static let apiBaseURL = "https://sightline-xxx.run.app"
+// Config.swift
+#if DEBUG
+static let serverBaseURL = "ws://Lius-MacBook-Air.local:8100"   // 本地 mDNS
+#else
+static let serverBaseURL = "wss://sightline-backend-kp47ssyf4q-uc.a.run.app"
+#endif
 ```
+
+| 构建配置 | 连接目标 | ATS | Info.plist |
+|----------|---------|-----|-----------|
+| Debug | `ws://Lius-MacBook-Air.local:8100` | `NSAllowsLocalNetworking = true` | `Info-Debug.plist` |
+| Release | `wss://...run.app` | 默认严格 | 无额外 plist |
+
+**本地开发流程**：
+```bash
+conda activate sightline && cd SightLine && python server.py   # 监听 0.0.0.0:8100
+# Xcode Debug build → 真机自动连 ws://Mac.local:8100
+# 改 server.py → 重启进程即可，无需重新 build iOS
+```
+
+> `server.py` 默认端口改为 `8100`（避免与常用 8080 冲突）。Cloud Run 通过 `PORT` 环境变量注入 `8080`，不受影响。
 
 ### 3.3 Secret Manager 存储项
 

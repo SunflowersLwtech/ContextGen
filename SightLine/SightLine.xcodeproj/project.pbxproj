@@ -563,6 +563,7 @@
 				DEVELOPMENT_TEAM = 2MCUR7CFAU;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SightLine/Info-Debug.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "SightLine uses the camera to capture your surroundings and provide real-time scene descriptions.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "SightLine monitors your heart rate to detect stress or panic and adjust assistance level.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "SightLine uses your location to provide contextual navigation assistance.";
