@@ -46,10 +46,10 @@ struct ConfigTests {
         #expect(SightLineConfig.audioOutputSampleRate == 24000)
     }
 
-    @Test("audio buffer size gives 100ms at 16kHz")
+    @Test("audio buffer size gives 30ms at 16kHz")
     func audioBufferSize() {
-        // 16000 samples/sec * 0.1 sec = 1600 samples
-        #expect(SightLineConfig.audioBufferSize == 1600)
+        // 16000 samples/sec * 0.03 sec = 480 samples (Google recommends 20-40ms)
+        #expect(SightLineConfig.audioBufferSize == 480)
     }
 
     @Test("audio jitter buffer keeps 2-4 chunks")
