@@ -1207,10 +1207,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         _greeting_parts.append(
             f"Address them as '{user_profile.preferred_name}'."
         )
-    _greeting_parts.append(
-        "Mention that the camera is off and they can swipe sideways to turn it on "
-        "when they need visual assistance. Keep the greeting warm and concise."
-    )
+    _greeting_parts.append("Keep it natural and concise — no instructions or tutorials.")
     _combined_content = types.Content(
         parts=[
             types.Part(text="[CONTEXT UPDATE - DO NOT SPEAK]\n" + _initial_prompt),

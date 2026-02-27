@@ -153,7 +153,8 @@ class WebSocketManager: ObservableObject {
         reconnectWorkItem = nil
         stopPingTimer()
 
-        let parameters = NWParameters.tls
+        let useTLS = url.scheme == "wss"
+        let parameters = useTLS ? NWParameters.tls : NWParameters.tcp
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
         parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)

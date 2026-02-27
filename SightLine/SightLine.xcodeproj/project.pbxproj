@@ -64,9 +64,22 @@
 		CC0010012F4A1BF10068374A /* SightLineWatchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SightLineWatchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		EE0010012F4A1BF10068374A /* Exceptions for "SightLine" folder in "SightLine" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Info-Debug.plist",
+			);
+			target = 9656C1922F4A1BF00068374A /* SightLine */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9656C1952F4A1BF00068374A /* SightLine */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EE0010012F4A1BF10068374A /* Exceptions for "SightLine" folder in "SightLine" target */,
+			);
 			path = SightLine;
 			sourceTree = "<group>";
 		};
