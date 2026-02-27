@@ -781,8 +781,11 @@ async def _dispatch_function_call(
     logger.info("Function call: %s(%s)", func_name, func_args)
 
     if func_name not in ALL_FUNCTIONS:
-        logger.warning("Unknown function call: %s", func_name)
-        return {"error": f"Unknown function: {func_name}"}
+        logger.warning("Unknown function call: %s (should have been caught upstream)", func_name)
+        return {
+            "status": "unavailable",
+            "message": f"'{func_name}' does not exist. Use only the tools listed in your instructions.",
+        }
 
     # Navigation tools: inject current GPS/heading from ephemeral context
     if func_name in NAVIGATION_FUNCTIONS:
@@ -799,7 +802,15 @@ async def _dispatch_function_call(
     if func_name in MEMORY_FUNCTIONS:
         func_args["user_id"] = user_id
 
-    return await asyncio.to_thread(ALL_FUNCTIONS[func_name], **func_args)
+    try:
+        return await asyncio.to_thread(ALL_FUNCTIONS[func_name], **func_args)
+    except Exception:
+        logger.exception("Tool %s raised an exception", func_name)
+        return {
+            "error": "tool_execution_failed",
+            "tool": func_name,
+            "message": f"The {func_name} tool encountered an internal error. Try again or use a different approach.",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -2299,6 +2310,36 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 function_calls = _extract_function_calls(event)
                 if function_calls:
                     for fc in function_calls:
+                        # Guard: intercept hallucinated tool calls
+                        if fc.name not in ALL_FUNCTIONS:
+                            logger.warning(
+                                "Model called non-existent tool %r — returning no-op",
+                                fc.name,
+                            )
+                            await _safe_send_json({
+                                "type": "debug_event",
+                                "event": "hallucinated_tool_call",
+                                "tool": fc.name,
+                                "args": _json_safe(dict(fc.args) if fc.args else {}),
+                            })
+                            from google.genai.types import FunctionResponse as _FR
+                            noop_response = _FR(
+                                name=fc.name,
+                                response={
+                                    "status": "unavailable",
+                                    "message": (
+                                        f"'{fc.name}' does not exist. "
+                                        "Use only the tools listed in your instructions. "
+                                        "OCR/vision results are injected automatically as context."
+                                    ),
+                                },
+                            )
+                            ctx_queue.inject_immediate(types.Content(
+                                parts=[types.Part(function_response=noop_response)],
+                                role="user",
+                            ))
+                            continue
+
                         user_speaking = session_ctx.current_activity_state == "user_speaking"
                         behavior = resolve_tool_behavior(
                             tool_name=fc.name,
