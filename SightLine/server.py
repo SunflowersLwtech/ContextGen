@@ -942,11 +942,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _FACE_BACKOFF_SKIP_CYCLES = 2     # skip N cycles after threshold hit
     _face_skip_counter: int = 0
 
-    # Idle timeout: prompt Gemini to check in after prolonged silence
+    # User activity tracking (for telemetry / future use)
     _last_user_activity_at: float = time.monotonic()
-    _last_idle_prompt_at: float = 0.0
-    _IDLE_TIMEOUT_SEC = 15.0
-    _IDLE_PROMPT_COOLDOWN_SEC = 60.0
 
     # Vision spoken tracking for context injection queue
     _turn_had_vision_content = False
@@ -2351,7 +2348,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         function calls, and content parts (audio binary / text JSON).
         """
         nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content, _model_audio_last_seen_at
-        nonlocal _last_user_activity_at, _last_idle_prompt_at, _last_interrupt_at
+        nonlocal _last_user_activity_at, _last_interrupt_at
 
         def _start_live_events():
             return runner.run_live(
@@ -2641,27 +2638,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if stop_downstream.is_set():
                         break
 
-                # --- Idle timeout: prompt check-in after prolonged silence ---
-                _now_idle = time.monotonic()
-                if (
-                    (_now_idle - _last_user_activity_at) > _IDLE_TIMEOUT_SEC
-                    and (_now_idle - _last_idle_prompt_at) > _IDLE_PROMPT_COOLDOWN_SEC
-                    and not _is_interrupted
-                ):
-                    _last_idle_prompt_at = _now_idle
-                    idle_content = types.Content(
-                        parts=[types.Part(
-                            text=(
-                                "[IDLE CHECK] The user has been silent for a while. "
-                                "Briefly check in — ask if they need anything or if everything is okay. "
-                                "Keep it short and natural."
-                            )
-                        )],
-                        role="user",
-                    )
-                    ctx_queue.inject_immediate(idle_content)
-                    logger.info("Idle timeout reached (%.0fs), injected check-in prompt",
-                                _now_idle - _last_user_activity_at)
 
         except WebSocketDisconnect:
             stop_downstream.set()

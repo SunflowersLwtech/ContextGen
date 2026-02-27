@@ -699,18 +699,10 @@ struct MainView: View {
             webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
         }
 
-        audioCapture.onSpeechDetected = { [weak audioCapture, weak webSocketManager] in
-            let now = CFAbsoluteTimeGetCurrent()
-            let modelSpeaking = (now - (audioCapture?.lastModelAudioReceivedAt ?? 0)) < 1.5
-            guard !modelSpeaking else { return }
-            webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
-        }
-        audioCapture.onSpeechEnded = { [weak audioCapture, weak webSocketManager] in
-            let now = CFAbsoluteTimeGetCurrent()
-            let modelSpeaking = (now - (audioCapture?.lastModelAudioReceivedAt ?? 0)) < 1.5
-            guard !modelSpeaking else { return }
-            webSocketManager?.sendText(UpstreamMessage.activityEnd.toJSON())
-        }
+        // Manual activity_start/activity_end signals removed:
+        // Server-side VAD is re-enabled with conservative sensitivity.
+        // Client-side RMS gating acts as AEC; explicit signals are unnecessary
+        // and conflict with automatic activity detection.
 
         webSocketManager.onTextReceived = { text in
             DispatchQueue.main.async {

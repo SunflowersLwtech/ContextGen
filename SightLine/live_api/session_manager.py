@@ -111,9 +111,9 @@ def create_session_service():
 # LOD-driven VAD presets (SL-36)
 # ---------------------------------------------------------------------------
 
-# NOTE: Server-side automatic VAD is disabled (see get_run_config).
-# These presets are retained for debug overlay display and LOD transition
-# messages but have no runtime effect on Gemini's VAD behavior.
+# NOTE: Server-side VAD is enabled with conservative sensitivity.
+# Client-side RMS gating (silence during model speech) acts as AEC
+# to prevent echo residual from triggering server VAD.
 LOD_VAD_PRESETS: dict[int, dict] = {
     1: {
         "voice_name": "Aoede",
@@ -125,9 +125,9 @@ LOD_VAD_PRESETS: dict[int, dict] = {
     2: {
         "voice_name": "Aoede",
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
-        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
-        "silence_duration_ms": 1200,
-        "prefix_padding_ms": 250,
+        "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_LOW,
+        "silence_duration_ms": 1500,
+        "prefix_padding_ms": 300,
     },
     3: {
         "voice_name": "Aoede",
@@ -282,15 +282,15 @@ class SessionManager:
                 sliding_window=types.SlidingWindow(target_tokens=80_000),
             ),
             realtime_input_config=types.RealtimeInputConfig(
-                # Server-side VAD disabled: echo residual from speakerphone
-                # triggers Gemini's automatic VAD → self-interruption loop.
-                # All speech detection is handled client-side (Silero VAD)
-                # and forwarded as explicit ActivityStart/End signals.
                 automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=True,
+                    disabled=False,
+                    start_of_speech_sensitivity=vad_preset["start_sensitivity"],
+                    end_of_speech_sensitivity=vad_preset["end_sensitivity"],
+                    prefix_padding_ms=vad_preset["prefix_padding_ms"],
+                    silence_duration_ms=vad_preset["silence_duration_ms"],
                 ),
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
-                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             ),
         )
 

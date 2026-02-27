@@ -131,7 +131,7 @@ class TestSessionManager:
 
         payload = build_vad_runtime_update_payload(1)
         assert payload["lod"] == 1
-        assert 300 <= payload["silence_duration_ms"] <= 500
+        assert 500 <= payload["silence_duration_ms"] <= 1000
         assert payload["prefix_padding_ms"] >= 0
 
         message = build_vad_runtime_update_message(1)
