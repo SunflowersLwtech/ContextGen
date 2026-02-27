@@ -29,11 +29,11 @@ enum SightLineConfig {
     // Audio
     static let audioInputSampleRate: Double = 16000   // Gemini requires 16kHz
     static let audioOutputSampleRate: Double = 24000   // Gemini outputs 24kHz
-    static let audioBufferSize: UInt32 = 1600          // 100ms at 16kHz
-    static let audioJitterBufferChunks: Int = 5        // chunks needed before starting drain
-    static let audioScheduleAheadCount: Int = 4       // sliding window: buffers pre-scheduled to player
-    static let audioJitterMaxWait: TimeInterval = 0.05 // 50ms fallback for short utterances
-    static let audioMaxPendingChunks: Int = 50         // overflow guard (~5s at 100ms/chunk)
+    static let audioBufferSize: UInt32 = 480            // 30ms at 16kHz (was 1600/100ms, Google recommends 20-40ms)
+    static let audioJitterBufferChunks: Int = 3        // 90ms startup (was 5/500ms)
+    static let audioScheduleAheadCount: Int = 3        // 90ms sliding window (was 4/400ms)
+    static let audioJitterMaxWait: TimeInterval = 0.04 // 40ms fallback (was 50ms)
+    static let audioMaxPendingChunks: Int = 160        // ~5s overflow guard (was 50)
 
     // Video
     static let videoFrameWidth: Int = 768

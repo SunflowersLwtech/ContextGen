@@ -23,6 +23,23 @@ class AudioCaptureManager: ObservableObject {
     /// RMS audio level callback for NoiseMeter (ambient noise calculation).
     var onAudioLevelUpdate: ((Float) -> Void)?
 
+    /// True while model is playing audio — enables echo gating.
+    var isModelSpeaking = false
+
+    /// RMS threshold for voice barge-in during model playback.
+    /// Post-AEC residual echo is typically < 0.01 RMS; human speech at arm's length is > 0.03.
+    private let bargeInRMSThreshold: Float = 0.025
+
+    /// Grace period after model stops before resuming normal capture.
+    var modelStoppedAt: CFAbsoluteTime = 0
+    private let aecTailGuardSec: Double = 0.15
+
+    /// Called when voice barge-in detected (RMS above threshold during model speech).
+    var onVoiceBargeIn: (() -> Void)?
+
+    /// Last computed RMS value, reused by echo gating logic.
+    private var lastRMS: Float = 0
+
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var restartObserver: NSObjectProtocol?
@@ -86,14 +103,36 @@ class AudioCaptureManager: ObservableObject {
                         sumSquares += samples[i] * samples[i]
                     }
                     let rms = sqrtf(sumSquares / Float(frameLength))
+                    self.lastRMS = rms
                     self.onAudioLevelUpdate?(rms)
                 }
             }
 
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
-                let data = Data(bytes: channelData[0], count: byteCount)
-                self.onAudioCaptured?(data)
+
+                let speaking = self.isModelSpeaking
+                let inTailGuard = !speaking &&
+                    (CFAbsoluteTimeGetCurrent() - self.modelStoppedAt) < self.aecTailGuardSec
+
+                if speaking || inTailGuard {
+                    // During model speech: energy-gated — only pass genuine human voice
+                    let rms = self.lastRMS
+                    if rms > self.bargeInRMSThreshold {
+                        // Genuine barge-in: send real audio + signal playback to stop
+                        let data = Data(bytes: channelData[0], count: byteCount)
+                        self.onAudioCaptured?(data)
+                        self.isModelSpeaking = false
+                        self.onVoiceBargeIn?()
+                    } else {
+                        // Echo residual: send silence to maintain stream continuity
+                        let silence = Data(count: byteCount)
+                        self.onAudioCaptured?(silence)
+                    }
+                } else {
+                    let data = Data(bytes: channelData[0], count: byteCount)
+                    self.onAudioCaptured?(data)
+                }
             }
         }
 

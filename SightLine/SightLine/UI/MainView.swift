@@ -662,8 +662,20 @@ struct MainView: View {
             }
         }
 
-        webSocketManager.onAudioReceived = { [weak audioPlayback] data in
+        webSocketManager.onAudioReceived = { [weak audioPlayback, weak audioCapture] data in
+            audioCapture?.isModelSpeaking = true
             audioPlayback?.playAudioData(data)
+        }
+
+        audioPlayback.onDrainComplete = { [weak audioCapture] in
+            audioCapture?.isModelSpeaking = false
+            audioCapture?.modelStoppedAt = CFAbsoluteTimeGetCurrent()
+        }
+
+        audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
+            DispatchQueue.main.async {
+                audioPlayback?.stopImmediately()
+            }
         }
 
         webSocketManager.onTextReceived = { text in
@@ -979,6 +991,8 @@ struct MainView: View {
         case .interrupted:
             logger.info("Model output interrupted — flushing playback buffer")
             DispatchQueue.main.async {
+                audioCapture.isModelSpeaking = false
+                audioCapture.modelStoppedAt = CFAbsoluteTimeGetCurrent()
                 audioPlayback.stopImmediately()
                 HapticManager.shared.doubleTap()
                 devConsoleModel.captureTranscript(

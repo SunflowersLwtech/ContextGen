@@ -932,6 +932,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _model_audio_last_seen_at: float = 0.0
     _MODEL_AUDIO_STALENESS_SEC = 2.0
 
+    # Interrupt debounce (P3: prevent rapid-fire interrupts from echo)
+    _last_interrupt_at: float = 0.0
+    _INTERRUPT_DEBOUNCE_SEC = 0.5
+
     # Vision spoken tracking for context injection queue
     _turn_had_vision_content = False
 
@@ -1026,6 +1030,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         words_candidate = set(candidate.lower().split())
         # Relaxed mode when model was speaking recently
         model_speaking = (now_ts - _model_audio_last_seen_at) < 3.0
+
+        # P3: very short input during model speech is almost certainly echo
+        if model_speaking and len(words_candidate) <= 2:
+            return True
+
         min_words = 1 if model_speaking else 3
         jaccard_threshold = 0.35 if model_speaking else 0.6
         window_sec = 8.0 if model_speaking else 5.0
@@ -2344,14 +2353,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     or getattr(event, "interrupted", False)
                 )
                 if _event_interrupted and not _is_interrupted:
-                    _is_interrupted = True
-                    _model_audio_last_seen_at = 0.0
-                    ctx_queue.set_model_speaking(False)
-                    # Note: do NOT flush queue on interrupt — user is speaking
-                    await _safe_send_json({
-                        "type": MessageType.INTERRUPTED,
-                    })
-                    logger.info("Interrupt detected — suppressing audio forwarding")
+                    now_mono = time.monotonic()
+                    if (now_mono - _last_interrupt_at) < _INTERRUPT_DEBOUNCE_SEC:
+                        logger.debug("Interrupt debounced (%.0fms since last)",
+                                     (now_mono - _last_interrupt_at) * 1000)
+                    else:
+                        _is_interrupted = True
+                        _last_interrupt_at = now_mono
+                        _model_audio_last_seen_at = 0.0
+                        ctx_queue.set_model_speaking(False)
+                        # Note: do NOT flush queue on interrupt — user is speaking
+                        await _safe_send_json({
+                            "type": MessageType.INTERRUPTED,
+                        })
+                        logger.info("Interrupt detected — suppressing audio forwarding")
 
                 # --- Turn complete: resume audio forwarding + flush buffer ---
                 if event.turn_complete:

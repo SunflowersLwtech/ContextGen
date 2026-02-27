@@ -109,7 +109,7 @@ LOD_VAD_PRESETS: dict[int, dict] = {
         "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
         "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
         "silence_duration_ms": 400,
-        "prefix_padding_ms": 100,
+        "prefix_padding_ms": 200,  # was 100 — too sensitive, AEC residual triggers false starts
     },
     2: {
         "voice_name": "Aoede",
@@ -276,7 +276,9 @@ class SessionManager:
                     end_of_speech_sensitivity=vad_preset.get("end_sensitivity"),
                     prefix_padding_ms=vad_preset.get("prefix_padding_ms", 200),
                     silence_duration_ms=vad_preset.get("silence_duration_ms", 800),
-                )
+                ),
+                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             ),
         )
 
