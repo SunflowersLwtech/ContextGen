@@ -15,7 +15,7 @@
 - **Cloud (FastAPI + Google ADK):** Processes multimodal streams via a unified WebSocket and orchestrates specialized agents.
 - **Core capability (Adaptive LOD):** Dynamically adjusts response density so the assistant is useful without being overwhelming.
 
-> Current code status (2026-02-23): Swift Native client + FastAPI realtime backend + Cloud Run deployment pipeline + Firestore memory system + InsightFace face recognition pipeline are integrated.
+> Current code status (2026-02-28): Swift Native client + FastAPI realtime backend + Cloud Run deployment pipeline + Firestore memory system + InsightFace face recognition pipeline are integrated. Camera-triggered continuous narration issue resolved via server-side speech gating.
 
 ## 🎯 Core Value
 
@@ -147,10 +147,21 @@ gcloud builds submit --config cloudbuild.yaml
 - Consolidated development reference: `docs/SightLine_Consolidated_Development_Reference.md`
 - iOS/backend protocol alignment: `docs/SightLine_iOS_Backend_Protocol_Alignment_Matrix.md`
 
+## 🛡️ Speech Gating (Camera Narration Fix)
+
+When the camera activates, a multi-layer gating strategy prevents the AI from narrating non-stop:
+
+| Layer | Mechanism |
+|-------|-----------|
+| **Frame throttle** | Raw frames to Gemini capped at 1 per 2 seconds (down from 15–30 fps) |
+| **Grace period** | 8-second post-activation silence window (safety hazards excepted) |
+| **LOD threshold** | Raised `BASE_SPEECH_THRESHOLD` (3.0 → 3.5) + 1.5 stillness penalty when stationary |
+| **Structural cooldown** | 25-second vision-spoken cooldown triggered at injection time, language-agnostic |
+| **Prompt directive** | Orchestrator instructed to treat video frames as passive awareness, not a narration trigger |
+
 ## 🧭 Short-Term Roadmap
 
 - Complete end-to-end stability stress tests (long sessions + high-frequency telemetry + voice interruption).
-- Further tune LOD transition thresholds to reduce false triggers and repetitive narration.
 - Polish Face Library and Memory Forgetting into a clear product loop.
 - Expand automated test coverage for key modules.
 
