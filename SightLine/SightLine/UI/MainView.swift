@@ -224,10 +224,31 @@ struct MainView: View {
                 .clipShape(.rect(cornerRadius: 16))
             )
             #endif
+            .overlay(alignment: .topTrailing) {
+                cameraFlipButton
+            }
             .padding(.horizontal, 16)
             .padding(.top, 8)
-            .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+
+    private var cameraFlipButton: some View {
+        Button {
+            cameraManager.flipCamera()
+            HapticManager.shared.swipe()
+            devConsoleModel.captureTranscript(
+                text: "Camera flipped to \(cameraManager.cameraPosition == .back ? "front" : "back")",
+                role: "gesture"
+            )
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(8)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .padding(10)
+        .accessibilityLabel("Flip camera")
     }
 
     // MARK: - Bottom Info Cluster
@@ -663,13 +684,8 @@ struct MainView: View {
         }
 
         webSocketManager.onAudioReceived = { [weak audioPlayback, weak audioCapture] data in
-            audioCapture?.isModelSpeaking = true
+            audioCapture?.lastModelAudioReceivedAt = CFAbsoluteTimeGetCurrent()
             audioPlayback?.playAudioData(data)
-        }
-
-        audioPlayback.onDrainComplete = { [weak audioCapture] in
-            audioCapture?.isModelSpeaking = false
-            audioCapture?.modelStoppedAt = CFAbsoluteTimeGetCurrent()
         }
 
         audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
@@ -991,8 +1007,7 @@ struct MainView: View {
         case .interrupted:
             logger.info("Model output interrupted — flushing playback buffer")
             DispatchQueue.main.async {
-                audioCapture.isModelSpeaking = false
-                audioCapture.modelStoppedAt = CFAbsoluteTimeGetCurrent()
+                audioCapture.lastModelAudioReceivedAt = 0  // Expire echo gate immediately
                 audioPlayback.stopImmediately()
                 HapticManager.shared.doubleTap()
                 devConsoleModel.captureTranscript(

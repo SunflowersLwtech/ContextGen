@@ -2,9 +2,9 @@
 //  CameraManager.swift
 //  SightLine
 //
-//  Captures frames from the back camera, resizes to 768x768,
+//  Captures frames from the camera, resizes to 768x768,
 //  encodes as JPEG, and delivers via callback for WebSocket transmission.
-//  Frame rate is controlled by FrameSelector (LOD-based throttling).
+//  Supports front/back camera flip. Frame rate is controlled by FrameSelector.
 //
 
 import AVFoundation
@@ -16,6 +16,7 @@ import os
 class CameraManager: NSObject, ObservableObject {
     @Published var isRunning = false
     @Published var previewSession: AVCaptureSession?
+    @Published var cameraPosition: AVCaptureDevice.Position = .back
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "Camera")
 
@@ -37,17 +38,50 @@ class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// Flip between front and back camera while keeping the session alive.
+    func flipCamera() {
+        sessionQueue.async { [weak self] in
+            guard let self = self, let session = self.captureSession, session.isRunning else { return }
+
+            let newPosition: AVCaptureDevice.Position = (self.cameraPosition == .back) ? .front : .back
+
+            guard let newDevice = AVCaptureDevice.default(
+                .builtInWideAngleCamera, for: .video, position: newPosition
+            ), let newInput = try? AVCaptureDeviceInput(device: newDevice) else {
+                Self.logger.error("Camera not available for position \(newPosition.rawValue)")
+                return
+            }
+
+            session.beginConfiguration()
+            // Remove existing video input
+            if let currentInput = session.inputs.first as? AVCaptureDeviceInput {
+                session.removeInput(currentInput)
+            }
+            if session.canAddInput(newInput) {
+                session.addInput(newInput)
+            }
+            session.commitConfiguration()
+
+            DispatchQueue.main.async {
+                self.cameraPosition = newPosition
+            }
+            Self.logger.info("Camera flipped to \(newPosition == .back ? "back" : "front")")
+        }
+    }
+
     private func setupCaptureSession() {
         let session = AVCaptureSession()
         session.sessionPreset = .medium
 
+        let position = cameraPosition
+
         guard let camera = AVCaptureDevice.default(
             .builtInWideAngleCamera,
             for: .video,
-            position: .back
+            position: position
         ) else {
-            Self.logger.error("Back camera not available")
-            onCameraFailure?("back_camera_not_available")
+            Self.logger.error("Camera not available for position \(position.rawValue)")
+            onCameraFailure?("camera_not_available")
             return
         }
 
@@ -79,7 +113,7 @@ class CameraManager: NSObject, ObservableObject {
             self.isRunning = true
             self.previewSession = session
         }
-        Self.logger.info("Camera capture started")
+        Self.logger.info("Camera capture started (position: \(position == .back ? "back" : "front"))")
     }
 
     func stopCapture() {

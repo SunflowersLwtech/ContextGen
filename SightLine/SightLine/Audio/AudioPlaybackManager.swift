@@ -16,9 +16,6 @@ import os
 class AudioPlaybackManager: ObservableObject {
     @Published var isPlaying = false
 
-    /// Called when drain completes naturally (model finished speaking, not barge-in).
-    var onDrainComplete: (() -> Void)?
-
     private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioPlayback")
 
     private var playbackFormat: AVAudioFormat?
@@ -182,10 +179,7 @@ class AudioPlaybackManager: ObservableObject {
                         if self.scheduledBufferCount <= 0 {
                             self.scheduledBufferCount = 0
                             self.isDrainActive = false
-                            DispatchQueue.main.async {
-                                self.isPlaying = false
-                                self.onDrainComplete?()
-                            }
+                            DispatchQueue.main.async { self.isPlaying = false }
                         }
                         return
                     }
@@ -199,10 +193,7 @@ class AudioPlaybackManager: ObservableObject {
         if scheduledBufferCount == 0 && pendingChunks.isEmpty {
             isDrainActive = false
             wasStarved = true
-            DispatchQueue.main.async {
-                self.isPlaying = false
-                self.onDrainComplete?()
-            }
+            DispatchQueue.main.async { self.isPlaying = false }
         }
     }
 

@@ -23,16 +23,19 @@ class AudioCaptureManager: ObservableObject {
     /// RMS audio level callback for NoiseMeter (ambient noise calculation).
     var onAudioLevelUpdate: ((Float) -> Void)?
 
-    /// True while model is playing audio — enables echo gating.
-    var isModelSpeaking = false
+    /// Timestamp of the last model audio chunk received via WebSocket.
+    /// Used with `modelSpeakingTimeout` to determine if the model is currently speaking.
+    /// Timestamp-based approach is more robust than a boolean flag because it handles
+    /// playback buffer starvation (network jitter) gracefully — no false toggles.
+    var lastModelAudioReceivedAt: CFAbsoluteTime = 0
+
+    /// How long after the last audio chunk we still consider the model "speaking".
+    /// Covers: network jitter between chunks (~100ms) + AEC tail (~150ms) + margin.
+    private let modelSpeakingTimeout: Double = 0.5
 
     /// RMS threshold for voice barge-in during model playback.
-    /// Post-AEC residual echo is typically < 0.01 RMS; human speech at arm's length is > 0.03.
-    private let bargeInRMSThreshold: Float = 0.025
-
-    /// Grace period after model stops before resuming normal capture.
-    var modelStoppedAt: CFAbsoluteTime = 0
-    private let aecTailGuardSec: Double = 0.15
+    /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
+    private let bargeInRMSThreshold: Float = 0.05
 
     /// Called when voice barge-in detected (RMS above threshold during model speech).
     var onVoiceBargeIn: (() -> Void)?
@@ -111,18 +114,19 @@ class AudioCaptureManager: ObservableObject {
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
-                let speaking = self.isModelSpeaking
-                let inTailGuard = !speaking &&
-                    (CFAbsoluteTimeGetCurrent() - self.modelStoppedAt) < self.aecTailGuardSec
+                // Timestamp-based model speaking detection: immune to drain starvation toggles
+                let now = CFAbsoluteTimeGetCurrent()
+                let isModelCurrentlySpeaking =
+                    (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
 
-                if speaking || inTailGuard {
+                if isModelCurrentlySpeaking {
                     // During model speech: energy-gated — only pass genuine human voice
                     let rms = self.lastRMS
                     if rms > self.bargeInRMSThreshold {
                         // Genuine barge-in: send real audio + signal playback to stop
                         let data = Data(bytes: channelData[0], count: byteCount)
                         self.onAudioCaptured?(data)
-                        self.isModelSpeaking = false
+                        self.lastModelAudioReceivedAt = 0  // Expire immediately
                         self.onVoiceBargeIn?()
                     } else {
                         // Echo residual: send silence to maintain stream continuity
