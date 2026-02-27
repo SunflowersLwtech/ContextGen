@@ -31,6 +31,12 @@ class WebSocketManager: ObservableObject {
     private var isConnectionReady = false
     private var isConnectionInProgress = false
 
+    /// Tracks when connection entered .ready state — used to detect short-lived connections
+    /// where the server crashes immediately after accepting the WebSocket handshake.
+    private var lastConnectionReadyTime: DispatchTime?
+    /// Minimum connection duration (seconds) before we consider it "stable" and reset backoff.
+    private let minStableConnectionDuration: TimeInterval = 5.0
+
     // Callbacks
     var onAudioReceived: ((Data) -> Void)?
     var onTextReceived: ((String) -> Void)?
@@ -40,14 +46,20 @@ class WebSocketManager: ObservableObject {
     var onDisconnectionDegraded: (() -> Void)?
     /// Called when connection is restored after a disconnection.
     var onConnectionRestored: (() -> Void)?
+    /// Called when server reports a fatal error (close code 1008) — do NOT reconnect.
+    var onFatalServerError: ((String) -> Void)?
 
     /// Track whether we have notified about degradation to avoid duplicates.
     private var hasDegradedNotification = false
+    /// Set when server sends close code 1008 (fatal error) — suppresses auto-reconnect.
+    private var receivedFatalClose = false
 
     func connect(url: URL) {
         serverURL = url
         intentionalDisconnect = false
+        receivedFatalClose = false
         reconnectDelay = 1.0
+        lastConnectionReadyTime = nil
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         stopPingTimer()
@@ -63,6 +75,7 @@ class WebSocketManager: ObservableObject {
 
     func disconnect() {
         intentionalDisconnect = true
+        lastConnectionReadyTime = nil
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         pathMonitor?.cancel()
@@ -164,7 +177,10 @@ class WebSocketManager: ObservableObject {
                 Self.logger.info("WebSocket connected")
                 self.isConnectionInProgress = false
                 self.isConnectionReady = true
-                self.reconnectDelay = 1.0
+                self.lastConnectionReadyTime = .now()
+                // Don't reset reconnectDelay here — defer to handleDisconnect
+                // which checks connection duration to avoid rapid-reconnect loops
+                // when the server crashes immediately after accepting.
                 self.updateConnectionState(true)
                 self.startPathMonitor()
                 self.startPingTimer(for: activeConnection)
@@ -233,6 +249,19 @@ class WebSocketManager: ObservableObject {
                         self.onTextReceived?(text)
                     }
                 case .close:
+                    // Close code 1008 = fatal server error — do not auto-reconnect
+                    if metadata.closeCode == .protocolCode(.policyViolation) {
+                        Self.logger.error("Server sent fatal close (1008) — suppressing reconnect")
+                        self.receivedFatalClose = true
+                        self.isConnectionReady = false
+                        self.isConnectionInProgress = false
+                        self.stopPingTimer()
+                        self.updateConnectionState(false)
+                        DispatchQueue.main.async {
+                            self.onFatalServerError?("Fatal server error. Please restart the app.")
+                        }
+                        return
+                    }
                     self.handleDisconnect(sourceConnection: activeConnection)
                     return
                 default:
@@ -251,7 +280,7 @@ class WebSocketManager: ObservableObject {
     }
 
     private func handleDisconnect(sourceConnection: NWConnection? = nil) {
-        guard !intentionalDisconnect else { return }
+        guard !intentionalDisconnect, !receivedFatalClose else { return }
         if let sourceConnection, let currentConnection = connection, sourceConnection !== currentConnection {
             return
         }
@@ -270,6 +299,18 @@ class WebSocketManager: ObservableObject {
                 self?.onDisconnectionDegraded?()
             }
         }
+
+        // Determine if this was a short-lived connection (server crash after accept).
+        // Only reset backoff when the connection was genuinely stable (> minStableConnectionDuration).
+        if let readyTime = lastConnectionReadyTime {
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - readyTime.uptimeNanoseconds) / 1_000_000_000
+            if elapsed >= minStableConnectionDuration {
+                // Stable connection — reset backoff for next reconnect
+                reconnectDelay = 1.0
+            }
+            // else: short-lived — keep current backoff and let it grow below
+        }
+        // If lastConnectionReadyTime is nil, connection never reached .ready — keep backoff as-is
 
         // Exponential backoff reconnection
         let delay = reconnectDelay

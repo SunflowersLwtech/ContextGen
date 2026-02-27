@@ -37,8 +37,9 @@ class AudioCaptureManager: ObservableObject {
     var lastModelAudioReceivedAt: CFAbsoluteTime = 0
 
     /// How long after the last audio chunk we still consider the model "speaking".
-    /// Covers: network jitter between chunks (~100ms) + AEC tail (~150ms) + margin.
-    private let modelSpeakingTimeout: Double = 0.5
+    /// Covers: network jitter (~100ms) + function call pauses (~500ms) +
+    /// natural speech pauses (~300ms) + AEC tail (~150ms) + margin (~350ms).
+    private let modelSpeakingTimeout: Double = 1.5
 
     /// RMS threshold for voice barge-in during model playback.
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
@@ -162,11 +163,6 @@ class AudioCaptureManager: ObservableObject {
                 }
             }
 
-            // Feed converted 16kHz Int16 samples to client-side VAD
-            if let int16Data = outputBuffer.int16ChannelData {
-                SileroVAD.shared.processAudioFrame(int16Data[0], count: Int(outputBuffer.frameLength))
-            }
-
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
@@ -176,20 +172,30 @@ class AudioCaptureManager: ObservableObject {
                     (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
 
                 if isModelCurrentlySpeaking {
-                    // During model speech: energy-gated — only pass genuine human voice
+                    // During model speech: only feed VAD when RMS exceeds barge-in
+                    // threshold (potential real speech). Below threshold: skip VAD
+                    // entirely to prevent echo residual from accumulating in LSTM state.
                     let rms = self.lastRMS
-                    if rms > self.bargeInRMSThreshold && SileroVAD.shared.isSpeechActive {
-                        // Genuine barge-in: RMS + VAD confirms human speech, not ambient noise
-                        let data = Data(bytes: channelData[0], count: byteCount)
-                        self.onAudioCaptured?(data)
-                        self.lastModelAudioReceivedAt = 0  // Expire immediately
-                        self.onVoiceBargeIn?()
+                    if rms > self.bargeInRMSThreshold {
+                        SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
+                        if SileroVAD.shared.isSpeechActive {
+                            // Genuine barge-in: RMS + VAD confirms human speech
+                            let data = Data(bytes: channelData[0], count: byteCount)
+                            self.onAudioCaptured?(data)
+                            self.lastModelAudioReceivedAt = 0  // Expire immediately
+                            self.onVoiceBargeIn?()
+                        } else {
+                            let silence = Data(count: byteCount)
+                            self.onAudioCaptured?(silence)
+                        }
                     } else {
-                        // Echo residual: send silence to maintain stream continuity
+                        // Echo residual: send silence, skip VAD
                         let silence = Data(count: byteCount)
                         self.onAudioCaptured?(silence)
                     }
                 } else {
+                    // Model idle: feed all audio to VAD normally
+                    SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
                     let data = Data(bytes: channelData[0], count: byteCount)
                     self.onAudioCaptured?(data)
                 }

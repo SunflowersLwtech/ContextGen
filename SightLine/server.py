@@ -936,6 +936,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _last_interrupt_at: float = 0.0
     _INTERRUPT_DEBOUNCE_SEC = 0.2
 
+    # Adaptive face detection: skip cycles when no faces are consistently detected
+    _face_consecutive_misses: int = 0
+    _FACE_BACKOFF_THRESHOLD = 3       # consecutive 0-face before slowing
+    _FACE_BACKOFF_SKIP_CYCLES = 2     # skip N cycles after threshold hit
+    _face_skip_counter: int = 0
+
     # Idle timeout: prompt Gemini to check in after prolonged silence
     _last_user_activity_at: float = time.monotonic()
     _last_idle_prompt_at: float = 0.0
@@ -1468,7 +1474,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     async def _run_face_recognition(image_base64: str) -> None:
         """Run face recognition and inject results as SILENT context."""
-        nonlocal face_library, _face_library_loaded_at
+        nonlocal face_library, _face_library_loaded_at, _face_consecutive_misses, _face_skip_counter
         if not _face_available:
             await _emit_tool_event(
                 "identify_person",
@@ -1477,6 +1483,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 data={"reason": "face_agent_unavailable"},
             )
             return
+
+        # Adaptive backoff: skip cycles when no faces are consistently detected
+        if _face_consecutive_misses >= _FACE_BACKOFF_THRESHOLD:
+            _face_skip_counter += 1
+            if _face_skip_counter <= _FACE_BACKOFF_SKIP_CYCLES:
+                logger.debug("Face detection skipped (backoff: %d misses)", _face_consecutive_misses)
+                return
+            _face_skip_counter = 0  # run this cycle, then skip again
 
         # Periodic refresh of face library
         now_mono = time.monotonic()
@@ -1510,6 +1524,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ]),
                 },
             })
+            # Update adaptive frequency counters
+            if len(results) == 0:
+                _face_consecutive_misses += 1
+            else:
+                _face_consecutive_misses = 0
+                _face_skip_counter = 0
+
             known = [r for r in results if r["person_name"] != "unknown"]
             await _emit_tool_event(
                 "identify_person",
@@ -1723,6 +1744,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     payload = raw_bytes[1:]
 
                     if magic == _MAGIC_AUDIO:
+                        # During model speech, replace audio with silence
+                        # to prevent echo residual from reaching Gemini's VAD.
+                        if ctx_queue.model_speaking:
+                            payload = b'\x00' * len(payload)
                         blob = types.Blob(
                             data=payload,
                             mime_type="audio/pcm;rate=16000",
@@ -1891,23 +1916,33 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 elif message.get("type") == "activity_start":
                     _last_user_activity_at = time.monotonic()
-                    queue_status = "forwarded"
-                    queue_note = ""
-                    try:
-                        live_request_queue.send_activity_start()
-                        logger.info("Forwarded activity_start to LiveRequestQueue")
-                    except Exception as exc:
-                        queue_status = "forward_failed"
-                        queue_note = str(exc)[:200]
-                        logger.warning(
-                            "Failed to forward activity_start to LiveRequestQueue: %s",
-                            queue_note,
+                    # Suppress during model speech to prevent echo-triggered
+                    # interruptions that leak through client-side gating.
+                    if ctx_queue.model_speaking:
+                        logger.info("Suppressed activity_start (model speaking)")
+                        await _emit_activity_debug_event(
+                            event_name="activity_start",
+                            queue_status="suppressed_model_speaking",
+                            queue_note="",
                         )
-                    await _emit_activity_debug_event(
-                        event_name="activity_start",
-                        queue_status=queue_status,
-                        queue_note=queue_note,
-                    )
+                    else:
+                        queue_status = "forwarded"
+                        queue_note = ""
+                        try:
+                            live_request_queue.send_activity_start()
+                            logger.info("Forwarded activity_start to LiveRequestQueue")
+                        except Exception as exc:
+                            queue_status = "forward_failed"
+                            queue_note = str(exc)[:200]
+                            logger.warning(
+                                "Failed to forward activity_start to LiveRequestQueue: %s",
+                                queue_note,
+                            )
+                        await _emit_activity_debug_event(
+                            event_name="activity_start",
+                            queue_status=queue_status,
+                            queue_note=queue_note,
+                        )
 
                 elif message.get("type") == "activity_end":
                     queue_status = "forwarded"
@@ -2631,15 +2666,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         except WebSocketDisconnect:
             stop_downstream.set()
             logger.info("Client disconnected (downstream): user=%s session=%s", user_id, session_id)
-        except Exception:
+        except Exception as exc:
             stop_downstream.set()
             logger.exception("Error in downstream handler: user=%s session=%s", user_id, session_id)
+
+            # Classify: programming bugs should not trigger client reconnect loops
+            is_fatal = isinstance(exc, (UnboundLocalError, NameError, AttributeError, TypeError))
+            close_code = 1008 if is_fatal else 1011
+
             await _safe_send_json({
                 "type": MessageType.ERROR,
-                "error": "Live session failed. Reconnecting...",
+                "error": "Fatal server error." if is_fatal else "Live session failed. Reconnecting...",
+                "fatal": is_fatal,
             })
             try:
-                await websocket.close(code=1011, reason="downstream_error")
+                await websocket.close(code=close_code, reason="fatal_error" if is_fatal else "downstream_error")
             except Exception:
                 pass
 

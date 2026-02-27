@@ -699,10 +699,16 @@ struct MainView: View {
             webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
         }
 
-        audioCapture.onSpeechDetected = { [weak webSocketManager] in
+        audioCapture.onSpeechDetected = { [weak audioCapture, weak webSocketManager] in
+            let now = CFAbsoluteTimeGetCurrent()
+            let modelSpeaking = (now - (audioCapture?.lastModelAudioReceivedAt ?? 0)) < 1.5
+            guard !modelSpeaking else { return }
             webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
         }
-        audioCapture.onSpeechEnded = { [weak webSocketManager] in
+        audioCapture.onSpeechEnded = { [weak audioCapture, weak webSocketManager] in
+            let now = CFAbsoluteTimeGetCurrent()
+            let modelSpeaking = (now - (audioCapture?.lastModelAudioReceivedAt ?? 0)) < 1.5
+            guard !modelSpeaking else { return }
             webSocketManager?.sendText(UpstreamMessage.activityEnd.toJSON())
         }
 
