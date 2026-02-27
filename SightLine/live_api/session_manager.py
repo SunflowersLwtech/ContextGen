@@ -215,6 +215,16 @@ class SessionManager:
 
     # -- RunConfig ----------------------------------------------------------
 
+    # Languages supported by Gemini Live API native audio models.
+    # zh-CN/zh-TW are NOT supported; language preference is handled
+    # via system instructions in prompt_builder instead.
+    _NATIVE_AUDIO_LANGUAGES = {
+        "ar-EG", "bn-BD", "nl-NL", "en-IN", "en-US", "fr-FR", "de-DE",
+        "hi-IN", "id-ID", "it-IT", "ja-JP", "ko-KR", "mr-IN", "pl-PL",
+        "pt-BR", "ro-RO", "ru-RU", "es-US", "ta-IN", "te-IN", "th-TH",
+        "tr-TR", "uk-UA", "vi-VN",
+    }
+
     def get_run_config(self, session_id: str, lod: int = 2, language_code: str = "") -> RunConfig:
         """Build a RunConfig for the given session."""
         cached_handle = self._session_handles.get(session_id)
@@ -229,6 +239,13 @@ class SessionManager:
 
         vad_preset = get_lod_vad_preset(lod)
 
+        # Only pass language_code if it's supported by the native audio model.
+        # Unsupported languages (e.g. zh-CN) are handled via system instructions
+        # in prompt_builder.build_user_profile_block() instead.
+        effective_lang = None
+        if language_code and language_code in self._NATIVE_AUDIO_LANGUAGES:
+            effective_lang = language_code
+
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
             response_modalities=[types.Modality.AUDIO],
@@ -238,7 +255,7 @@ class SessionManager:
                         voice_name=vad_preset["voice_name"],
                     )
                 ),
-                language_code=language_code or None,
+                language_code=effective_lang,
             ),
             proactivity=types.ProactivityConfig(proactive_audio=(lod >= 2)),
             enable_affective_dialog=True,

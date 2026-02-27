@@ -2221,7 +2221,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         Processes session_resumption_update events, transcriptions,
         function calls, and content parts (audio binary / text JSON).
         """
-        nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content
+        nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content, _model_audio_last_seen_at
 
         def _start_live_events():
             return runner.run_live(
