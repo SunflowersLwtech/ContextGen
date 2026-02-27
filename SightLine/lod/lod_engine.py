@@ -77,7 +77,7 @@ class LODDecisionLog:
 # ---------------------------------------------------------------------------
 
 # Base threshold that info_value must exceed to trigger speech
-BASE_SPEECH_THRESHOLD = 3.0
+BASE_SPEECH_THRESHOLD = 3.5
 
 INFO_VALUES: dict[str, float] = {
     "safety_warning": 10.0,
@@ -106,7 +106,9 @@ def should_speak(
 
     movement_penalty = (step_cadence / 60.0) * 2.0
     noise_penalty = max(0.0, (ambient_noise_db - 60) * 0.1)
-    threshold = BASE_SPEECH_THRESHOLD + movement_penalty + noise_penalty
+    # Stillness penalty: reduce proactive speech when user is stationary
+    stillness_penalty = 1.5 if step_cadence < 5.0 else 0.0
+    threshold = BASE_SPEECH_THRESHOLD + movement_penalty + noise_penalty + stillness_penalty
 
     return info_value > threshold
 

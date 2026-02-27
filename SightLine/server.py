@@ -1316,6 +1316,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # -- Track client camera state for context injection ----------------------
     _client_camera_active = False
+    _camera_activated_at: float = 0.0
+    _CAMERA_GRACE_PERIOD_SEC: float = 8.0
+
+    # -- Throttle raw frames to Gemini Live API ------------------------------
+    _last_frame_to_gemini_at: float = 0.0
+    _FRAME_TO_GEMINI_INTERVAL: float = 2.0
 
     # -- LOD engine helpers --------------------------------------------------
 
@@ -1503,9 +1509,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 return
             _vision_in_progress = True
 
-        # B-5: Pre-feedback — immediate audio cue before analysis starts
+        # Camera activation grace period: suppress non-safety vision for 8s
+        # after camera opens to prevent immediate narration cascade.
         now_mono = time.monotonic()
-        if now_mono - _last_vision_prefeedback_at >= VISION_PREFEEDBACK_COOLDOWN_SEC:
+        if _camera_activated_at > 0 and (now_mono - _camera_activated_at) < _CAMERA_GRACE_PERIOD_SEC:
+            logger.info("Suppressed vision: camera activation grace period (%.1fs)",
+                        now_mono - _camera_activated_at)
+            async with _vision_lock:
+                _vision_in_progress = False
+            return
+
+        # B-5: Pre-feedback — immediate audio cue before analysis starts
+        # Suppress during camera activation grace period
+        if (now_mono - _last_vision_prefeedback_at >= VISION_PREFEEDBACK_COOLDOWN_SEC
+                and (_camera_activated_at <= 0 or now_mono - _camera_activated_at >= _CAMERA_GRACE_PERIOD_SEC)):
             await _forward_agent_transcript("Let me look at that for you...")
             _last_vision_prefeedback_at = now_mono
 
@@ -1586,6 +1603,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         priority=2 if warnings else 5,
                         speak=speak,
                     )
+                    # Structural cooldown: activate when vision is injected with speak=True
+                    # (language-agnostic — no longer relies on English keyword detection)
+                    if speak:
+                        ctx_queue.record_vision_spoken()
                     logger.info("Injected [VISION ANALYSIS] (LOD %d, confidence %.2f, speak=%s)",
                                 session_ctx.current_lod, result.get("confidence", 0), speak)
         except Exception as exc:
@@ -1840,6 +1861,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         """
         nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until, _client_camera_active
         nonlocal _last_user_activity_at, _is_interrupted, _last_interrupt_at, _model_audio_last_seen_at
+        nonlocal _last_frame_to_gemini_at
 
         try:
             while True:
@@ -1881,12 +1903,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         continue
 
                     elif magic == _MAGIC_IMAGE:
-                        blob = types.Blob(
-                            data=payload,
-                            mime_type="image/jpeg",
-                        )
-                        live_request_queue.send_realtime(blob)
                         _frame_seq += 1
+                        now_frame = time.monotonic()
+                        if now_frame - _last_frame_to_gemini_at >= _FRAME_TO_GEMINI_INTERVAL:
+                            blob = types.Blob(
+                                data=payload,
+                                mime_type="image/jpeg",
+                            )
+                            live_request_queue.send_realtime(blob)
+                            _last_frame_to_gemini_at = now_frame
 
                         # Trigger async sub-agents (same logic as JSON path)
                         import time as _time
@@ -1960,13 +1985,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 elif message.get("type") == "image":
                     image_bytes = base64.b64decode(message["data"])
                     mime_type = message.get("mimeType", "image/jpeg")
-                    blob = types.Blob(
-                        data=image_bytes,
-                        mime_type=mime_type,
-                    )
-                    # Send raw frame to Gemini Live API
-                    live_request_queue.send_realtime(blob)
                     _frame_seq += 1
+                    # Throttle raw frames to Gemini (sub-agents still run at LOD intervals)
+                    now_frame = time.monotonic()
+                    if now_frame - _last_frame_to_gemini_at >= _FRAME_TO_GEMINI_INTERVAL:
+                        blob = types.Blob(
+                            data=image_bytes,
+                            mime_type=mime_type,
+                        )
+                        live_request_queue.send_realtime(blob)
+                        _last_frame_to_gemini_at = now_frame
 
                     # Phase 3: Trigger async sub-agents on image frames
                     import time as _time
@@ -2223,20 +2251,22 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             })
 
                     elif gesture == "camera_toggle":
-                        nonlocal _client_camera_active
+                        nonlocal _client_camera_active, _camera_activated_at
                         _client_camera_active = _coerce_bool(
                             message.get("active"), default=not _client_camera_active,
                         )
                         logger.info("Camera toggle: active=%s", _client_camera_active)
                         if _client_camera_active:
+                            _camera_activated_at = time.monotonic()
                             # Camera toggle is informational, not safety-critical → use queue
                             # to avoid interrupting current generation via turn_complete=True
                             ctx_queue.enqueue(
                                 category="camera_toggle",
                                 text=(
                                     "[CAMERA ACTIVATED] The user has turned on the rear camera. "
-                                    "You can now see their surroundings via image frames. "
-                                    "Briefly acknowledge and describe what you see when the first image arrives."
+                                    "Visual context is now available via periodic [VISION ANALYSIS] injections. "
+                                    "Do NOT describe every frame. Only speak about safety hazards or when the user asks. "
+                                    "Acknowledge camera activation in one brief sentence, then observe silently."
                                 ),
                                 priority=4,
                                 speak=True,
