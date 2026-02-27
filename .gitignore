@@ -70,6 +70,7 @@ DerivedData/
 dev/
 SightLine/dev/
 SightLine/tasks/
+REFERENCE/
 
 # === Misc ===
 *.tgz

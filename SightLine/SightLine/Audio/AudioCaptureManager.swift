@@ -43,7 +43,7 @@ class AudioCaptureManager: ObservableObject {
 
     /// RMS threshold for voice barge-in during model playback.
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
-    private let bargeInRMSThreshold: Float = 0.05
+    private let bargeInRMSThreshold: Float = 0.07
 
     /// Called when voice barge-in detected (RMS above threshold during model speech).
     var onVoiceBargeIn: (() -> Void)?
@@ -161,29 +161,37 @@ class AudioCaptureManager: ObservableObject {
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
-                // Always send real audio — trust hardware AEC + Gemini VAD
-                let data = Data(bytes: channelData[0], count: byteCount)
-                self.onAudioCaptured?(data)
-
-                // Timestamp-based model speaking detection
                 let now = CFAbsoluteTimeGetCurrent()
                 let isModelCurrentlySpeaking =
                     (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
 
                 if isModelCurrentlySpeaking {
-                    // During model speech: VAD only for barge-in detection (stop playback).
-                    // Only run VAD when RMS exceeds threshold to avoid LSTM state pollution.
+                    // Model speaking: send silence to prevent echo reaching Gemini VAD.
+                    // Only run VAD when RMS exceeds threshold to detect barge-in.
                     let rms = self.lastRMS
                     if rms > self.bargeInRMSThreshold {
                         SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
                         if SileroVAD.shared.isSpeechActive {
-                            self.lastModelAudioReceivedAt = 0  // Expire immediately
+                            // Barge-in confirmed: send real audio + trigger interrupt
+                            let data = Data(bytes: channelData[0], count: byteCount)
+                            self.onAudioCaptured?(data)
+                            self.lastModelAudioReceivedAt = 0  // Exit speaking state
                             self.onVoiceBargeIn?()
+                        } else {
+                            // RMS high but VAD not confirmed: still send silence
+                            let silence = Data(count: byteCount)
+                            self.onAudioCaptured?(silence)
                         }
+                    } else {
+                        // Echo residual (RMS < threshold): send silence, skip VAD
+                        let silence = Data(count: byteCount)
+                        self.onAudioCaptured?(silence)
                     }
                 } else {
-                    // Model idle: feed VAD for UI indicator
+                    // Model idle: send real audio, Gemini handles VAD
                     SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
+                    let data = Data(bytes: channelData[0], count: byteCount)
+                    self.onAudioCaptured?(data)
                 }
             }
         }

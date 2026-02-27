@@ -1039,10 +1039,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         # Relaxed mode when model was speaking recently
         model_speaking = (now_ts - _model_audio_last_seen_at) < 3.0
 
-        # P3: very short input during model speech is almost certainly echo
-        if model_speaking and len(words_candidate) <= 2:
-            return True
-
         min_words = 1 if model_speaking else 3
         jaccard_threshold = 0.35 if model_speaking else 0.6
         window_sec = 8.0 if model_speaking else 5.0
