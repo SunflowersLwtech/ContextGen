@@ -17,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "sightline-hackathon")
-EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 EMBEDDING_DIM = 2048
 
 
@@ -57,30 +57,26 @@ class MemoryBankService:
         self.user_id = user_id
         self._firestore = None
         self._memories_cache: list[dict] = []
-        self._init_backend()
+        self._try_init()
 
-    def _init_backend(self, max_retries: int = 3):
-        """Initialize Firestore backend with retry and exponential backoff."""
-        for attempt in range(max_retries):
-            try:
-                from google.cloud import firestore
+    def _try_init(self):
+        """Single non-blocking attempt to initialize Firestore backend."""
+        try:
+            from google.cloud import firestore
 
-                self._firestore = firestore.Client(project=PROJECT_ID)
-                logger.info("MemoryBankService initialized for user %s", self.user_id)
-                return
-            except Exception as e:
-                wait = min(2 ** attempt, 4)
-                logger.warning(
-                    "Firestore init attempt %d/%d failed: %s (retry in %ds)",
-                    attempt + 1, max_retries, e, wait,
-                )
-                if attempt < max_retries - 1:
-                    import time as _time
-                    _time.sleep(wait)
-        logger.error(
-            "Firestore unavailable after %d attempts; memories will be EPHEMERAL",
-            max_retries,
-        )
+            self._firestore = firestore.Client(project=PROJECT_ID)
+            logger.info("MemoryBankService initialized for user %s", self.user_id)
+        except Exception as e:
+            logger.warning(
+                "Firestore init failed for user %s: %s (memories will be EPHEMERAL until retry)",
+                self.user_id, e,
+            )
+
+    def _ensure_firestore(self):
+        """Lazy re-init: retry Firestore connection on first actual use if init failed."""
+        if self._firestore is None:
+            self._try_init()
+        return self._firestore
 
     def _memories_collection(self):
         """Return the memories subcollection reference for this user."""
@@ -103,7 +99,7 @@ class MemoryBankService:
         Returns:
             The Firestore document ID, or None on failure.
         """
-        if not self._firestore:
+        if not self._ensure_firestore():
             # Ephemeral fallback: store in cache only
             memory_id = uuid.uuid4().hex
             self._memories_cache.append({
@@ -156,7 +152,7 @@ class MemoryBankService:
         """
         from memory.memory_ranking import rank_memories
 
-        if not self._firestore:
+        if not self._ensure_firestore():
             results = self._retrieve_from_cache(context, top_k * 2)
             return rank_memories(results, query_context=context, max_results=top_k)
 
@@ -267,7 +263,7 @@ class MemoryBankService:
         Returns:
             True if the document existed and was deleted, False otherwise.
         """
-        if not self._firestore:
+        if not self._ensure_firestore():
             before = len(self._memories_cache)
             self._memories_cache = [
                 m for m in self._memories_cache if m.get("memory_id") != memory_id
@@ -297,7 +293,7 @@ class MemoryBankService:
         """
         cutoff = time.time() - (minutes * 60)
 
-        if not self._firestore:
+        if not self._ensure_firestore():
             before = len(self._memories_cache)
             self._memories_cache = [
                 m for m in self._memories_cache
@@ -330,9 +326,16 @@ _bank_instances: dict[str, MemoryBankService] = {}
 
 
 def _get_bank(user_id: str) -> MemoryBankService:
-    """Get or create a MemoryBankService for the given user."""
-    if user_id not in _bank_instances:
-        _bank_instances[user_id] = MemoryBankService(user_id)
+    """Get or create a MemoryBankService for the given user.
+
+    Re-attempts Firestore init if a cached instance has no connection.
+    """
+    if user_id in _bank_instances:
+        bank = _bank_instances[user_id]
+        if bank._firestore is None:
+            bank._try_init()
+        return bank
+    _bank_instances[user_id] = MemoryBankService(user_id)
     return _bank_instances[user_id]
 
 
@@ -354,14 +357,3 @@ def load_relevant_memories(user_id: str, context: str, top_k: int = 3) -> list[s
     return [_sanitize_memory_content(m["content"]) for m in results]
 
 
-def preload_memory(user_id: str, context: str) -> dict:
-    """PreloadMemoryTool - function calling compatible entry point.
-
-    Returns a dict suitable for injection into the agent context.
-    """
-    memories = load_relevant_memories(user_id, context, top_k=3)
-    return {
-        "memories": memories,
-        "count": len(memories),
-        "user_id": user_id,
-    }

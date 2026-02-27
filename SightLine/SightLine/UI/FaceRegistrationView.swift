@@ -15,6 +15,7 @@ import PhotosUI
 import Combine
 import os
 import UIKit
+import Vision
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "FaceRegistration")
 
@@ -60,6 +61,7 @@ final class FaceRegistrationModel: ObservableObject {
 
     @Published var selectedImages: [UIImage] = []
     @Published var showCamera: Bool = false
+    @Published var detectionStatus: String = ""
 
     @Published var registeredFaces: [RegisteredFace] = []
     @Published var isLoadingFaces: Bool = false
@@ -107,6 +109,37 @@ final class FaceRegistrationModel: ObservableObject {
         registrationSuccess = false
         registrationResult = ""
         errorMessage = ""
+        detectFaces(in: image, photoIndex: selectedImages.count)
+    }
+
+    /// Client-side face detection using Vision framework for immediate feedback.
+    private func detectFaces(in image: UIImage, photoIndex: Int) {
+        guard let cgImage = image.cgImage else {
+            detectionStatus = "Photo \(photoIndex): Unable to process image"
+            return
+        }
+        let request = VNDetectFaceRectanglesRequest { [weak self] request, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let error = error {
+                    self.detectionStatus = "Photo \(photoIndex): Detection error — \(error.localizedDescription)"
+                    return
+                }
+                let faceCount = request.results?.count ?? 0
+                switch faceCount {
+                case 0:
+                    self.detectionStatus = "Photo \(photoIndex): No face detected — try a clearer photo"
+                case 1:
+                    self.detectionStatus = "Photo \(photoIndex): 1 face detected"
+                default:
+                    self.detectionStatus = "Photo \(photoIndex): \(faceCount) faces detected — use a photo with one face"
+                }
+            }
+        }
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? handler.perform([request])
+        }
     }
 
     func removeSelectedImage(at index: Int) {
@@ -566,6 +599,14 @@ struct FaceRegistrationView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            }
+
+            if !model.detectionStatus.isEmpty {
+                Text(model.detectionStatus)
+                    .font(.caption)
+                    .foregroundStyle(model.detectionStatus.contains("No face") || model.detectionStatus.contains("faces detected")
+                        ? .orange : .green)
+                    .accessibilityLabel("Face detection: \(model.detectionStatus)")
             }
         }
         .padding()

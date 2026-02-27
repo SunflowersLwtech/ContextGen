@@ -26,6 +26,7 @@ class AudioCaptureManager: ObservableObject {
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var restartObserver: NSObjectProtocol?
+    private var pauseObserver: NSObjectProtocol?
 
     func startCapture() {
         guard let engine = SharedAudioEngine.shared.engine, engine.isRunning else {
@@ -96,6 +97,18 @@ class AudioCaptureManager: ObservableObject {
             }
         }
 
+        // Remove tap cleanly when engine pauses (phone call / Siri interruption).
+        // isCapturing stays true so the didRestart observer re-installs the tap.
+        pauseObserver = NotificationCenter.default.addObserver(
+            forName: .sharedAudioEngineDidPause,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.isCapturing else { return }
+            Self.logger.info("SharedAudioEngine paused — removing capture tap")
+            self.removeTap()
+        }
+
         // Re-install tap if the shared engine restarts (route change, interruption)
         restartObserver = NotificationCenter.default.addObserver(
             forName: .sharedAudioEngineDidRestart,
@@ -117,6 +130,10 @@ class AudioCaptureManager: ObservableObject {
         converter = nil
         targetFormat = nil
 
+        if let obs = pauseObserver {
+            NotificationCenter.default.removeObserver(obs)
+            pauseObserver = nil
+        }
         if let obs = restartObserver {
             NotificationCenter.default.removeObserver(obs)
             restartObserver = nil

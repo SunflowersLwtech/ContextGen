@@ -41,6 +41,8 @@ struct MainView: View {
     @State private var isEmergencyPaused = false
     @State private var lastAgentTranscript = ""
     @State private var toastMessage: String?
+    @State private var isVoiceOverActive = UIAccessibility.isVoiceOverRunning
+    @State private var showPermissionPrompt = false
     @State private var sessionResumptionHandle = UserDefaults.standard.string(
         forKey: SightLineConfig.sessionResumptionHandleDefaultsKey
     ) ?? ""
@@ -105,9 +107,22 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
             handleShake()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.voiceOverStatusDidChangeNotification
+        )) { _ in
+            isVoiceOverActive = UIAccessibility.isVoiceOverRunning
+        }
         .onReceive(NotificationCenter.default.publisher(for: .faceLibraryChanged)) { _ in
             webSocketManager.sendText("{\"type\":\"reload_face_library\"}")
             logger.info("Face library changed notification received, sending reload request")
+        }
+        // Recheck permissions when returning from Settings
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            if showPermissionPrompt {
+                recheckPermissionsAfterSettings()
+            }
         }
         .sheet(isPresented: $showDevConsole) {
             DeveloperConsoleView(
@@ -124,6 +139,33 @@ struct MainView: View {
             })
         }
         .accessibilityLabel(buildAccessibilityDescription())
+        .accessibilityAction(.default) {
+            handleSingleTap()
+        }
+        .accessibilityHint(isVoiceOverActive
+            ? "Double tap to toggle mute. Use Actions rotor for more controls."
+            : "")
+        .accessibilityAction(named: "Interrupt Speech") {
+            handleDoubleTap()
+        }
+        .accessibilityAction(named: "Repeat Last Message") {
+            handleTripleTap()
+        }
+        .accessibilityAction(named: isEmergencyPaused ? "Resume from Emergency Pause" : "Emergency Pause") {
+            handleLongPress()
+        }
+        .accessibilityAction(named: "Increase Detail Level") {
+            handleSwipe(translation: CGSize(width: 0, height: -100))
+        }
+        .accessibilityAction(named: "Decrease Detail Level") {
+            handleSwipe(translation: CGSize(width: 0, height: 100))
+        }
+        .accessibilityAction(named: isCameraActive ? "Turn Off Camera" : "Turn On Camera") {
+            toggleCamera()
+        }
+        .accessibilityAction(named: "Send SOS") {
+            handleShake()
+        }
     }
 
     // MARK: - Main Content
@@ -143,25 +185,7 @@ struct MainView: View {
                 .padding(.bottom, 20)
 
             // Bottom info cluster
-            VStack(spacing: 8) {
-                Text(connectionStatus)
-                    .font(.caption)
-                    .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
-                    .accessibilityLabel(connectionStatus)
-
-                statusStrip
-
-                if !transcript.isEmpty {
-                    Text(transcript)
-                        .font(.body)
-                        .foregroundColor(.white.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .lineLimit(3)
-                        .accessibilityLabel("Last message: \(transcript)")
-                }
-            }
-            .padding(.bottom, 16)
+            bottomInfoCluster
 
             // Bottom toolbar: profile button
             HStack {
@@ -204,6 +228,34 @@ struct MainView: View {
             .padding(.top, 8)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+
+    // MARK: - Bottom Info Cluster
+
+    private var bottomInfoCluster: some View {
+        VStack(spacing: 8) {
+            Text(connectionStatus)
+                .font(.caption)
+                .foregroundColor(isSafeMode ? .red.opacity(0.7) : .white.opacity(0.5))
+                .accessibilityLabel(connectionStatus)
+
+            statusStrip
+
+            if !transcript.isEmpty {
+                Text(transcript)
+                    .font(.body)
+                    .foregroundColor(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .lineLimit(3)
+                    .accessibilityLabel("Last message: \(transcript)")
+            }
+
+            if showPermissionPrompt {
+                permissionPromptButton
+            }
+        }
+        .padding(.bottom, 16)
     }
 
     // MARK: - Breathing Indicator
@@ -389,6 +441,26 @@ struct MainView: View {
         }
     }
 
+    // MARK: - Permission Prompt
+
+    private var permissionPromptButton: some View {
+        Button(action: { openAppSettings() }) {
+            HStack(spacing: 6) {
+                Image(systemName: "gear")
+                Text("Open Settings")
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundColor(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.blue.opacity(0.7))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .accessibilityLabel("Open Settings to grant permissions")
+        .accessibilityHint("Opens iOS Settings where you can enable camera and microphone access for SightLine")
+        .padding(.top, 4)
+    }
+
     // MARK: - Status Strip
 
     private var statusStrip: some View {
@@ -398,8 +470,18 @@ struct MainView: View {
                 text: "LOD \(currentLOD)",
                 color: lodBadgeColor,
                 accessibilityLabel: "Detail level \(currentLOD)",
-                accessibilityHint: "Swipe up or down to change"
+                accessibilityHint: isVoiceOverActive ? "Swipe up or down to adjust" : "Swipe up or down to change"
             )
+            .accessibilityValue("\(currentLOD) of 3, \(lodName)")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    handleSwipe(translation: CGSize(width: 0, height: -100))
+                case .decrement:
+                    handleSwipe(translation: CGSize(width: 0, height: 100))
+                @unknown default: break
+                }
+            }
 
             if isMuted {
                 statusBadge(
@@ -407,7 +489,7 @@ struct MainView: View {
                     text: "Muted",
                     color: .red,
                     accessibilityLabel: "Microphone muted",
-                    accessibilityHint: "Single tap to unmute"
+                    accessibilityHint: isVoiceOverActive ? "Double tap to unmute" : "Single tap to unmute"
                 )
             }
 
@@ -417,7 +499,7 @@ struct MainView: View {
                     text: "Paused",
                     color: .orange,
                     accessibilityLabel: "Emergency pause active",
-                    accessibilityHint: "Long press to resume"
+                    accessibilityHint: isVoiceOverActive ? "Use Actions rotor to resume" : "Long press to resume"
                 )
             }
 
@@ -427,7 +509,7 @@ struct MainView: View {
                     text: "Cam",
                     color: .green,
                     accessibilityLabel: "Camera active",
-                    accessibilityHint: "Swipe sideways to turn off"
+                    accessibilityHint: isVoiceOverActive ? "Use Actions rotor to turn off" : "Swipe sideways to turn off"
                 )
             }
         }
@@ -476,12 +558,22 @@ struct MainView: View {
         }
     }
 
+    private var lodName: String {
+        switch currentLOD {
+        case 1: return "Safety"
+        case 2: return "Balanced"
+        case 3: return "Detailed"
+        default: return "Unknown"
+        }
+    }
+
     private func buildAccessibilityDescription() -> String {
         var parts = ["SightLine is \(isActive ? "active" : "connecting")"]
         parts.append("detail level \(currentLOD)")
         if isMuted { parts.append("microphone muted") }
         if isCameraActive { parts.append("camera on") }
         if isEmergencyPaused { parts.append("emergency pause active") }
+        if isVoiceOverActive { parts.append("Use the Actions rotor for controls") }
         return parts.joined(separator: ", ")
     }
 
@@ -490,6 +582,27 @@ struct MainView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if toastMessage == message {
                 toastMessage = nil
+            }
+        }
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// Recheck permissions when returning from Settings. Dismiss prompt if granted.
+    private func recheckPermissionsAfterSettings() {
+        Task {
+            let granted = await mediaPermissionGate.preflightMediaPermissions()
+            await MainActor.run {
+                if granted {
+                    showPermissionPrompt = false
+                    connectionStatus = "Permissions granted"
+                    UIAccessibility.post(notification: .announcement,
+                                         argument: "Permissions granted. Starting audio.")
+                    startAudioCapture()
+                }
             }
         }
     }
@@ -536,18 +649,7 @@ struct MainView: View {
     // MARK: - Pipeline Setup
 
     private func setupPipeline() {
-        // Prompt camera/mic early so the app does not look "stuck" before session_ready.
-        Task {
-            let granted = await mediaPermissionGate.preflightMediaPermissions()
-            if !granted {
-                await MainActor.run {
-                    connectionStatus = "Camera/Microphone permission required"
-                }
-                logger.error("Media permissions missing at startup")
-            }
-        }
-
-        // 1. Build WebSocket URL and wire callbacks
+        // 1. Build WebSocket URL and wire callbacks (configured first, connected after permissions)
         let url = SightLineConfig.wsURL(
             userId: SightLineConfig.defaultUserId,
             sessionId: SightLineConfig.defaultSessionId,
@@ -600,7 +702,24 @@ struct MainView: View {
             }
         }
 
-        webSocketManager.connect(url: url)
+        // Await permissions before connecting — avoids WS setup before media access is granted
+        Task {
+            let granted = await mediaPermissionGate.preflightMediaPermissions()
+            if !granted {
+                await MainActor.run {
+                    connectionStatus = "Camera/Microphone permission required"
+                    showPermissionPrompt = true
+                    UIAccessibility.post(notification: .announcement,
+                                         argument: "Camera and microphone permissions required. Use Open Settings button to grant access.")
+                }
+                logger.error("Media permissions missing at startup")
+            }
+            // Connect regardless (server can still provide audio-only assistance)
+            // but permissions are resolved first
+            await MainActor.run {
+                webSocketManager.connect(url: url)
+            }
+        }
 
         // 2. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
         cameraManager.onCameraFailure = { reason in
@@ -653,6 +772,9 @@ struct MainView: View {
                 await MainActor.run {
                     connectionStatus = "Enable microphone in Settings"
                     transcript = "Please enable microphone permission."
+                    showPermissionPrompt = true
+                    UIAccessibility.post(notification: .announcement,
+                                         argument: "Microphone permission required. Use Open Settings button to grant access.")
                 }
                 logger.error("Audio capture blocked: microphone permission denied")
                 return
@@ -689,6 +811,9 @@ struct MainView: View {
                 guard camGranted else {
                     await MainActor.run {
                         transcript = "Camera permission required. Enable in Settings."
+                        showPermissionPrompt = true
+                        UIAccessibility.post(notification: .announcement,
+                                             argument: "Camera permission required. Use Open Settings button to grant access.")
                     }
                     logger.error("Camera activation blocked: permission denied")
                     return
@@ -728,13 +853,14 @@ struct MainView: View {
             logger.info("Face library cleared: \(deletedCount)")
         case .error(let message):
             DispatchQueue.main.async {
-                connectionStatus = "Server error"
+                connectionStatus = "Server error — retrying..."
                 transcript = "Server error: \(message)"
                 devConsoleModel.captureTranscript(text: "Server error: \(message)", role: "system")
                 audioCapture.stopCapture()
                 cameraManager.stopCapture()
             }
             logger.error("Server error message: \(message, privacy: .public)")
+            webSocketManager.reconnect(afterMs: 3000)
         case .transcript(let text, let role):
             DispatchQueue.main.async {
                 if role == "echo" {
@@ -852,9 +978,9 @@ struct MainView: View {
             logger.warning("PANIC: \(message, privacy: .public)")
         case .interrupted:
             logger.info("Model output interrupted — flushing playback buffer")
-            audioPlayback.stopImmediately()
-            HapticManager.shared.doubleTap()
             DispatchQueue.main.async {
+                audioPlayback.stopImmediately()
+                HapticManager.shared.doubleTap()
                 devConsoleModel.captureTranscript(
                     text: "Model interrupted by user", role: "system")
             }
@@ -871,6 +997,8 @@ struct MainView: View {
             }
             UserDefaults.standard.set(handle, forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
             logger.info("Session resumption handle updated: \(handle.prefix(20))...")
+        case .profileUpdatedAck:
+            logger.info("Profile update acknowledged by server")
         case .unknown(let raw):
             logger.debug("Unknown downstream message: \(String(raw.prefix(200)), privacy: .public)")
             DispatchQueue.main.async {
@@ -985,13 +1113,19 @@ struct MainView: View {
     private func switchToUser(_ userId: String) {
         guard userId != SightLineConfig.defaultUserId else { return }
         teardownPipeline()
-        SightLineConfig.defaultUserId = userId
-        SightLineConfig.defaultSessionId = UUID().uuidString.lowercased()
-        sessionResumptionHandle = ""
-        UserDefaults.standard.removeObject(forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
         connectionStatus = "Switching to \(userId)..."
         logger.info("Switching user to \(userId)")
-        setupPipeline()
+        // Brief delay to allow teardown to complete before re-setup
+        Task {
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+            await MainActor.run {
+                SightLineConfig.defaultUserId = userId
+                SightLineConfig.defaultSessionId = UUID().uuidString.lowercased()
+                sessionResumptionHandle = ""
+                UserDefaults.standard.removeObject(forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
+                setupPipeline()
+            }
+        }
     }
 
     // MARK: - Teardown

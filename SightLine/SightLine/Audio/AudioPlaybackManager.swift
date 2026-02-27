@@ -115,13 +115,14 @@ class AudioPlaybackManager: ObservableObject {
         }
     }
 
-    /// Stop playback immediately for barge-in support
+    /// Stop playback immediately for barge-in support.
+    /// Uses sync dispatch so state is fully cleared before player.play() restarts.
     func stopImmediately() {
         guard let player = SharedAudioEngine.shared.playerNode else { return }
         player.stop()
         player.reset()
 
-        schedulingQueue.async { [weak self] in
+        schedulingQueue.sync { [weak self] in
             guard let self = self else { return }
             self.pendingChunks.removeAll(keepingCapacity: true)
             self.isDrainActive = false
@@ -131,7 +132,7 @@ class AudioPlaybackManager: ObservableObject {
             self.jitterKickoffWorkItem = nil
         }
 
-        // Re-ready for next utterance after state is cleared
+        // Re-ready for next utterance after state is fully cleared
         player.play()
         DispatchQueue.main.async { self.isPlaying = false }
     }

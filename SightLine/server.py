@@ -20,6 +20,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,6 +31,41 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.runners import Runner
 from google.genai import types
 from starlette.websockets import WebSocketState
+
+# ---------------------------------------------------------------------------
+# WebSocket message type constants — eliminates raw string literals
+# ---------------------------------------------------------------------------
+
+
+class MessageType(str, Enum):
+    """All downstream WebSocket message types sent to the iOS client."""
+    TRANSCRIPT = "transcript"
+    SESSION_READY = "session_ready"
+    SESSION_RESUMPTION = "session_resumption"
+    LOD_UPDATE = "lod_update"
+    PANIC = "panic"
+    INTERRUPTED = "interrupted"
+    GO_AWAY = "go_away"
+    ERROR = "error"
+    FRAME_ACK = "frame_ack"
+    TOOL_EVENT = "tool_event"
+    TOOL_RESULT = "tool_result"
+    CAPABILITY_DEGRADED = "capability_degraded"
+    IDENTITY_UPDATE = "identity_update"
+    PERSON_IDENTIFIED = "person_identified"
+    VISION_RESULT = "vision_result"
+    VISION_DEBUG = "vision_debug"
+    OCR_RESULT = "ocr_result"
+    OCR_DEBUG = "ocr_debug"
+    FACE_DEBUG = "face_debug"
+    FACE_LIBRARY_RELOADED = "face_library_reloaded"
+    FACE_LIBRARY_CLEARED = "face_library_cleared"
+    DEBUG_LOD = "debug_lod"
+    DEBUG_ACTIVITY = "debug_activity"
+    NAVIGATION_RESULT = "navigation_result"
+    SEARCH_RESULT = "search_result"
+    PROFILE_UPDATED_ACK = "profile_updated_ack"
+
 
 from agents.orchestrator import create_orchestrator_agent
 from live_api.session_manager import (
@@ -69,6 +105,7 @@ logger = logging.getLogger("sightline.server")
 
 LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
 PORT = int(os.getenv("PORT", "8080"))
+SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT", "3600"))
 
 app = FastAPI(title="SightLine Backend", version="0.3.0")
 
@@ -122,6 +159,7 @@ _MEANINGFUL_TELEMETRY_FIELDS = {
     "cadence_bucket",
     "heading_bucket",
     "gps_bucket",
+    "time_context",
     "device_type",
 }
 
@@ -183,6 +221,12 @@ class ContextInjectionQueue:
     When the model is speaking, enqueued items are held and merged into a
     single Content message at the next turn_complete event.  Bypass items
     (safety, gestures, function responses) skip the queue entirely.
+
+    Thread safety: All public methods are intentionally synchronous (no
+    ``await`` inside mutation paths).  In asyncio cooperative scheduling,
+    dict reads/writes cannot be preempted mid-operation, so no explicit
+    lock is needed.  If ``await`` is ever added inside a mutation method,
+    a lock must be introduced to protect ``_queue``.
     """
 
     def __init__(self, live_request_queue: "LiveRequestQueue") -> None:
@@ -328,7 +372,7 @@ def _noise_bucket(noise_db: float) -> str:
     if noise_db < 65:
         return "moderate"
     if noise_db < 80:
-        return "noisy"
+        return "loud"
     return "very_loud"
 
 
@@ -869,7 +913,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _vision_in_progress = False
     _last_vision_time = 0.0
     _frame_seq = 0
-    _is_client_muted = False
     _last_vision_context_text = ""
     _last_vision_context_sent_at = 0.0
     _last_vision_prefeedback_at = 0.0
@@ -885,7 +928,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # Echo detection state (P0_FIX_3)
     _recent_agent_texts: list[tuple[float, str]] = []
 
-    # Model audio staleness for injection suppression (P2_FIX_3)
     _model_audio_last_seen_at: float = 0.0
     _MODEL_AUDIO_STALENESS_SEC = 2.0
 
@@ -963,7 +1005,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             logger.debug("Suppressed repeated downstream transcript: %s", text[:120])
             return True
         sent = await _safe_send_json({
-            "type": "transcript",
+            "type": MessageType.TRANSCRIPT,
             "text": text,
             "role": "agent",
         })
@@ -1011,7 +1053,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         data: dict | None = None,
     ) -> None:
         payload: dict = {
-            "type": "tool_event",
+            "type": MessageType.TOOL_EVENT,
             "tool": tool,
             "behavior": behavior_to_text(behavior),
             "status": status,
@@ -1027,7 +1069,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     ) -> None:
         """Notify iOS client that a sub-agent capability is degraded."""
         await _safe_send_json({
-            "type": "capability_degraded",
+            "type": MessageType.CAPABILITY_DEGRADED,
             "capability": capability,
             "reason": reason,
             "recoverable": recoverable,
@@ -1041,7 +1083,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         source: str = "face_pipeline",
     ) -> None:
         payload = {
-            "type": "identity_update",
+            "type": MessageType.IDENTITY_UPDATE,
             "person_name": person_name,
             "matched": matched,
             "similarity": similarity,
@@ -1051,7 +1093,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         await _safe_send_json(payload)
         if matched:
             await _safe_send_json({
-                "type": "person_identified",
+                "type": MessageType.PERSON_IDENTIFIED,
                 "person_name": person_name,
                 "similarity": similarity,
                 "source": source,
@@ -1060,7 +1102,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     # Notify client immediately so the iOS layer knows the
     # WebSocket is live before the Gemini connection is ready.
-    if not await _safe_send_json({"type": "session_ready"}):
+    if not await _safe_send_json({"type": MessageType.SESSION_READY}):
         logger.info("WebSocket closed before session_ready: user=%s session=%s", user_id, session_id)
         return
 
@@ -1155,6 +1197,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # -- Per-session memory state (Phase 4) -----------------------------------
     memory_top3: list[str] = []
     memory_top3_detailed: list[dict] = []
+    # Per-session budget tracker — intentionally not persisted to Firestore.
+    # Each session starts with a fresh budget to prevent runaway writes from
+    # accumulating across reconnections.  Persistence would require atomic
+    # read-modify-write on Firestore and adds complexity without clear benefit.
     memory_budget = MemoryBudgetTracker() if _memory_available else None
     transcript_history: list[dict] = []
 
@@ -1210,7 +1256,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     ) -> None:
         """Send LOD change notification to iOS client."""
         await _safe_send_json({
-            "type": "lod_update",
+            "type": MessageType.LOD_UPDATE,
             "lod": new_lod,
             "reason": reason,
         })
@@ -1220,7 +1266,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         if vad_update:
             debug_dict["vad_update"] = vad_update
         await _safe_send_json({
-            "type": "debug_lod",
+            "type": MessageType.DEBUG_LOD,
             "data": debug_dict,
         })
 
@@ -1241,7 +1287,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         session_ctx.activity_event_count += 1
 
         await _safe_send_json({
-            "type": "debug_activity",
+            "type": MessageType.DEBUG_ACTIVITY,
             "data": {
                 "event": event_name,
                 "state": session_ctx.current_activity_state,
@@ -1256,7 +1302,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     async def _handle_panic(ephemeral_ctx) -> None:
         """Handle a new PANIC event: flush TTS, force LOD 1, notify iOS."""
         await _safe_send_json({
-            "type": "panic",
+            "type": MessageType.PANIC,
             "message": "PANIC detected. Entering safety mode.",
         })
 
@@ -1297,6 +1343,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             return
 
+        # asyncio.Lock is safe here: the lock is only held across synchronous
+        # flag reads/writes (no await between acquire and release), so there is
+        # no race window.  The lock guards against concurrent task scheduling
+        # at the outer await boundary, not against OS-thread preemption.
         async with _vision_lock:
             if _vision_in_progress:
                 return
@@ -1333,7 +1383,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             if not repeated:
                 await _safe_send_json({
-                    "type": "vision_result",
+                    "type": MessageType.VISION_RESULT,
                     "summary": result.get("scene_description", ""),
                     "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
                     "data": _json_safe(result),
@@ -1344,7 +1394,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 logger.debug("Suppressed repeated vision summary within %.1fs window", vision_repeat_window)
 
             await _safe_send_json({
-                "type": "vision_debug",
+                "type": MessageType.VISION_DEBUG,
                 "data": {
                     "bounding_boxes": _json_safe(result.get("bounding_boxes", [])),
                     "confidence": float(result.get("confidence", 0.0)),
@@ -1431,7 +1481,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 ToolBehavior.SILENT,
             )
             await _safe_send_json({
-                "type": "face_debug",
+                "type": MessageType.FACE_DEBUG,
                 "data": {
                     "face_boxes": _json_safe([
                         {
@@ -1548,7 +1598,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
             if not repeated:
                 await _safe_send_json({
-                    "type": "ocr_result",
+                    "type": MessageType.OCR_RESULT,
                     "summary": result.get("text", ""),
                     "behavior": behavior_to_text(ToolBehavior.WHEN_IDLE),
                     "data": _json_safe(result),
@@ -1559,7 +1609,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 logger.debug("Suppressed repeated OCR summary within %.1fs window", repeat_window)
 
             await _safe_send_json({
-                "type": "ocr_debug",
+                "type": MessageType.OCR_DEBUG,
                 "data": {
                     "text_regions": _json_safe(result.get("text_regions", [])),
                     "text_type": result.get("text_type", "unknown"),
@@ -1691,7 +1741,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 queued_agents.append("ocr")
                                 asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
                         await _safe_send_json({
-                            "type": "frame_ack",
+                            "type": MessageType.FRAME_ACK,
                             "frame_id": _frame_seq,
                             "queued_agents": queued_agents,
                         })
@@ -1782,7 +1832,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             queued_agents.append("ocr")
                             asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
                     await _safe_send_json({
-                        "type": "frame_ack",
+                        "type": MessageType.FRAME_ACK,
                         "frame_id": _frame_seq,
                         "queued_agents": queued_agents,
                     })
@@ -1867,7 +1917,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         old_lod = session_ctx.current_lod
                         if forced_lod == old_lod:
                             await _safe_send_json({
-                                "type": "lod_update",
+                                "type": MessageType.LOD_UPDATE,
                                 "lod": forced_lod,
                                 "reason": "force_lod_no_change",
                             })
@@ -1937,12 +1987,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             ctx_queue.inject_immediate(content)
 
                     elif gesture == "mute_toggle":
-                        # Support explicit state from iOS and legacy toggle-only payloads.
-                        if "muted" in message:
-                            _is_client_muted = _coerce_bool(message.get("muted"), default=False)
-                        else:
-                            _is_client_muted = not _is_client_muted
-                        logger.info("Mute toggle: muted=%s", _is_client_muted)
+                        # Mute is client-side only (iOS stops sending audio).
+                        # Server just acknowledges for logging/debug purposes.
+                        muted = _coerce_bool(message.get("muted"), default=True)
+                        logger.info("Mute toggle acknowledged: muted=%s", muted)
 
                     elif gesture == "sos":
                         logger.warning("SOS gesture received for session %s", session_id)
@@ -1964,7 +2012,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             )
                             ctx_queue.inject_immediate(content)
                             await _safe_send_json({
-                                "type": "lod_update",
+                                "type": MessageType.LOD_UPDATE,
                                 "lod": 1,
                                 "reason": "emergency_pause",
                             })
@@ -1981,7 +2029,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             )
                             ctx_queue.inject_immediate(content)
                             await _safe_send_json({
-                                "type": "lod_update",
+                                "type": MessageType.LOD_UPDATE,
                                 "lod": resume_lod,
                                 "reason": "emergency_resume",
                             })
@@ -2027,19 +2075,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             face_library.clear()
                             face_library.extend(await asyncio.to_thread(load_face_library, user_id))
                             await _safe_send_json({
-                                "type": "face_library_reloaded",
+                                "type": MessageType.FACE_LIBRARY_RELOADED,
                                 "count": len(face_library),
                             })
                             logger.info("Reloaded %d face(s) for user %s", len(face_library), user_id)
                         except Exception:
                             logger.exception("Failed to reload face library")
                             await _safe_send_json({
-                                "type": "error",
+                                "type": MessageType.ERROR,
                                 "error": "Failed to reload face library",
                             })
                     else:
                         await _safe_send_json({
-                            "type": "error",
+                            "type": MessageType.ERROR,
                             "error": "Face recognition not available",
                         })
 
@@ -2051,19 +2099,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             count = await asyncio.to_thread(clear_face_library, user_id)
                             face_library.clear()
                             await _safe_send_json({
-                                "type": "face_library_cleared",
+                                "type": MessageType.FACE_LIBRARY_CLEARED,
                                 "deleted_count": count,
                             })
                             logger.info("Cleared %d face(s) for user %s", count, user_id)
                         except Exception:
                             logger.exception("Failed to clear face library")
                             await _safe_send_json({
-                                "type": "error",
+                                "type": MessageType.ERROR,
                                 "error": "Failed to clear face library",
                             })
                     else:
                         await _safe_send_json({
-                            "type": "error",
+                            "type": MessageType.ERROR,
                             "error": "Face recognition not available",
                         })
 
@@ -2099,11 +2147,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         logger.info("Injected profile update context for user %s", user_id)
 
                         # 4. Ack to client
-                        await _safe_send_json({"type": "profile_updated_ack"})
+                        await _safe_send_json({"type": MessageType.PROFILE_UPDATED_ACK})
                     except Exception:
                         logger.exception("Failed to handle profile_updated for user %s", user_id)
                         await _safe_send_json({
-                            "type": "error",
+                            "type": MessageType.ERROR,
                             "error": "Failed to apply profile update",
                         })
 
@@ -2150,7 +2198,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             return
 
         # Semantic text injection (LOD-aware throttle)
-        # Old P2_FIX_3 staleness guard removed — ctx_queue handles batching.
         now = _time.monotonic()
         if telemetry_agg.should_send(now):
             signature = _build_telemetry_signature(ephemeral_ctx)
@@ -2255,7 +2302,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if update.newHandle:
                         session_manager.update_handle(session_id, update.newHandle)
                     if not await _safe_send_json({
-                        "type": "session_resumption",
+                        "type": MessageType.SESSION_RESUMPTION,
                         "handle": update.newHandle,
                     }):
                         break
@@ -2266,7 +2313,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if hasattr(event.go_away, "time_left"):
                         retry_ms = int(event.go_away.time_left.total_seconds() * 1000) if event.go_away.time_left else 500
                     await _safe_send_json({
-                        "type": "go_away",
+                        "type": MessageType.GO_AWAY,
                         "retry_ms": retry_ms,
                         "message": "Server requested reconnection.",
                     })
@@ -2284,8 +2331,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ctx_queue.set_model_speaking(False)
                     # Note: do NOT flush queue on interrupt — user is speaking
                     await _safe_send_json({
-                        "type": "interrupted",
-                        "message": "Model output was interrupted.",
+                        "type": MessageType.INTERRUPTED,
                     })
                     logger.info("Interrupt detected — suppressing audio forwarding")
 
@@ -2317,10 +2363,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 fc.name,
                             )
                             await _safe_send_json({
-                                "type": "debug_event",
-                                "event": "hallucinated_tool_call",
-                                "tool": fc.name,
-                                "args": _json_safe(dict(fc.args) if fc.args else {}),
+                                "type": MessageType.DEBUG_ACTIVITY,
+                                "data": {
+                                    "event": "hallucinated_tool_call",
+                                    "tool": fc.name,
+                                    "args": _json_safe(dict(fc.args) if fc.args else {}),
+                                },
                             })
                             from google.genai.types import FunctionResponse as _FR
                             noop_response = _FR(
@@ -2359,7 +2407,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             user_id,
                         )
                         await _safe_send_json({
-                            "type": "tool_result",
+                            "type": MessageType.TOOL_RESULT,
                             "tool": fc.name,
                             "behavior": behavior_to_text(behavior),
                             "data": _json_safe(result),
@@ -2367,14 +2415,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                         if fc.name in NAVIGATION_FUNCTIONS:
                             await _safe_send_json({
-                                "type": "navigation_result",
+                                "type": MessageType.NAVIGATION_RESULT,
                                 "summary": str(result.get("destination_direction") or result.get("destination") or ""),
                                 "behavior": behavior_to_text(behavior),
                                 "data": _json_safe(result),
                             })
                         elif fc.name == "google_search":
                             await _safe_send_json({
-                                "type": "search_result",
+                                "type": MessageType.SEARCH_RESULT,
                                 "summary": str(result.get("answer") or ""),
                                 "behavior": behavior_to_text(behavior),
                                 "data": _json_safe(result),
@@ -2443,7 +2491,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "text": input_text,
                         })
                         await _safe_send_json({
-                            "type": "transcript",
+                            "type": MessageType.TRANSCRIPT,
                             "text": input_text,
                             "role": "echo",
                         })
@@ -2461,7 +2509,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         })
                         session_meta.record_interaction()
                         if not await _safe_send_json({
-                            "type": "transcript",
+                            "type": MessageType.TRANSCRIPT,
                             "text": input_text,
                             "role": "user",
                         }):
@@ -2513,7 +2561,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             stop_downstream.set()
             logger.exception("Error in downstream handler: user=%s session=%s", user_id, session_id)
             await _safe_send_json({
-                "type": "error",
+                "type": MessageType.ERROR,
                 "error": "Live session failed. Reconnecting...",
             })
             try:
@@ -2522,7 +2570,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 pass
 
     try:
-        await asyncio.gather(_upstream(), _downstream())
+        await asyncio.wait_for(
+            asyncio.gather(_upstream(), _downstream()),
+            timeout=SESSION_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "Session timeout (%ds): user=%s session=%s",
+            SESSION_TIMEOUT_SEC, user_id, session_id,
+        )
     except Exception:
         logger.exception("Session error: user=%s session=%s", user_id, session_id)
     finally:

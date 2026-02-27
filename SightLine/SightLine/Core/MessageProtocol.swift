@@ -114,6 +114,7 @@ enum DownstreamMessage {
     case debugActivity(data: [String: Any])
     case panic(message: String)
     case interrupted
+    case profileUpdatedAck
     case unknown(raw: String)
 
     static func parse(text: String) -> DownstreamMessage? {
@@ -227,6 +228,8 @@ enum DownstreamMessage {
             return .panic(message: message)
         case "interrupted":
             return .interrupted
+        case "profile_updated_ack":
+            return .profileUpdatedAck
         default:
             return .unknown(raw: text)
         }

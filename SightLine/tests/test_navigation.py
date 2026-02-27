@@ -389,21 +389,24 @@ class TestReverseGeocode:
 
         result = reverse_geocode(37.7749, -122.4194)
 
-        assert "San Francisco" in result
+        assert result["success"] is True
+        assert "San Francisco" in result["address"]
 
     def test_no_results(self, mock_gmaps):
         mock_gmaps.reverse_geocode.return_value = []
 
         result = reverse_geocode(0.0, 0.0)
 
-        assert "No address" in result
+        assert result["success"] is False
+        assert "No address" in result["error"]
 
     def test_api_error(self, mock_gmaps):
         mock_gmaps.reverse_geocode.side_effect = Exception("Network error")
 
         result = reverse_geocode(37.7749, -122.4194)
 
-        assert "Could not determine" in result
+        assert result["success"] is False
+        assert "Could not determine" in result["error"]
 
 
 class TestGetWalkingDirections:

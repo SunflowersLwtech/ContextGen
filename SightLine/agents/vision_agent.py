@@ -28,7 +28,7 @@ logger = logging.getLogger("sightline.vision_agent")
 # Constants
 # ---------------------------------------------------------------------------
 
-VISION_MODEL = "gemini-3.1-pro-preview"
+VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.1-pro-preview")
 
 _MEDIA_RESOLUTION_BY_LOD: dict[int, types.MediaResolution] = {
     1: types.MediaResolution.MEDIA_RESOLUTION_LOW,
@@ -235,6 +235,7 @@ async def analyze_scene(
     media_resolution = _MEDIA_RESOLUTION_BY_LOD[lod]
     user_message = _build_context_user_message(lod, session_context)
 
+    response = None
     try:
         client = _get_client()
         response = await client.aio.models.generate_content(
@@ -274,7 +275,8 @@ async def analyze_scene(
         return result
 
     except json.JSONDecodeError:
-        logger.error("Failed to parse vision model JSON response: %s", response.text)
+        raw = response.text if response else "<no response>"
+        logger.error("Failed to parse vision model JSON response: %s", raw)
         return dict(_EMPTY_RESULT)
     except Exception:
         logger.exception("Vision analysis failed")

@@ -14,6 +14,7 @@ import os
 extension Notification.Name {
     static let sharedAudioEngineWillRestart = Notification.Name("sharedAudioEngineWillRestart")
     static let sharedAudioEngineDidRestart = Notification.Name("sharedAudioEngineDidRestart")
+    static let sharedAudioEngineDidPause = Notification.Name("sharedAudioEngineDidPause")
 }
 
 final class SharedAudioEngine {
@@ -102,6 +103,16 @@ final class SharedAudioEngine {
         Self.logger.info("SharedAudioEngine stopped")
     }
 
+    /// Lightweight stop that preserves notification observers (unlike teardown).
+    /// Used during audio interruptions so we can resume when the interruption ends.
+    private func pause() {
+        playerNode?.stop()
+        engine?.stop()
+        isRunning = false
+        Self.logger.info("SharedAudioEngine paused (interruption began)")
+        NotificationCenter.default.post(name: .sharedAudioEngineDidPause, object: nil)
+    }
+
     // MARK: - Route Change Handling
 
     private func registerNotifications() {
@@ -153,9 +164,16 @@ final class SharedAudioEngine {
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
-        if type == .ended {
+        switch type {
+        case .began:
+            Self.logger.info("Audio interruption began (phone call / Siri), pausing engine")
+            pause()
+        case .ended:
+            // Accessibility app — audio MUST resume regardless of shouldResume flag.
             Self.logger.info("Audio interruption ended, restarting engine")
             restart()
+        @unknown default:
+            Self.logger.warning("Unknown interruption type: \(typeValue)")
         }
     }
 

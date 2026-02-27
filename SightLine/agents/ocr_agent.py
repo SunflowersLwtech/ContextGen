@@ -25,7 +25,7 @@ logger = logging.getLogger("sightline.ocr_agent")
 # Constants
 # ---------------------------------------------------------------------------
 
-OCR_MODEL = "gemini-3-flash-preview"
+OCR_MODEL = os.getenv("GEMINI_FLASH_MODEL", "gemini-3-flash-preview")
 
 _SYSTEM_PROMPT = """\
 You are a text extraction system for a blind user. Your job is to read ALL \
@@ -151,6 +151,7 @@ async def extract_text(
             user_message += f" Context: {context_hint}"
         media_res = types.MediaResolution.MEDIA_RESOLUTION_MEDIUM
 
+    response = None
     try:
         client = _get_client()
         response = await client.aio.models.generate_content(
@@ -190,7 +191,8 @@ async def extract_text(
         return result
 
     except json.JSONDecodeError:
-        logger.error("Failed to parse OCR model JSON response: %s", response.text)
+        raw = response.text if response else "<no response>"
+        logger.error("Failed to parse OCR model JSON response: %s", raw)
         return dict(_EMPTY_RESULT)
     except Exception:
         logger.exception("OCR extraction failed")

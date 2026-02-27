@@ -13,6 +13,7 @@ Phase 4 additions:
 
 import logging
 import os
+import time
 from typing import Optional
 
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -207,10 +208,13 @@ class SessionManager:
     dropped connections can be transparently resumed.
     """
 
+    _USER_PROFILE_TTL_SEC = 3600.0  # 1 hour
+
     def __init__(self) -> None:
         self._session_handles: dict[str, str] = {}
         self._session_contexts: dict[str, SessionContext] = {}
         self._user_profiles: dict[str, UserProfile] = {}
+        self._user_profile_access_times: dict[str, float] = {}
         self._ephemeral_contexts: dict[str, EphemeralContext] = {}
 
     # -- RunConfig ----------------------------------------------------------
@@ -221,7 +225,7 @@ class SessionManager:
     _NATIVE_AUDIO_LANGUAGES = {
         "ar-EG", "bn-BD", "nl-NL", "en-IN", "en-US", "fr-FR", "de-DE",
         "hi-IN", "id-ID", "it-IT", "ja-JP", "ko-KR", "mr-IN", "pl-PL",
-        "pt-BR", "ro-RO", "ru-RU", "es-US", "ta-IN", "te-IN", "th-TH",
+        "pt-BR", "ro-RO", "ru-RU", "es-ES", "es-US", "ta-IN", "te-IN", "th-TH",
         "tr-TR", "uk-UA", "vi-VN",
     }
 
@@ -304,6 +308,7 @@ class SessionManager:
         return the cached profile without hitting Firestore again.
         """
         if user_id in self._user_profiles:
+            self._user_profile_access_times[user_id] = time.monotonic()
             return self._user_profiles[user_id]
 
         profile = UserProfile.default()
@@ -322,18 +327,38 @@ class SessionManager:
                 logger.exception("Failed to load profile for user %s; using defaults", user_id)
 
         self._user_profiles[user_id] = profile
+        self._user_profile_access_times[user_id] = time.monotonic()
         return profile
 
     def invalidate_user_profile(self, user_id: str) -> None:
         """Remove cached profile so next load_user_profile fetches fresh data."""
         self._user_profiles.pop(user_id, None)
+        self._user_profile_access_times.pop(user_id, None)
 
     def get_user_profile(self, user_id: str) -> UserProfile:
         """Get cached UserProfile (sync). Use load_user_profile for initial load."""
         if user_id not in self._user_profiles:
             self._user_profiles[user_id] = UserProfile.default()
             self._user_profiles[user_id].user_id = user_id
+        self._user_profile_access_times[user_id] = time.monotonic()
         return self._user_profiles[user_id]
+
+    def evict_stale_profiles(self) -> int:
+        """Remove cached profiles not accessed within _USER_PROFILE_TTL_SEC.
+
+        Returns the number of evicted profiles.
+        """
+        now = time.monotonic()
+        stale = [
+            uid for uid, ts in self._user_profile_access_times.items()
+            if (now - ts) > self._USER_PROFILE_TTL_SEC
+        ]
+        for uid in stale:
+            self._user_profiles.pop(uid, None)
+            self._user_profile_access_times.pop(uid, None)
+        if stale:
+            logger.info("Evicted %d stale user profile(s)", len(stale))
+        return len(stale)
 
     def get_ephemeral_context(self, session_id: str) -> EphemeralContext:
         """Get or create the latest EphemeralContext for this session."""
@@ -348,8 +373,9 @@ class SessionManager:
     # -- Cleanup ------------------------------------------------------------
 
     def remove_session(self, session_id: str) -> None:
-        """Remove all cached state for a session."""
+        """Remove all cached state for a session and evict stale profiles."""
         self._session_handles.pop(session_id, None)
         self._session_contexts.pop(session_id, None)
         self._ephemeral_contexts.pop(session_id, None)
+        self.evict_stale_profiles()
         logger.debug("Removed session state for %s", session_id)

@@ -22,7 +22,7 @@ from tools.tool_behavior import ToolBehavior, behavior_to_text
 logger = logging.getLogger(__name__)
 
 # Cosine similarity threshold for positive match
-MATCH_THRESHOLD = 0.4
+MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.4"))
 
 # Singleton FaceAnalysis instance (lazy-initialized)
 _face_app: Optional[FaceAnalysis] = None

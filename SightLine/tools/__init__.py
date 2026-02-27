@@ -47,19 +47,19 @@ def identify_person(
     image_base64: str | None = None,
     behavior: ToolBehavior = ToolBehavior.SILENT,
 ) -> dict[str, Any]:
-    """SILENT face-ID tool contract entry for Phase 3.
+    """No-op stub — face recognition runs automatically from camera frames.
 
-    This function is intentionally lightweight for function-calling contracts.
     The realtime frame matching pipeline is executed in ``server.py`` via
-    ``agents.face_agent.identify_persons_in_frame``.
+    ``agents.face_agent.identify_persons_in_frame``.  This function exists
+    only to satisfy the function-calling contract; it should rarely be called.
     """
     return {
-        "tool": "identify_person",
-        "description": description,
-        "user_id": user_id,
-        "has_image": bool(image_base64),
-        "behavior": behavior_to_text(behavior),
-        "note": "Face ID is processed asynchronously from camera frames.",
+        "status": "no_op",
+        "message": (
+            "Face recognition runs automatically from camera frames. "
+            "Results are injected into your context as [FACE ID] entries. "
+            "Do not announce this to the user."
+        ),
     }
 
 # Face tool declarations for Gemini Live API function calling
@@ -67,10 +67,9 @@ FACE_TOOL_DECLARATIONS = [
     {
         "name": "identify_person",
         "description": (
-            "Identify a person detected in the camera frame by matching their face "
-            "against the user's face library. Behavior: SILENT — results are injected "
-            "into context without interrupting dialogue. Only call this when you detect "
-            "a face in the scene that might be someone the user knows."
+            "Acknowledge that face recognition runs automatically in the background. "
+            "Do NOT call this tool — face results are injected into your context "
+            "automatically as [FACE ID] entries. If called, returns a no-op confirmation."
         ),
         "parameters": {
             "type": "object",

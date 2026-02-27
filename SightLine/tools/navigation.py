@@ -337,7 +337,7 @@ def nearby_search(
         }
 
 
-def reverse_geocode(lat: float, lng: float) -> str:
+def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
     """Get a human-readable address from coordinates.
 
     Args:
@@ -345,17 +345,20 @@ def reverse_geocode(lat: float, lng: float) -> str:
         lng: Longitude.
 
     Returns:
-        Formatted address string, or error message.
+        Dict with ``success``, ``address`` (or ``error``) fields.
     """
     try:
         client = _get_client()
         results = client.reverse_geocode((lat, lng))
         if results:
-            return results[0].get("formatted_address", "Unknown location")
-        return "No address found for this location."
+            return {
+                "success": True,
+                "address": results[0].get("formatted_address", "Unknown location"),
+            }
+        return {"success": False, "error": "No address found for this location."}
     except Exception as e:
         logger.exception("reverse_geocode failed: %s", e)
-        return f"Could not determine address: {e}"
+        return {"success": False, "error": f"Could not determine address: {e}"}
 
 
 def get_walking_directions(origin: str, destination: str) -> dict[str, Any]:

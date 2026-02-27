@@ -46,13 +46,6 @@ service cloud.firestore {
       }
     }
 
-    match /memories/{memoryId} {
-      allow read, write: if isAuthenticated()
-        && request.auth.uid == resource.data.user_id;
-      allow create: if isAuthenticated()
-        && request.auth.uid == request.resource.data.user_id;
-    }
-
     // ── Deny all other access by default ───────────────────────────
     match /{document=**} {
       allow read, write: if false;
