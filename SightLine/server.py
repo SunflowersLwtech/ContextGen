@@ -317,8 +317,9 @@ class ContextInjectionQueue:
             self.schedule_flush_after(first_turn_delay)
             logger.info("Post-greeting pause: flush deferred %.1fs", first_turn_delay)
         else:
-            # Defer 300ms to let audio pipeline drain before triggering new response
-            self.schedule_flush_after(0.3)
+            # Defer 2s to let model finish speaking before flushing queued context.
+            # 0.3s was too aggressive — caused mid-sentence interruptions.
+            self.schedule_flush_after(2.0)
 
     # -- Flush ---------------------------------------------------------------
 
@@ -2139,29 +2140,29 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         )
                         logger.info("Camera toggle: active=%s", _client_camera_active)
                         if _client_camera_active:
-                            content = types.Content(
-                                parts=[types.Part(
-                                    text=(
-                                        "[CAMERA ACTIVATED] The user has turned on the rear camera. "
-                                        "You can now see their surroundings via image frames. "
-                                        "Briefly acknowledge and describe what you see when the first image arrives."
-                                    )
-                                )],
-                                role="user",
+                            # Camera toggle is informational, not safety-critical → use queue
+                            # to avoid interrupting current generation via turn_complete=True
+                            ctx_queue.enqueue(
+                                category="camera_toggle",
+                                text=(
+                                    "[CAMERA ACTIVATED] The user has turned on the rear camera. "
+                                    "You can now see their surroundings via image frames. "
+                                    "Briefly acknowledge and describe what you see when the first image arrives."
+                                ),
+                                priority=4,
+                                speak=True,
                             )
-                            ctx_queue.inject_immediate(content)
                         else:
-                            content = types.Content(
-                                parts=[types.Part(
-                                    text=(
-                                        "[CAMERA DEACTIVATED] The user has turned off the camera. "
-                                        "You are now in audio-only mode. Do not reference visual information "
-                                        "unless recalling something previously seen."
-                                    )
-                                )],
-                                role="user",
+                            ctx_queue.enqueue(
+                                category="camera_toggle",
+                                text=(
+                                    "[CAMERA DEACTIVATED] The user has turned off the camera. "
+                                    "You are now in audio-only mode. Do not reference visual information "
+                                    "unless recalling something previously seen."
+                                ),
+                                priority=4,
+                                speak=True,
                             )
-                            ctx_queue.inject_immediate(content)
 
                     else:
                         logger.debug("Unhandled gesture type: %s", gesture)

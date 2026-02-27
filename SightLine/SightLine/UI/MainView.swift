@@ -692,11 +692,13 @@ struct MainView: View {
             audioPlayback?.playAudioData(data)
         }
 
-        audioCapture.onVoiceBargeIn = { [weak audioPlayback, weak webSocketManager] in
+        audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
             DispatchQueue.main.async {
                 audioPlayback?.stopImmediately()
             }
-            webSocketManager?.sendText(UpstreamMessage.activityStart.toJSON())
+            // activity_start removed: real audio frames trigger Gemini VAD naturally.
+            // Sending activity_start with START_OF_ACTIVITY_INTERRUPTS caused
+            // cascading self-interruption when combined with context injections.
         }
 
         // Manual activity_start/activity_end signals removed:
@@ -913,19 +915,15 @@ struct MainView: View {
             webSocketManager.reconnect(afterMs: 3000)
         case .transcript(let text, let role):
             DispatchQueue.main.async {
-                if role == "echo" {
-                    // Echo-classified transcripts go to dev console only
-                    devConsoleModel.captureTranscript(text: text, role: "echo")
-                } else if role == "user" && audioPlayback.isPlaying {
-                    // Reclassify user transcript as echo when model audio is playing
-                    devConsoleModel.captureTranscript(text: text, role: "echo")
-                } else {
+                if role == "agent" {
+                    // Agent transcripts → visible as subtitles + dev console
                     transcript = text
-                    if role == "agent" {
-                        lastAgentTranscript = text
-                    }
+                    lastAgentTranscript = text
                     devConsoleModel.captureTranscript(text: text, role: role)
                     drainWhenIdleToolQueueIfPossible()
+                } else {
+                    // User / echo transcripts → dev console only (no main UI)
+                    devConsoleModel.captureTranscript(text: text, role: role == "user" && audioPlayback.isPlaying ? "echo" : role)
                 }
             }
         case .lodUpdate(let lod):
