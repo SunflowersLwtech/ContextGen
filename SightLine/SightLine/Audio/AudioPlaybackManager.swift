@@ -19,6 +19,10 @@ class AudioPlaybackManager: ObservableObject {
     /// Called when audio buffer overflow occurs; parameter is the number of dropped chunks.
     var onBufferOverflow: ((Int) -> Void)?
 
+    /// Called when all buffered audio has finished playing (drain completed).
+    /// Used to signal the server that it is safe to flush new context injections.
+    var onPlaybackDrained: (() -> Void)?
+
     private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioPlayback")
 
     private var playbackFormat: AVAudioFormat?
@@ -233,7 +237,11 @@ class AudioPlaybackManager: ObservableObject {
         if scheduledBufferCount == 0 && pendingChunks.isEmpty {
             isDrainActive = false
             wasStarved = true
-            DispatchQueue.main.async { self.isPlaying = false }
+            let drainedCallback = self.onPlaybackDrained
+            DispatchQueue.main.async {
+                self.isPlaying = false
+                drainedCallback?()
+            }
         }
     }
 

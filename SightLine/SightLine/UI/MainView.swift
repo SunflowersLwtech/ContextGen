@@ -813,6 +813,11 @@ struct MainView: View {
                 devConsoleModel.captureNetworkMessage(direction: "ERR", payload: "Audio overflow: dropped \(dropped) chunks")
             }
         }
+        audioPlayback.onPlaybackDrained = { [weak webSocketManager] in
+            webSocketManager?.sendText(
+                UpstreamMessage.playbackDrained.toJSON()
+            )
+        }
 
         // 4. Start sensor collection
         sensorManager.startAll()

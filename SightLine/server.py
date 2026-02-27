@@ -240,6 +240,8 @@ class ContextInjectionQueue:
         self._deferred_flush_handle: asyncio.TimerHandle | None = None
         self._first_turn: bool = True
         self._model_audio_last_seen_at: float = 0.0
+        self._ios_playback_drained: bool = True  # Initially True (not playing)
+        self._playback_started_at: float = 0.0   # When _ios_playback_drained was last set False
 
     # -- Model speaking state ------------------------------------------------
 
@@ -251,6 +253,15 @@ class ContextInjectionQueue:
     def set_model_audio_timestamp(self, ts: float) -> None:
         """Record when the last model audio chunk was seen (monotonic clock)."""
         self._model_audio_last_seen_at = ts
+
+    def set_ios_playback_drained(self, drained: bool) -> None:
+        """Mark whether iOS has finished playing all buffered audio."""
+        self._ios_playback_drained = drained
+        if not drained:
+            self._playback_started_at = time.monotonic()
+        if drained and self._queue and self._deferred_flush_handle is None:
+            # iOS finished playback and we have pending items — schedule flush
+            self._schedule_deferred_flush(delay=0.2)
 
     @property
     def model_speaking(self) -> bool:
@@ -301,13 +312,32 @@ class ContextInjectionQueue:
         if self._model_speaking:
             logger.debug("Deferred flush skipped — model is now speaking")
             return
-        # Guard against flushing while model generation is ramping up
+        # Playback gate: wait for iOS to finish playing before flushing
+        if not self._ios_playback_drained:
+            elapsed = (
+                time.monotonic() - self._playback_started_at
+                if self._playback_started_at > 0
+                else 999
+            )
+            if elapsed < 5.0:  # 5s safety-net timeout
+                logger.debug(
+                    "Deferred flush skipped — iOS playback not drained (%.1fs)",
+                    elapsed,
+                )
+                self._schedule_deferred_flush(delay=1.0)
+                return
+            else:
+                logger.warning(
+                    "Playback drain timeout (%.1fs) — forcing flush", elapsed
+                )
+                self._ios_playback_drained = True
+        # Freshness guard: avoid flushing while model generation is ramping up
         # (first audio chunk hasn't arrived yet, so _model_speaking is still False)
         if self._model_audio_last_seen_at > 0:
             staleness = time.monotonic() - self._model_audio_last_seen_at
-            if staleness < 2.0:
+            if staleness < 3.0:
                 logger.debug("Deferred flush skipped — model audio seen %.1fs ago", staleness)
-                self._schedule_deferred_flush(delay=2.0 - staleness + 0.1)
+                self._schedule_deferred_flush(delay=3.0 - staleness + 0.1)
                 return
         if self._queue:
             logger.info("Deferred flush firing (%d items)", len(self._queue))
@@ -362,6 +392,8 @@ class ContextInjectionQueue:
             role="user",
         )
         self._lrq.send_content(content)
+        if not all_silent:
+            self._ios_playback_drained = False  # Will produce new audio; wait for iOS drain
         logger.info("Flushed %d queued items (all_silent=%s)", len(items), all_silent)
         return True
 
@@ -369,6 +401,8 @@ class ContextInjectionQueue:
         """Force-flush if the oldest item exceeds QUEUE_MAX_AGE_SEC."""
         if self._model_speaking:
             return False  # Don't force-flush while model is speaking
+        if not self._ios_playback_drained:
+            return False  # Don't force-flush while iOS is still playing
         if not self._queue:
             return False
         oldest = min(it.enqueued_at for it in self._queue.values())
@@ -2070,6 +2104,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                     elif gesture == "interrupt":
                         logger.info("User interrupt gesture received")
+                        ctx_queue.set_ios_playback_drained(True)
                         content = types.Content(
                             parts=[types.Part(text="[USER INTERRUPT] The user has interrupted. Stop current output immediately and wait for their next input.")],
                             role="user",
@@ -2112,6 +2147,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                     elif gesture == "emergency_pause":
                         paused = _coerce_bool(message.get("paused", True), default=True)
+                        ctx_queue.set_ios_playback_drained(True)
                         if paused:
                             old_lod = session_ctx.current_lod
                             logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
@@ -2267,6 +2303,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             "type": MessageType.ERROR,
                             "error": "Failed to apply profile update",
                         })
+
+                elif message.get("type") == "playback_drained":
+                    ctx_queue.set_ios_playback_drained(True)
+                    logger.debug("iOS playback drained — flush gate opened")
 
                 else:
                     logger.warning("Unknown upstream message type: %s", message.get("type"))
@@ -2449,6 +2489,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         _last_interrupt_at = now_mono
                         _model_audio_last_seen_at = 0.0
                         ctx_queue.set_model_speaking(False)
+                        ctx_queue.set_ios_playback_drained(True)  # iOS will stopImmediately
                         # Note: do NOT flush queue on interrupt — user is speaking
                         await _safe_send_json({
                             "type": MessageType.INTERRUPTED,
@@ -2664,6 +2705,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             _model_audio_last_seen_at = time.monotonic()
                             ctx_queue.set_model_speaking(True)
                             ctx_queue.set_model_audio_timestamp(_model_audio_last_seen_at)
+                            ctx_queue.set_ios_playback_drained(False)
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
