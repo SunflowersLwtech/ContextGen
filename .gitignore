@@ -67,6 +67,7 @@ DerivedData/
 *.ipa
 
 # === Dev / Scratch ===
+dev/
 SightLine/dev/
 SightLine/tasks/
 
@@ -75,3 +76,4 @@ SightLine/tasks/
 *.tar.gz
 *.zip
 SightLine/CLAUDE.md
+CLAUDE.md

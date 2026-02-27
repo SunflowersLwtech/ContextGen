@@ -659,7 +659,8 @@ struct MainView: View {
             }
 
             await MainActor.run {
-                // Rebuild playback after permission prompts; iOS may reset audio session state.
+                // Start shared engine first — enables hardware AEC between capture & playback.
+                SharedAudioEngine.shared.setup()
                 audioPlayback.setup()
                 if !isMuted {
                     audioCapture.startCapture()
@@ -1002,6 +1003,7 @@ struct MainView: View {
         cameraManager.stopCapture()
         isCameraActive = false
         audioPlayback.teardown()
+        SharedAudioEngine.shared.teardown()
         webSocketManager.disconnect()
     }
 }

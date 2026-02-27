@@ -2,8 +2,12 @@
 //  AudioCaptureManager.swift
 //  SightLine
 //
-//  Captures microphone audio using AVAudioEngine, converts to PCM 16kHz mono 16-bit,
-//  and delivers raw PCM data via callback for WebSocket transmission.
+//  Captures microphone audio using the shared AVAudioEngine, converts to
+//  PCM 16kHz mono 16-bit, and delivers raw PCM data via callback for
+//  WebSocket transmission.
+//
+//  Uses SharedAudioEngine.shared.engine.inputNode so that capture and
+//  playback share a single audio graph, enabling hardware AEC.
 //
 
 import AVFoundation
@@ -15,18 +19,25 @@ class AudioCaptureManager: ObservableObject {
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioCapture")
 
-    private var audioEngine: AVAudioEngine?
     var onAudioCaptured: ((Data) -> Void)?
     /// RMS audio level callback for NoiseMeter (ambient noise calculation).
     var onAudioLevelUpdate: ((Float) -> Void)?
 
+    private var converter: AVAudioConverter?
+    private var targetFormat: AVAudioFormat?
+    private var restartObserver: NSObjectProtocol?
+
     func startCapture() {
-        let engine = AVAudioEngine()
+        guard let engine = SharedAudioEngine.shared.engine, engine.isRunning else {
+            Self.logger.error("SharedAudioEngine not running; cannot start capture")
+            return
+        }
+
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
         // Target format: PCM 16kHz Mono 16-bit (what Gemini expects)
-        guard let targetFormat = AVAudioFormat(
+        guard let fmt = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: SightLineConfig.audioInputSampleRate,
             channels: 1,
@@ -35,18 +46,21 @@ class AudioCaptureManager: ObservableObject {
             Self.logger.error("Failed to create target audio format")
             return
         }
+        targetFormat = fmt
 
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            Self.logger.error("Failed to create audio converter")
+        guard let conv = AVAudioConverter(from: inputFormat, to: fmt) else {
+            Self.logger.error("Failed to create audio converter (input: \(inputFormat))")
             return
         }
+        converter = conv
 
         inputNode.installTap(onBus: 0, bufferSize: SightLineConfig.audioBufferSize, format: inputFormat) {
             [weak self] buffer, _ in
+            guard let self = self, let fmt = self.targetFormat, let converter = self.converter else { return }
 
             let targetFrameCount = AVAudioFrameCount(SightLineConfig.audioBufferSize)
             guard let outputBuffer = AVAudioPCMBuffer(
-                pcmFormat: targetFormat,
+                pcmFormat: fmt,
                 frameCapacity: targetFrameCount
             ) else { return }
 
@@ -71,33 +85,49 @@ class AudioCaptureManager: ObservableObject {
                         sumSquares += samples[i] * samples[i]
                     }
                     let rms = sqrtf(sumSquares / Float(frameLength))
-                    self?.onAudioLevelUpdate?(rms)
+                    self.onAudioLevelUpdate?(rms)
                 }
             }
 
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
                 let data = Data(bytes: channelData[0], count: byteCount)
-                self?.onAudioCaptured?(data)
+                self.onAudioCaptured?(data)
             }
         }
 
-        engine.prepare()
-        do {
-            try engine.start()
-            audioEngine = engine
-            DispatchQueue.main.async { self.isCapturing = true }
-            Self.logger.info("Audio capture started")
-        } catch {
-            Self.logger.error("Audio engine start failed: \(error)")
+        // Re-install tap if the shared engine restarts (route change, interruption)
+        restartObserver = NotificationCenter.default.addObserver(
+            forName: .sharedAudioEngineDidRestart,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.isCapturing else { return }
+            Self.logger.info("SharedAudioEngine restarted — re-installing capture tap")
+            self.removeTap()
+            self.startCapture()
         }
+
+        DispatchQueue.main.async { self.isCapturing = true }
+        Self.logger.info("Audio capture started (shared engine, VP=\(SharedAudioEngine.shared.isVoiceProcessingEnabled))")
     }
 
     func stopCapture() {
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
+        removeTap()
+        converter = nil
+        targetFormat = nil
+
+        if let obs = restartObserver {
+            NotificationCenter.default.removeObserver(obs)
+            restartObserver = nil
+        }
+
         DispatchQueue.main.async { self.isCapturing = false }
         Self.logger.info("Audio capture stopped")
+    }
+
+    private func removeTap() {
+        // Only remove tap — do NOT stop the shared engine (playback may still be active)
+        SharedAudioEngine.shared.engine?.inputNode.removeTap(onBus: 0)
     }
 }

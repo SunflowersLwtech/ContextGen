@@ -5,6 +5,9 @@
 //  Plays PCM 24kHz mono 16-bit audio received from the Gemini backend.
 //  Supports immediate stop for barge-in (user interrupting the agent).
 //
+//  Uses SharedAudioEngine.shared.playerNode so that playback and capture
+//  share a single audio graph, enabling hardware AEC.
+//
 
 import AVFoundation
 import Combine
@@ -15,8 +18,6 @@ class AudioPlaybackManager: ObservableObject {
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioPlayback")
 
-    private var audioEngine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
     private var playbackFormat: AVAudioFormat?
     private let schedulingQueue = DispatchQueue(
         label: "com.sightline.audio.playback.scheduling",
@@ -29,16 +30,9 @@ class AudioPlaybackManager: ObservableObject {
     /// Set when drain stops due to chunk starvation (not barge-in).
     /// Allows faster restart with fewer buffered chunks.
     private var wasStarved = false
+    private var restartObserver: NSObjectProtocol?
 
     func setup() {
-        // Make setup idempotent: permission dialogs / route changes can invalidate
-        // the current engine; rebuilding restores audible output reliably.
-        teardown()
-        configureAudioSession()
-
-        let engine = AVAudioEngine()
-        let player = AVAudioPlayerNode()
-
         // Gemini outputs PCM 24kHz mono 16-bit
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -49,20 +43,32 @@ class AudioPlaybackManager: ObservableObject {
             Self.logger.error("Failed to create playback audio format")
             return
         }
+        playbackFormat = format
 
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
-
-        engine.prepare()
-        do {
-            try engine.start()
+        // Ensure the shared player is ready
+        if let player = SharedAudioEngine.shared.playerNode, !player.isPlaying {
             player.play()
+        }
 
-            audioEngine = engine
-            playerNode = player
-            playbackFormat = format
-            schedulingQueue.async { [weak self] in
-                guard let self = self else { return }
+        schedulingQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.pendingChunks.removeAll()
+            self.isDrainActive = false
+            self.scheduledBufferCount = 0
+            self.wasStarved = false
+            self.jitterKickoffWorkItem?.cancel()
+            self.jitterKickoffWorkItem = nil
+        }
+
+        // Reset drain state if the shared engine restarts
+        restartObserver = NotificationCenter.default.addObserver(
+            forName: .sharedAudioEngineDidRestart,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            Self.logger.info("SharedAudioEngine restarted — resetting playback drain state")
+            self.schedulingQueue.async {
                 self.pendingChunks.removeAll()
                 self.isDrainActive = false
                 self.scheduledBufferCount = 0
@@ -71,20 +77,19 @@ class AudioPlaybackManager: ObservableObject {
                 self.jitterKickoffWorkItem = nil
             }
             DispatchQueue.main.async { self.isPlaying = false }
-            Self.logger.info("Audio playback engine started")
-        } catch {
-            Self.logger.error("Audio playback engine start failed: \(error)")
         }
+
+        DispatchQueue.main.async { self.isPlaying = false }
+        Self.logger.info("Audio playback ready (shared engine)")
     }
 
     func playAudioData(_ data: Data) {
         guard !data.isEmpty else { return }
         guard let format = playbackFormat,
-              let player = playerNode else { return }
+              let player = SharedAudioEngine.shared.playerNode else { return }
 
         schedulingQueue.async { [weak self] in
             guard let self = self else { return }
-            guard self.playerNode === player else { return }
 
             // Overflow guard: drop oldest chunks to prevent memory spike
             if self.pendingChunks.count >= SightLineConfig.audioMaxPendingChunks {
@@ -112,8 +117,7 @@ class AudioPlaybackManager: ObservableObject {
 
     /// Stop playback immediately for barge-in support
     func stopImmediately() {
-        // Capture node reference before async — avoids race with teardown
-        guard let player = playerNode else { return }
+        guard let player = SharedAudioEngine.shared.playerNode else { return }
         player.stop()
         player.reset()
 
@@ -142,24 +146,17 @@ class AudioPlaybackManager: ObservableObject {
             self.jitterKickoffWorkItem?.cancel()
             self.jitterKickoffWorkItem = nil
         }
-        playerNode?.stop()
-        audioEngine?.stop()
-        audioEngine = nil
-        playerNode = nil
+
+        if let obs = restartObserver {
+            NotificationCenter.default.removeObserver(obs)
+            restartObserver = nil
+        }
+
+        // Do NOT stop the shared engine — capture may still be active.
+        // Just clear our own state.
         playbackFormat = nil
         DispatchQueue.main.async { self.isPlaying = false }
-        Self.logger.info("Audio playback engine stopped")
-    }
-
-    /// Configure the shared AVAudioSession for simultaneous recording and playback.
-    /// Must be called before either AVAudioEngine starts.
-    private func configureAudioSession() {
-        do {
-            try AudioSessionManager.shared.configure()
-            Self.logger.info("AVAudioSession configured: playAndRecord + defaultToSpeaker")
-        } catch {
-            Self.logger.error("AVAudioSession configuration failed: \(error)")
-        }
+        Self.logger.info("Audio playback torn down (shared engine intact)")
     }
 
     /// Fill the sliding window: schedule up to `audioScheduleAheadCount` buffers
@@ -173,12 +170,11 @@ class AudioPlaybackManager: ObservableObject {
             guard let buffer = makePCMBuffer(from: chunk, format: format) else { continue }
 
             scheduledBufferCount += 1
-            player.scheduleBuffer(buffer) { [weak self, weak player] in
+            player.scheduleBuffer(buffer) { [weak self] in
                 guard let self = self else { return }
                 self.schedulingQueue.async {
                     self.scheduledBufferCount -= 1
-                    guard self.isDrainActive, let player = player,
-                          self.playerNode === player else {
+                    guard self.isDrainActive else {
                         if self.scheduledBufferCount <= 0 {
                             self.scheduledBufferCount = 0
                             self.isDrainActive = false
@@ -213,11 +209,9 @@ class AudioPlaybackManager: ObservableObject {
 
     private func scheduleDrainFallback(player: AVAudioPlayerNode, format: AVAudioFormat) {
         jitterKickoffWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self, weak player] in
+        let workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            guard let player = player else { return }
             guard !self.isDrainActive else { return }
-            guard self.playerNode === player else { return }
             guard !self.pendingChunks.isEmpty else { return }
             self.startDrain(player: player, format: format)
         }

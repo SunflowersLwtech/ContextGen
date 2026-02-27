@@ -105,14 +105,14 @@ def create_session_service():
 LOD_VAD_PRESETS: dict[int, dict] = {
     1: {
         "voice_name": "Aoede",
-        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
         "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
         "silence_duration_ms": 400,
         "prefix_padding_ms": 100,
     },
     2: {
         "voice_name": "Aoede",
-        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        "start_sensitivity": types.StartSensitivity.START_SENSITIVITY_LOW,
         "end_sensitivity": types.EndSensitivity.END_SENSITIVITY_HIGH,
         "silence_duration_ms": 1000,
         "prefix_padding_ms": 250,

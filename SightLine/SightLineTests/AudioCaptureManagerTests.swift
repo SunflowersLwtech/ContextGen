@@ -41,4 +41,18 @@ struct AudioCaptureManagerTests {
         manager.teardown()
         // No crash = pass
     }
+
+    @Test("SharedAudioEngine singleton exists and starts not running")
+    func sharedAudioEngineInit() {
+        let engine = SharedAudioEngine.shared
+        // Before setup(), engine should not be running
+        #expect(engine.isRunning == false)
+        #expect(engine.isVoiceProcessingEnabled == false)
+    }
+
+    @Test("SharedAudioEngine teardown without setup does not crash")
+    func sharedAudioEngineTeardownSafe() {
+        SharedAudioEngine.shared.teardown()
+        // No crash = pass
+    }
 }
