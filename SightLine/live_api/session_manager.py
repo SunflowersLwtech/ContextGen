@@ -256,8 +256,14 @@ class SessionManager:
                 ),
                 language_code=effective_lang,
             ),
-            proactivity=types.ProactivityConfig(proactive_audio=True),
-            enable_affective_dialog=True,
+            # proactive_audio and affective_dialog disabled:
+            # - affective_dialog is correlated with premature turnComplete
+            #   (js-genai#707, python-genai#872) — model cuts off mid-sentence
+            # - proactive_audio conflicts with affective_dialog
+            #   (Google AI Studio mutually excludes them)
+            # Re-enable individually after verifying audio stability.
+            # proactivity=types.ProactivityConfig(proactive_audio=True),
+            # enable_affective_dialog=True,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             session_resumption=session_resumption,
@@ -273,7 +279,13 @@ class SessionManager:
                     prefix_padding_ms=vad_preset["prefix_padding_ms"],
                     silence_duration_ms=vad_preset["silence_duration_ms"],
                 ),
-                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                # NO_INTERRUPTION: Gemini's server-side VAD no longer interrupts
+                # model audio output.  This eliminates self-interruption caused by
+                # echo residual being misdetected as user speech.  True barge-in
+                # is handled client-side (iOS RMS + SileroVAD confirmation) —
+                # iOS stops playback locally and the server suppresses forwarding
+                # until turn_complete.
+                activity_handling=types.ActivityHandling.NO_INTERRUPTION,
                 turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
             ),
         )

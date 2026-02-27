@@ -40,9 +40,11 @@ class AudioCaptureManager: ObservableObject {
     var lastModelAudioReceivedAt: CFAbsoluteTime = 0
 
     /// How long after the last audio chunk we still consider the model "speaking".
-    /// Covers: network jitter (~100ms) + function call pauses (~500ms) +
-    /// natural speech pauses (~300ms) + AEC tail (~150ms) + margin (~350ms).
-    private let modelSpeakingTimeout: Double = 1.2
+    /// Must be close to the server-side window (3.0s) to prevent the iOS client
+    /// from sending real audio (containing residual echo) while the server still
+    /// considers the model active.  Covers: network jitter, sub-agent / function
+    /// call pauses (1-3s), natural speech pauses, and AEC tail.
+    private let modelSpeakingTimeout: Double = 2.5
 
     /// RMS threshold for voice barge-in during model playback.
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
@@ -57,7 +59,7 @@ class AudioCaptureManager: ObservableObject {
     /// Barge-in confirmation counter: requires consecutive frames above threshold + VAD active.
     /// Prevents AEC residual echo bursts (< 200ms) from triggering false barge-in.
     private var bargeInConfirmCount: Int = 0
-    private let bargeInConfirmRequired: Int = 6  // ~600ms at 100ms/frame
+    private let bargeInConfirmRequired: Int = 8  // ~800ms at 100ms/frame — reduces false barge-in from AEC residual
 
     /// Ignore barge-in candidates immediately after each model audio chunk.
     /// This protects against AEC tail and speaker leakage right after playback resumes.

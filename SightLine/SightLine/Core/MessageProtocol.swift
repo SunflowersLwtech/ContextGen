@@ -31,6 +31,7 @@ enum UpstreamMessage {
     case emergencyPause(paused: Bool)
     case cameraToggle(active: Bool)
     case playbackDrained
+    case clientBargeIn
 
     /// Encode as optimized binary frame (magic byte + raw payload).
     /// Returns nil for message types that must be sent as JSON text.
@@ -86,6 +87,8 @@ enum UpstreamMessage {
             return "{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":\(active)}"
         case .playbackDrained:
             return "{\"type\":\"playback_drained\"}"
+        case .clientBargeIn:
+            return "{\"type\":\"client_barge_in\"}"
         }
     }
 }

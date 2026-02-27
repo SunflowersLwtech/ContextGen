@@ -697,14 +697,17 @@ struct MainView: View {
             audioPlayback?.isPlaying ?? false
         }
 
-        audioCapture.onVoiceBargeIn = { [weak audioPlayback] in
+        audioCapture.onVoiceBargeIn = { [weak audioPlayback, weak webSocketManager] in
             DispatchQueue.main.async {
                 audioPlayback?.stopImmediately()
-                audioPlayback?.suppressIncomingAudio(for: 0.8)
+                // Short suppression to drop in-flight chunks; the server
+                // will stop forwarding once it processes client_barge_in.
+                audioPlayback?.suppressIncomingAudio(for: 0.5)
             }
-            // activity_start removed: real audio frames trigger Gemini VAD naturally.
-            // Sending activity_start with START_OF_ACTIVITY_INTERRUPTS caused
-            // cascading self-interruption when combined with context injections.
+            // With NO_INTERRUPTION, Gemini's server-side VAD won't interrupt
+            // the model.  Instead, notify the server so it stops forwarding
+            // audio until the current turn completes.
+            webSocketManager?.sendText(UpstreamMessage.clientBargeIn.toJSON())
         }
 
         // Manual activity_start/activity_end signals removed:

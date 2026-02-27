@@ -230,6 +230,13 @@ class ContextInjectionQueue:
     a lock must be introduced to protect ``_queue``.
     """
 
+    # Cooldown after send_content to avoid interrupting ramp-up generation.
+    # Gemini needs ~0.5–2s from receiving content to producing the first audio
+    # chunk.  During that window _model_speaking is still False, so a new
+    # enqueue would trigger an immediate flush → interrupt the pending
+    # generation.  This guard prevents that.
+    _GENERATION_RAMP_GUARD_SEC = 3.0
+
     def __init__(self, live_request_queue: "LiveRequestQueue") -> None:
         self._lrq = live_request_queue
         self._queue: dict[str, _QueuedItem] = {}
@@ -242,6 +249,7 @@ class ContextInjectionQueue:
         self._model_audio_last_seen_at: float = 0.0
         self._ios_playback_drained: bool = True  # Initially True (not playing)
         self._playback_started_at: float = 0.0   # When _ios_playback_drained was last set False
+        self._last_send_content_at: float = 0.0   # When send_content was last called
 
     # -- Model speaking state ------------------------------------------------
 
@@ -272,6 +280,7 @@ class ContextInjectionQueue:
     def inject_immediate(self, content: "types.Content") -> None:
         """Send directly to LiveRequestQueue, bypassing the queue."""
         self._lrq.send_content(content)
+        self._last_send_content_at = time.monotonic()
 
     # -- Queued injection ----------------------------------------------------
 
@@ -290,8 +299,17 @@ class ContextInjectionQueue:
         logger.info("Queued [%s] (priority=%d, speak=%s, queue_size=%d)",
                      category, priority, speak, len(self._queue))
         # Model idle + no timer pending → schedule deferred flush
+        # Also guard against ramp-up window: if send_content was called
+        # recently, Gemini is likely still generating — don't flush yet.
         if not self._model_speaking and self._deferred_flush_handle is None:
-            self._schedule_deferred_flush()
+            since_last_send = time.monotonic() - self._last_send_content_at
+            if since_last_send < self._GENERATION_RAMP_GUARD_SEC:
+                remaining = self._GENERATION_RAMP_GUARD_SEC - since_last_send + 0.1
+                logger.debug("Enqueue: deferring flush — send_content %.1fs ago (guard %.1fs)",
+                             since_last_send, remaining)
+                self._schedule_deferred_flush(delay=remaining)
+            else:
+                self._schedule_deferred_flush()
 
     # -- Deferred flush (batching window) ------------------------------------
 
@@ -311,6 +329,15 @@ class ContextInjectionQueue:
         self._deferred_flush_handle = None
         if self._model_speaking:
             logger.debug("Deferred flush skipped — model is now speaking")
+            return
+        # Generation ramp-up guard: send_content was called recently,
+        # Gemini is likely still generating (no audio chunk yet).
+        since_last_send = time.monotonic() - self._last_send_content_at
+        if self._last_send_content_at > 0 and since_last_send < self._GENERATION_RAMP_GUARD_SEC:
+            remaining = self._GENERATION_RAMP_GUARD_SEC - since_last_send + 0.1
+            logger.debug("Deferred flush skipped — send_content %.1fs ago (guard %.1fs)",
+                         since_last_send, remaining)
+            self._schedule_deferred_flush(delay=remaining)
             return
         # Playback gate: wait for iOS to finish playing before flushing
         if not self._ios_playback_drained:
@@ -392,6 +419,7 @@ class ContextInjectionQueue:
             role="user",
         )
         self._lrq.send_content(content)
+        self._last_send_content_at = time.monotonic()
         if not all_silent:
             self._ios_playback_drained = False  # Will produce new audio; wait for iOS drain
         logger.info("Flushed %d queued items (all_silent=%s)", len(items), all_silent)
@@ -1023,9 +1051,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
     _model_audio_last_seen_at: float = 0.0
 
-    # Interrupt debounce (P3: prevent rapid-fire interrupts from echo)
+    # Interrupt state — shared between _upstream (client barge-in) and
+    # _downstream (Gemini-side interrupted events).
+    _is_interrupted: bool = False
     _last_interrupt_at: float = 0.0
-    _INTERRUPT_DEBOUNCE_SEC = 0.5
+    _INTERRUPT_DEBOUNCE_SEC = 1.0
 
     # Adaptive face detection: skip cycles when no faces are consistently detected
     _face_consecutive_misses: int = 0
@@ -1799,7 +1829,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         activity_start, activity_end, gesture.
         """
         nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until, _client_camera_active
-        nonlocal _last_user_activity_at
+        nonlocal _last_user_activity_at, _is_interrupted, _last_interrupt_at, _model_audio_last_seen_at
 
         try:
             while True:
@@ -2308,6 +2338,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ctx_queue.set_ios_playback_drained(True)
                     logger.debug("iOS playback drained — flush gate opened")
 
+                elif message.get("type") == "client_barge_in":
+                    # Client-initiated barge-in (under NO_INTERRUPTION mode).
+                    # Gemini VAD won't set interrupted=True, so we simulate it
+                    # server-side: suppress audio forwarding until turn_complete.
+                    now_mono = time.monotonic()
+                    if (now_mono - _last_interrupt_at) < _INTERRUPT_DEBOUNCE_SEC:
+                        logger.debug("Client barge-in debounced (%.0fms since last)",
+                                     (now_mono - _last_interrupt_at) * 1000)
+                    else:
+                        _is_interrupted = True
+                        _last_interrupt_at = now_mono
+                        _model_audio_last_seen_at = 0.0
+                        ctx_queue.set_model_speaking(False)
+                        logger.info("Client barge-in — suppressing audio forwarding")
+
                 else:
                     logger.warning("Unknown upstream message type: %s", message.get("type"))
 
@@ -2433,7 +2478,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         function calls, and content parts (audio binary / text JSON).
         """
         nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content, _model_audio_last_seen_at
-        nonlocal _last_user_activity_at, _last_interrupt_at
+        nonlocal _last_user_activity_at, _last_interrupt_at, _is_interrupted
 
         def _start_live_events():
             return runner.run_live(
@@ -2489,7 +2534,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         _last_interrupt_at = now_mono
                         _model_audio_last_seen_at = 0.0
                         ctx_queue.set_model_speaking(False)
-                        ctx_queue.set_ios_playback_drained(True)  # iOS will stopImmediately
+                        # Do NOT mark _ios_playback_drained here — let iOS
+                        # confirm via its own "playback_drained" message after
+                        # stopImmediately() completes.  Premature drain marking
+                        # causes the context flush gate to open too early.
                         # Note: do NOT flush queue on interrupt — user is speaking
                         await _safe_send_json({
                             "type": MessageType.INTERRUPTED,
@@ -2512,6 +2560,41 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             break
                     # Flush queued context injections
                     ctx_queue.flush_or_defer_first_turn()
+
+                # --- Content parts (audio / text) — BEFORE function calls ---
+                # Process audio/text first so that any subsequent
+                # inject_immediate (function responses) does not interrupt
+                # audio chunks from the same event.
+                if event.content and event.content.parts and not _is_interrupted:
+                    for part in event.content.parts:
+                        if stop_downstream.is_set():
+                            break
+
+                        if part.inline_data and part.inline_data.data:
+                            _model_audio_last_seen_at = time.monotonic()
+                            ctx_queue.set_model_speaking(True)
+                            ctx_queue.set_model_audio_timestamp(_model_audio_last_seen_at)
+                            ctx_queue.set_ios_playback_drained(False)
+                            audio_data = part.inline_data.data
+                            if isinstance(audio_data, str):
+                                audio_data = base64.b64decode(audio_data)
+                            if not await _safe_send_bytes(audio_data):
+                                break
+
+                        elif part.text:
+                            # Skip if output_transcription already forwarded
+                            # the same text in this event (avoids double-send)
+                            if _output_transcription_forwarded:
+                                logger.debug(
+                                    "Skipped content.parts text (already sent via output_transcription): %s",
+                                    part.text[:80],
+                                )
+                                continue
+                            if not await _forward_agent_transcript(part.text):
+                                break
+
+                    if stop_downstream.is_set():
+                        break
 
                 # --- Function calls from Gemini (Phase 3) ---
                 function_calls = _extract_function_calls(event)
@@ -2695,38 +2778,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             session_ctx.user_said_stop = True
                             session_ctx.user_requested_detail = False
 
-                # --- Content parts (audio / text) ---
-                if event.content and event.content.parts and not _is_interrupted:
-                    for part in event.content.parts:
-                        if stop_downstream.is_set():
-                            break
-
-                        if part.inline_data and part.inline_data.data:
-                            _model_audio_last_seen_at = time.monotonic()
-                            ctx_queue.set_model_speaking(True)
-                            ctx_queue.set_model_audio_timestamp(_model_audio_last_seen_at)
-                            ctx_queue.set_ios_playback_drained(False)
-                            audio_data = part.inline_data.data
-                            if isinstance(audio_data, str):
-                                audio_data = base64.b64decode(audio_data)
-                            if not await _safe_send_bytes(audio_data):
-                                break
-
-                        elif part.text:
-                            # Skip if output_transcription already forwarded
-                            # the same text in this event (avoids double-send)
-                            if _output_transcription_forwarded:
-                                logger.debug(
-                                    "Skipped content.parts text (already sent via output_transcription): %s",
-                                    part.text[:80],
-                                )
-                                continue
-                            if not await _forward_agent_transcript(part.text):
-                                break
-
-                    if stop_downstream.is_set():
-                        break
-
+                # (Content parts already processed above, before function calls.)
 
         except WebSocketDisconnect:
             stop_downstream.set()

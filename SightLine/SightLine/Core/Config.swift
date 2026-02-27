@@ -33,7 +33,7 @@ enum SightLineConfig {
     static let audioBufferSize: UInt32 = 1600          // ~33ms at 48kHz hw input; also converter output capacity
     static let audioJitterBufferChunks: Int = 2        // reduced startup latency (was 3→2, saves ~100ms)
     static let audioScheduleAheadCount: Int = 3        // reduced sliding window (was 4)
-    static let audioJitterMaxWait: TimeInterval = 0.04 // 40ms fallback (was 50ms)
+    static let audioJitterMaxWait: TimeInterval = 0.08 // 80ms fallback — tolerate more network jitter
     static let audioMaxPendingChunks: Int = 40         // overflow guard (~4s at 100ms/chunk)
 
     // Video
