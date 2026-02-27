@@ -63,20 +63,14 @@ struct AudioCaptureManagerTests {
         #expect(isSpeaking == true)
     }
 
-    @Test("AudioCaptureManager barge-in callbacks are settable")
+    @Test("AudioCaptureManager barge-in callback is settable")
     func bargeInCallbacks() {
         let manager = AudioCaptureManager()
         var bargeInDetected = false
-        var speechDetected = false
-        var speechEnded = false
-        
+
         manager.onVoiceBargeIn = { bargeInDetected = true }
-        manager.onSpeechDetected = { speechDetected = true }
-        manager.onSpeechEnded = { speechEnded = true }
-        
+
         #expect(manager.onVoiceBargeIn != nil)
-        #expect(manager.onSpeechDetected != nil)
-        #expect(manager.onSpeechEnded != nil)
     }
 
     @Test("AudioCaptureManager audio level callback")

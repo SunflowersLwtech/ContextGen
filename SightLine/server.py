@@ -930,7 +930,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _recent_agent_texts: list[tuple[float, str]] = []
 
     _model_audio_last_seen_at: float = 0.0
-    _MODEL_AUDIO_STALENESS_SEC = 2.0
 
     # Interrupt debounce (P3: prevent rapid-fire interrupts from echo)
     _last_interrupt_at: float = 0.0
@@ -1741,10 +1740,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     payload = raw_bytes[1:]
 
                     if magic == _MAGIC_AUDIO:
-                        # During model speech, replace audio with silence
-                        # to prevent echo residual from reaching Gemini's VAD.
-                        if ctx_queue.model_speaking:
-                            payload = b'\x00' * len(payload)
                         blob = types.Blob(
                             data=payload,
                             mime_type="audio/pcm;rate=16000",
@@ -1913,33 +1908,23 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                 elif message.get("type") == "activity_start":
                     _last_user_activity_at = time.monotonic()
-                    # Suppress during model speech to prevent echo-triggered
-                    # interruptions that leak through client-side gating.
-                    if ctx_queue.model_speaking:
-                        logger.info("Suppressed activity_start (model speaking)")
-                        await _emit_activity_debug_event(
-                            event_name="activity_start",
-                            queue_status="suppressed_model_speaking",
-                            queue_note="",
+                    queue_status = "forwarded"
+                    queue_note = ""
+                    try:
+                        live_request_queue.send_activity_start()
+                        logger.info("Forwarded activity_start to LiveRequestQueue")
+                    except Exception as exc:
+                        queue_status = "forward_failed"
+                        queue_note = str(exc)[:200]
+                        logger.warning(
+                            "Failed to forward activity_start to LiveRequestQueue: %s",
+                            queue_note,
                         )
-                    else:
-                        queue_status = "forwarded"
-                        queue_note = ""
-                        try:
-                            live_request_queue.send_activity_start()
-                            logger.info("Forwarded activity_start to LiveRequestQueue")
-                        except Exception as exc:
-                            queue_status = "forward_failed"
-                            queue_note = str(exc)[:200]
-                            logger.warning(
-                                "Failed to forward activity_start to LiveRequestQueue: %s",
-                                queue_note,
-                            )
-                        await _emit_activity_debug_event(
-                            event_name="activity_start",
-                            queue_status=queue_status,
-                            queue_note=queue_note,
-                        )
+                    await _emit_activity_debug_event(
+                        event_name="activity_start",
+                        queue_status=queue_status,
+                        queue_note=queue_note,
+                    )
 
                 elif message.get("type") == "activity_end":
                     queue_status = "forwarded"

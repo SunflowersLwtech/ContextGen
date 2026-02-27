@@ -45,11 +45,6 @@ class AudioCaptureManager: ObservableObject {
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
     private let bargeInRMSThreshold: Float = 0.05
 
-    /// Called when client-side VAD detects speech onset — sends activity_start.
-    var onSpeechDetected: (() -> Void)?
-    /// Called when client-side VAD detects speech offset — sends activity_end.
-    var onSpeechEnded: (() -> Void)?
-
     /// Called when voice barge-in detected (RMS above threshold during model speech).
     var onVoiceBargeIn: (() -> Void)?
 
@@ -166,38 +161,29 @@ class AudioCaptureManager: ObservableObject {
             if let channelData = outputBuffer.int16ChannelData {
                 let byteCount = Int(outputBuffer.frameLength) * 2  // 16-bit = 2 bytes per sample
 
-                // Timestamp-based model speaking detection: immune to drain starvation toggles
+                // Always send real audio — trust hardware AEC + Gemini VAD
+                let data = Data(bytes: channelData[0], count: byteCount)
+                self.onAudioCaptured?(data)
+
+                // Timestamp-based model speaking detection
                 let now = CFAbsoluteTimeGetCurrent()
                 let isModelCurrentlySpeaking =
                     (now - self.lastModelAudioReceivedAt) < self.modelSpeakingTimeout
 
                 if isModelCurrentlySpeaking {
-                    // During model speech: only feed VAD when RMS exceeds barge-in
-                    // threshold (potential real speech). Below threshold: skip VAD
-                    // entirely to prevent echo residual from accumulating in LSTM state.
+                    // During model speech: VAD only for barge-in detection (stop playback).
+                    // Only run VAD when RMS exceeds threshold to avoid LSTM state pollution.
                     let rms = self.lastRMS
                     if rms > self.bargeInRMSThreshold {
                         SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
                         if SileroVAD.shared.isSpeechActive {
-                            // Genuine barge-in: RMS + VAD confirms human speech
-                            let data = Data(bytes: channelData[0], count: byteCount)
-                            self.onAudioCaptured?(data)
                             self.lastModelAudioReceivedAt = 0  // Expire immediately
                             self.onVoiceBargeIn?()
-                        } else {
-                            let silence = Data(count: byteCount)
-                            self.onAudioCaptured?(silence)
                         }
-                    } else {
-                        // Echo residual: send silence, skip VAD
-                        let silence = Data(count: byteCount)
-                        self.onAudioCaptured?(silence)
                     }
                 } else {
-                    // Model idle: feed all audio to VAD normally
+                    // Model idle: feed VAD for UI indicator
                     SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
-                    let data = Data(bytes: channelData[0], count: byteCount)
-                    self.onAudioCaptured?(data)
                 }
             }
         }
@@ -208,8 +194,8 @@ class AudioCaptureManager: ObservableObject {
         // Initialize client-side VAD for speech detection
         SileroVAD.shared.loadModel()
         SileroVAD.shared.reset()
-        SileroVAD.shared.onSpeechStart = { [weak self] in self?.onSpeechDetected?() }
-        SileroVAD.shared.onSpeechEnd = { [weak self] in self?.onSpeechEnded?() }
+        SileroVAD.shared.onSpeechStart = nil
+        SileroVAD.shared.onSpeechEnd = nil
 
         DispatchQueue.main.async { self.isCapturing = true }
         Self.logger.info("Audio capture started (shared engine, VP=\(SharedAudioEngine.shared.isVoiceProcessingEnabled))")
