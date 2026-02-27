@@ -7,6 +7,7 @@ in the user's memory bank with conflict detection.
 
 import json
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -173,7 +174,8 @@ class MemoryExtractor:
         try:
             from google import genai
 
-            client = genai.Client()
+            api_key = os.environ.get("GOOGLE_API_KEY", "")
+            client = genai.Client(api_key=api_key, vertexai=False)
             prompt = EXTRACTION_PROMPT.format(transcript=transcript_text)
 
             response = client.models.generate_content(
