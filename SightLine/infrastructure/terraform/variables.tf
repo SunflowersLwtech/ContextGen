@@ -107,6 +107,7 @@ variable "env_vars" {
   description = "Additional environment variables for Cloud Run"
   type        = map(string)
   default = {
-    GOOGLE_GENAI_USE_VERTEXAI = "FALSE"
+    GOOGLE_GENAI_USE_VERTEXAI = "TRUE"
+    GOOGLE_CLOUD_LOCATION     = "us-central1"
   }
 }

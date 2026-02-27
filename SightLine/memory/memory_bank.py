@@ -34,7 +34,7 @@ def _compute_embedding(text: str) -> list[float]:
     try:
         from google import genai
 
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        api_key = os.environ.get("_GOOGLE_AI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
         client = genai.Client(api_key=api_key, vertexai=False)
         result = client.models.embed_content(
             model=EMBEDDING_MODEL,

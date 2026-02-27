@@ -34,5 +34,6 @@ firestore_database_id = "(default)"
 
 # Additional Cloud Run Environment Variables
 env_vars = {
-  GOOGLE_GENAI_USE_VERTEXAI = "FALSE"
+  GOOGLE_GENAI_USE_VERTEXAI = "TRUE"
+  GOOGLE_CLOUD_LOCATION     = "us-central1"
 }

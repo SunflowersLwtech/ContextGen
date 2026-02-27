@@ -50,38 +50,22 @@ def create_session_service():
     location = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
     use_vertex = _env_flag("GOOGLE_GENAI_USE_VERTEXAI", default=False)
 
+    # VertexAiSessionService is intentionally NOT used.
+    # It cannot handle client-generated UUID session IDs (returns 400 instead
+    # of None for unknown sessions, preventing ADK create_session fallback).
+    # Session continuity is handled by Gemini's session_resumption_handle,
+    # not by the ADK session service.  All business data lives in Firestore.
+    # GOOGLE_GENAI_USE_VERTEXAI=TRUE still routes the Live API model connection
+    # through Vertex AI (fixing audio stuttering), which is separate from the
+    # session service.
     if use_vertex:
-        try:
-            from google.adk.sessions import VertexAiSessionService
-
-            svc = VertexAiSessionService(
-                project=project,
-                location=location,
-                agent_engine_id=agent_engine_id,
-            )
-            if agent_engine_id:
-                logger.info(
-                    "Using VertexAiSessionService (engine=%s)", agent_engine_id
-                )
-            else:
-                logger.info(
-                    "Using VertexAiSessionService (engine unset, project=%s, location=%s)",
-                    project,
-                    location,
-                )
-            return svc
-        except (ImportError, Exception) as exc:
-            logger.warning("VertexAiSessionService unavailable (%s); using fallback.", exc)
+        logger.info(
+            "VERTEXAI=TRUE (Live API via Vertex AI); session service = InMemory"
+        )
     else:
-        if agent_engine_id:
-            logger.info(
-                "GOOGLE_GENAI_USE_VERTEXAI is FALSE; ignoring AGENT_ENGINE_ID=%s and using local session service",
-                agent_engine_id,
-            )
-        else:
-            logger.info(
-                "GOOGLE_GENAI_USE_VERTEXAI is FALSE; using local session service"
-            )
+        logger.info(
+            "VERTEXAI=FALSE (Live API via Google AI); session service = InMemory"
+        )
 
     # Both local and Cloud Run use in-memory session service.
     # Session continuity is handled by Gemini's session_resumption_handle,

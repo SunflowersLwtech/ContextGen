@@ -93,6 +93,16 @@ from telemetry.session_meta_tracker import SessionMetaTracker
 
 load_dotenv(Path(__file__).parent / ".env")
 
+# Vertex AI SDK auto-reads GOOGLE_API_KEY / GEMINI_API_KEY from env.
+# When VERTEXAI=TRUE, this conflicts with project/location (mutually exclusive).
+# Move the API key to a SDK-invisible env var so sub-agents can still read it.
+if os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE":
+    _api_key = os.environ.pop("GOOGLE_API_KEY", "") or os.environ.pop("GEMINI_API_KEY", "")
+    os.environ.pop("GEMINI_API_KEY", None)
+    os.environ.pop("GOOGLE_API_KEY", None)
+    if _api_key:
+        os.environ["_GOOGLE_AI_API_KEY"] = _api_key
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -103,7 +113,7 @@ logger = logging.getLogger("sightline.server")
 # App globals
 # ---------------------------------------------------------------------------
 
-LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-native-audio")
 PORT = int(os.getenv("PORT", "8100"))
 SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT", "3600"))
 WS_INACTIVITY_TIMEOUT_SEC = int(os.getenv("WS_INACTIVITY_TIMEOUT", str(SESSION_TIMEOUT_SEC)))

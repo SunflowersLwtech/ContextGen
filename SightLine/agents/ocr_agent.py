@@ -107,7 +107,7 @@ def _get_client() -> genai.Client:
     """Lazily initialize the Gemini client."""
     global _client
     if _client is None:
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        api_key = os.environ.get("_GOOGLE_AI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
         _client = genai.Client(api_key=api_key, vertexai=False)
     return _client
 
