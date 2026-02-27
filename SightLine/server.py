@@ -1147,17 +1147,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         session=session_ctx,
         memories=_initial_memories if _initial_memories else None,
     )
-    _initial_content = types.Content(
-        parts=[types.Part(text=_initial_prompt)],
-        role="user",
-    )
-    ctx_queue.inject_immediate(_initial_content)
-    logger.info(
-        "Injected initial full dynamic prompt (LOD %d) for session %s",
-        session_ctx.current_lod, session_id,
-    )
-
-    # -- Greeting prompt: Gemini speaks first so the user knows the app is ready --
+    # -- Merge system prompt + greeting into ONE send_content call -----------
+    # Two separate inject_immediate() calls cause Gemini to generate two
+    # overlapping audio responses (one for the system prompt, one for the
+    # greeting).  By combining them into a single Content message with
+    # [DO NOT SPEAK] on the context part, Gemini absorbs the instructions
+    # silently and only speaks the greeting — one audio output.
     _greeting_parts: list[str] = [
         "[SESSION START] Greet the user briefly (1-2 sentences).",
         "Let them know you're ready to help.",
@@ -1170,12 +1165,18 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         "Mention that the camera is off and they can swipe sideways to turn it on "
         "when they need visual assistance. Keep the greeting warm and concise."
     )
-    _greeting_content = types.Content(
-        parts=[types.Part(text=" ".join(_greeting_parts))],
+    _combined_content = types.Content(
+        parts=[
+            types.Part(text="[CONTEXT UPDATE - DO NOT SPEAK]\n" + _initial_prompt),
+            types.Part(text=" ".join(_greeting_parts)),
+        ],
         role="user",
     )
-    ctx_queue.inject_immediate(_greeting_content)
-    logger.info("Injected greeting prompt for session %s", session_id)
+    ctx_queue.inject_immediate(_combined_content)
+    logger.info(
+        "Injected combined context (LOD %d) + greeting for session %s",
+        session_ctx.current_lod, session_id,
+    )
 
     # -- Track client camera state for context injection ----------------------
     _client_camera_active = False
