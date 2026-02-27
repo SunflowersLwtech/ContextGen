@@ -15,7 +15,7 @@ import PhotosUI
 import Combine
 import os
 import UIKit
-import Vision
+@preconcurrency import Vision
 
 private let logger = Logger(subsystem: "com.sightline.app", category: "FaceRegistration")
 

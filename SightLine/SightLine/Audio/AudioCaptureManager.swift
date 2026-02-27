@@ -9,6 +9,13 @@
 //  Uses SharedAudioEngine.shared.engine.inputNode so that capture and
 //  playback share a single audio graph, enabling hardware AEC.
 //
+//  Threading model:
+//    - All lifecycle mutations (start/stop/observer callbacks) serialized on `captureQueue`.
+//    - Tap callback runs on Core Audio realtime thread; uses `tapGeneration` as
+//      lock-free stale guard (UInt64 reads are atomic on arm64).
+//    - `converter`/`targetFormat` set on `captureQueue` before `installTap`;
+//      installTap acts as memory barrier.
+//
 
 import AVFoundation
 import Combine
@@ -53,11 +60,43 @@ class AudioCaptureManager: ObservableObject {
     private var restartObserver: NSObjectProtocol?
     private var pauseObserver: NSObjectProtocol?
 
+    /// Serial queue serializing all lifecycle mutations (start/stop/observer callbacks).
+    /// Matches AudioPlaybackManager's `schedulingQueue` pattern.
+    private let captureQueue = DispatchQueue(label: "com.sightline.audio.capture", qos: .userInitiated)
+
+    /// Generation counter invalidating stale tap callbacks after stop/restart.
+    /// Incremented on `captureQueue` before each tap install; tap closure captures
+    /// the current value and bails if it no longer matches.
+    private var tapGeneration: UInt64 = 0
+
+    // MARK: - Public API
+
     func startCapture() {
+        captureQueue.async { [weak self] in
+            self?._startCaptureOnQueue()
+        }
+    }
+
+    func stopCapture() {
+        captureQueue.async { [weak self] in
+            self?._stopCaptureOnQueue()
+        }
+    }
+
+    // MARK: - Lifecycle (captureQueue)
+
+    private func _startCaptureOnQueue() {
         guard let engine = SharedAudioEngine.shared.engine, engine.isRunning else {
             Self.logger.error("SharedAudioEngine not running; cannot start capture")
             return
         }
+
+        // Clean up any existing observers before re-registering (prevents accumulation)
+        _removeObserversOnQueue()
+
+        // Increment generation to invalidate any in-flight tap callback from a prior cycle
+        tapGeneration &+= 1
+        let currentGeneration = tapGeneration
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -80,12 +119,16 @@ class AudioCaptureManager: ObservableObject {
         }
         converter = conv
 
-        // 🔧 修复: 在安装新 tap 前先移除旧的,避免重复调用导致崩溃
-        removeTap()
+        // Remove any existing tap before installing a new one
+        _removeTapOnQueue()
 
         inputNode.installTap(onBus: 0, bufferSize: SightLineConfig.audioBufferSize, format: inputFormat) {
             [weak self] buffer, _ in
-            guard let self = self, let fmt = self.targetFormat, let converter = self.converter else { return }
+            guard let self = self else { return }
+            // Stale guard: bail if a newer start/stop cycle has begun.
+            // UInt64 reads are atomic on arm64, no lock needed.
+            guard self.tapGeneration == currentGeneration else { return }
+            guard let fmt = self.targetFormat, let converter = self.converter else { return }
 
             let targetFrameCount = AVAudioFrameCount(SightLineConfig.audioBufferSize)
             guard let outputBuffer = AVAudioPCMBuffer(
@@ -153,29 +196,8 @@ class AudioCaptureManager: ObservableObject {
             }
         }
 
-        // Remove tap cleanly when engine pauses (phone call / Siri interruption).
-        // isCapturing stays true so the didRestart observer re-installs the tap.
-        pauseObserver = NotificationCenter.default.addObserver(
-            forName: .sharedAudioEngineDidPause,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self = self, self.isCapturing else { return }
-            Self.logger.info("SharedAudioEngine paused — removing capture tap")
-            self.removeTap()
-        }
-
-        // Re-install tap if the shared engine restarts (route change, interruption)
-        restartObserver = NotificationCenter.default.addObserver(
-            forName: .sharedAudioEngineDidRestart,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self = self, self.isCapturing else { return }
-            Self.logger.info("SharedAudioEngine restarted — re-installing capture tap")
-            self.removeTap()
-            self.startCapture()
-        }
+        // Register fresh observers
+        _registerObserversOnQueue()
 
         // Initialize client-side VAD for speech detection
         SileroVAD.shared.loadModel()
@@ -187,11 +209,28 @@ class AudioCaptureManager: ObservableObject {
         Self.logger.info("Audio capture started (shared engine, VP=\(SharedAudioEngine.shared.isVoiceProcessingEnabled))")
     }
 
-    func stopCapture() {
-        removeTap()
+    private func _stopCaptureOnQueue() {
+        // Increment generation to invalidate any in-flight tap callbacks
+        tapGeneration &+= 1
+
+        _removeTapOnQueue()
         converter = nil
         targetFormat = nil
 
+        _removeObserversOnQueue()
+
+        DispatchQueue.main.async { self.isCapturing = false }
+        Self.logger.info("Audio capture stopped")
+    }
+
+    // MARK: - Helpers (must be called on captureQueue)
+
+    private func _removeTapOnQueue() {
+        // Only remove tap — do NOT stop the shared engine (playback may still be active)
+        SharedAudioEngine.shared.engine?.inputNode.removeTap(onBus: 0)
+    }
+
+    private func _removeObserversOnQueue() {
         if let obs = pauseObserver {
             NotificationCenter.default.removeObserver(obs)
             pauseObserver = nil
@@ -200,13 +239,36 @@ class AudioCaptureManager: ObservableObject {
             NotificationCenter.default.removeObserver(obs)
             restartObserver = nil
         }
-
-        DispatchQueue.main.async { self.isCapturing = false }
-        Self.logger.info("Audio capture stopped")
     }
 
-    private func removeTap() {
-        // Only remove tap — do NOT stop the shared engine (playback may still be active)
-        SharedAudioEngine.shared.engine?.inputNode.removeTap(onBus: 0)
+    private func _registerObserversOnQueue() {
+        // Remove tap cleanly when engine pauses (phone call / Siri interruption).
+        // isCapturing stays true so the didRestart observer re-installs the tap.
+        pauseObserver = NotificationCenter.default.addObserver(
+            forName: .sharedAudioEngineDidPause,
+            object: nil,
+            queue: nil  // deliver on posting thread, then dispatch to captureQueue
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.captureQueue.async {
+                guard self.isCapturing else { return }
+                Self.logger.info("SharedAudioEngine paused — removing capture tap")
+                self._removeTapOnQueue()
+            }
+        }
+
+        // Re-install tap if the shared engine restarts (route change, interruption)
+        restartObserver = NotificationCenter.default.addObserver(
+            forName: .sharedAudioEngineDidRestart,
+            object: nil,
+            queue: nil  // deliver on posting thread, then dispatch to captureQueue
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.captureQueue.async {
+                guard self.isCapturing else { return }
+                Self.logger.info("SharedAudioEngine restarted — re-installing capture tap")
+                self._startCaptureOnQueue()
+            }
+        }
     }
 }

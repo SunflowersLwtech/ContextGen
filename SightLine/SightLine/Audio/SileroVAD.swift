@@ -2,7 +2,7 @@
 //  SileroVAD.swift
 //  SightLine
 //
-//  Client-side Voice Activity Detection using Silero VAD v5 (ONNX).
+//  Client-side Voice Activity Detection using Silero VAD v4 (ONNX).
 //  Processes 512-sample windows (32ms @ 16kHz) and provides speech onset/offset
 //  callbacks with debouncing to avoid false triggers from ambient noise.
 //
@@ -34,6 +34,7 @@ final class SileroVAD {
     var onSpeechStart: (() -> Void)?
     var onSpeechEnd: (() -> Void)?
     var onProbabilityUpdate: ((Float) -> Void)?
+    var onVADError: ((AudioPipelineError) -> Void)?
 
     // MARK: - Configuration
 
@@ -46,7 +47,7 @@ final class SileroVAD {
     /// Number of consecutive non-speech frames required before offset (8 frames = 256ms).
     private let offsetFrames: Int = 8
 
-    /// Silero VAD v5 expects 512 samples per window at 16kHz.
+    /// Silero VAD v4 expects 512 samples per window at 16kHz.
     private let windowSize: Int = 512
 
     /// Sample rate for Silero VAD.
@@ -55,17 +56,17 @@ final class SileroVAD {
     // MARK: - Internal State
 
     private var isModelLoaded = false
+    private var loadAttempts: Int = 0
+    private let maxLoadAttempts: Int = 3
 
     #if canImport(OnnxRuntimeBindings)
     private var session: ORTSession?
     private var env: ORTEnv?
     #endif
 
-    /// LSTM hidden state (h) — shape [2, 1, 64] for Silero v5.
-    private var lstmH: [Float] = []
-    /// LSTM cell state (c) — shape [2, 1, 64] for Silero v5.
-    private var lstmC: [Float] = []
-    private let lstmStateSize = 2 * 1 * 64  // 128 floats
+    /// LSTM state — shape [2, 1, 128] for Silero v4.
+    private var lstmState: [Float] = []
+    private let lstmStateSize = 2 * 1 * 128  // 256 floats
 
     /// Consecutive frames above/below threshold for debounce.
     private var speechFrameCount: Int = 0
@@ -81,8 +82,7 @@ final class SileroVAD {
     )
 
     private init() {
-        lstmH = [Float](repeating: 0, count: lstmStateSize)
-        lstmC = [Float](repeating: 0, count: lstmStateSize)
+        lstmState = [Float](repeating: 0, count: lstmStateSize)
     }
 
     // MARK: - Lifecycle
@@ -90,10 +90,18 @@ final class SileroVAD {
     func loadModel() {
         processingQueue.sync {
             guard !isModelLoaded else { return }
+            guard loadAttempts < maxLoadAttempts else {
+                Self.logger.warning("VAD model load skipped — max attempts (\(self.maxLoadAttempts)) reached")
+                return
+            }
+
+            loadAttempts += 1
 
             #if canImport(OnnxRuntimeBindings)
             guard let modelPath = Bundle.main.path(forResource: "silero_vad", ofType: "onnx") else {
-                Self.logger.error("silero_vad.onnx not found in bundle")
+                Self.logger.error("silero_vad.onnx not found in bundle (attempt \(self.loadAttempts)/\(self.maxLoadAttempts))")
+                let error: AudioPipelineError = .vadModelNotFound
+                DispatchQueue.main.async { [weak self] in self?.onVADError?(error) }
                 return
             }
 
@@ -104,20 +112,23 @@ final class SileroVAD {
                 try sessionOptions.setGraphOptimizationLevel(.all)
                 session = try ORTSession(env: env!, modelPath: modelPath, sessionOptions: sessionOptions)
                 isModelLoaded = true
-                Self.logger.info("Silero VAD model loaded successfully")
+                Self.logger.info("Silero VAD model loaded successfully (attempt \(self.loadAttempts))")
             } catch {
-                Self.logger.error("Failed to load Silero VAD model: \(error)")
+                Self.logger.error("Failed to load Silero VAD model (attempt \(self.loadAttempts)/\(self.maxLoadAttempts)): \(error)")
+                let pipelineError: AudioPipelineError = .vadModelLoadFailed
+                DispatchQueue.main.async { [weak self] in self?.onVADError?(pipelineError) }
             }
             #else
             Self.logger.warning("onnxruntime not available — VAD disabled")
+            let error: AudioPipelineError = .vadUnavailable
+            DispatchQueue.main.async { [weak self] in self?.onVADError?(error) }
             #endif
         }
     }
 
     func reset() {
         processingQueue.sync {
-            lstmH = [Float](repeating: 0, count: lstmStateSize)
-            lstmC = [Float](repeating: 0, count: lstmStateSize)
+            lstmState = [Float](repeating: 0, count: lstmStateSize)
             speechFrameCount = 0
             silenceFrameCount = 0
             isSpeechActive = false
@@ -131,6 +142,9 @@ final class SileroVAD {
     /// Process raw PCM Int16 audio samples from AudioCaptureManager.
     /// Accumulates samples and runs inference on each complete 512-sample window.
     func processAudioFrame(_ samples: UnsafePointer<Int16>, count: Int) {
+        // Early bail: skip float conversion entirely when model unavailable
+        guard isModelLoaded else { return }
+
         // Convert Int16 to Float32 (normalized to [-1, 1])
         var floatSamples = [Float](repeating: 0, count: count)
         for i in 0..<count {
@@ -174,30 +188,21 @@ final class SileroVAD {
                 shape: [1]
             )
 
-            // LSTM h state: [2, 1, 64] float32
-            let hData = Data(bytes: lstmH, count: lstmH.count * MemoryLayout<Float>.size)
-            let hTensor = try ORTValue(
-                tensorData: NSMutableData(data: hData),
+            // LSTM state: [2, 1, 128] float32 for Silero v4
+            let stateData = Data(bytes: lstmState, count: lstmState.count * MemoryLayout<Float>.size)
+            let stateTensor = try ORTValue(
+                tensorData: NSMutableData(data: stateData),
                 elementType: .float,
-                shape: [2, 1, 64]
-            )
-
-            // LSTM c state: [2, 1, 64] float32
-            let cData = Data(bytes: lstmC, count: lstmC.count * MemoryLayout<Float>.size)
-            let cTensor = try ORTValue(
-                tensorData: NSMutableData(data: cData),
-                elementType: .float,
-                shape: [2, 1, 64]
+                shape: [2, 1, 128]
             )
 
             let outputs = try session.run(
                 withInputs: [
                     "input": inputTensor,
                     "sr": srTensor,
-                    "h": hTensor,
-                    "c": cTensor,
+                    "state": stateTensor,
                 ],
-                outputNames: ["output", "hn", "cn"],
+                outputNames: ["output", "stateN"],
                 runOptions: nil
             )
 
@@ -206,22 +211,13 @@ final class SileroVAD {
             let outputData = try outputValue.tensorData() as Data
             let probability = outputData.withUnsafeBytes { $0.load(as: Float.self) }
 
-            // Update LSTM states
-            if let hnValue = outputs["hn"] {
-                let hnData = try hnValue.tensorData() as Data
-                hnData.withUnsafeBytes { ptr in
+            // Update LSTM state
+            if let stateNValue = outputs["stateN"] {
+                let stateNData = try stateNValue.tensorData() as Data
+                stateNData.withUnsafeBytes { ptr in
                     let floats = ptr.bindMemory(to: Float.self)
                     for i in 0..<min(lstmStateSize, floats.count) {
-                        lstmH[i] = floats[i]
-                    }
-                }
-            }
-            if let cnValue = outputs["cn"] {
-                let cnData = try cnValue.tensorData() as Data
-                cnData.withUnsafeBytes { ptr in
-                    let floats = ptr.bindMemory(to: Float.self)
-                    for i in 0..<min(lstmStateSize, floats.count) {
-                        lstmC[i] = floats[i]
+                        lstmState[i] = floats[i]
                     }
                 }
             }

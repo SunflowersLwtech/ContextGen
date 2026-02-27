@@ -686,11 +686,11 @@ struct DeveloperConsoleView: View {
                     let resumeHandle = UserDefaults.standard.string(
                         forKey: SightLineConfig.sessionResumptionHandleDefaultsKey
                     )
-                    let url = SightLineConfig.wsURL(
+                    guard let url = SightLineConfig.wsURL(
                         userId: SightLineConfig.defaultUserId,
                         sessionId: SightLineConfig.defaultSessionId,
                         resumeHandle: resumeHandle
-                    )
+                    ) else { return }
                     webSocketManager.disconnect()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         webSocketManager.connect(url: url)

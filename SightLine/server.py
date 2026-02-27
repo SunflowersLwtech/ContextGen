@@ -1689,6 +1689,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         activity_start, activity_end, gesture.
         """
         nonlocal _last_vision_time, _frame_seq, _allow_agent_repeat_until, _client_camera_active
+        nonlocal _last_user_activity_at
 
         try:
             while True:
@@ -2315,6 +2316,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         function calls, and content parts (audio binary / text JSON).
         """
         nonlocal _transcript_buffer, _transcript_buffer_last_update, _turn_had_vision_content, _model_audio_last_seen_at
+        nonlocal _last_user_activity_at, _last_idle_prompt_at, _last_interrupt_at
 
         def _start_live_events():
             return runner.run_live(

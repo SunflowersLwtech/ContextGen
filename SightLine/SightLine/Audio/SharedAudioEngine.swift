@@ -15,6 +15,7 @@ extension Notification.Name {
     static let sharedAudioEngineWillRestart = Notification.Name("sharedAudioEngineWillRestart")
     static let sharedAudioEngineDidRestart = Notification.Name("sharedAudioEngineDidRestart")
     static let sharedAudioEngineDidPause = Notification.Name("sharedAudioEngineDidPause")
+    static let audioBufferOverflow = Notification.Name("audioBufferOverflow")
 }
 
 final class SharedAudioEngine {

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		9649CD022F5194C4004993EE /* onnxruntime in Frameworks */ = {isa = PBXBuildFile; productRef = DD0010022F4B1BF10068374A /* onnxruntime */; };
 		9656C1B12F4A1BF10068374A /* SightLineWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 9656C1A52F4A1BF10068374A /* SightLineWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -96,6 +97,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9649CD022F5194C4004993EE /* onnxruntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,13 +314,13 @@
 			);
 			mainGroup = 9656C18A2F4A1BF00068374A;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DD0010012F4B1BF10068374A /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9656C1942F4A1BF00068374A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			packageReferences = (
-				DD0010012F4B1BF10068374A /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
-			);
 			targets = (
 				9656C1922F4A1BF00068374A /* SightLine */,
 				9656C1AA2F4A1BF10068374A /* SightLineWatch */,

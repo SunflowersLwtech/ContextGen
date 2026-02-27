@@ -15,8 +15,9 @@ struct ConfigTests {
     @Test("wsURL generates correct WebSocket URL")
     func wsUrlGeneration() {
         let url = SightLineConfig.wsURL(userId: "user123", sessionId: "sess456")
-        #expect(url.absoluteString.contains("/ws/user123/sess456"))
-        #expect(url.scheme == "wss")
+        #expect(url != nil)
+        #expect(url!.absoluteString.contains("/ws/user123/sess456"))
+        #expect(url!.scheme == "wss")
     }
 
     @Test("wsURL includes resume handle query item")
@@ -26,7 +27,8 @@ struct ConfigTests {
             sessionId: "sess456",
             resumeHandle: "resume-token-123"
         )
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        #expect(url != nil)
+        let components = URLComponents(url: url!, resolvingAgainstBaseURL: false)
         let resumeHandle = components?.queryItems?.first(where: { $0.name == "resume_handle" })?.value
         #expect(resumeHandle == "resume-token-123")
     }

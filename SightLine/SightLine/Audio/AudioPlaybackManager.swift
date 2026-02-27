@@ -16,6 +16,9 @@ import os
 class AudioPlaybackManager: ObservableObject {
     @Published var isPlaying = false
 
+    /// Called when audio buffer overflow occurs; parameter is the number of dropped chunks.
+    var onBufferOverflow: ((Int) -> Void)?
+
     private static let logger = Logger(subsystem: "com.sightline.app", category: "AudioPlayback")
 
     private var playbackFormat: AVAudioFormat?
@@ -60,6 +63,12 @@ class AudioPlaybackManager: ObservableObject {
             self.jitterKickoffWorkItem = nil
         }
 
+        // Clean up any existing observer before re-registering (prevents accumulation on repeated setup())
+        if let obs = restartObserver {
+            NotificationCenter.default.removeObserver(obs)
+            restartObserver = nil
+        }
+
         // Reset drain state if the shared engine restarts
         restartObserver = NotificationCenter.default.addObserver(
             forName: .sharedAudioEngineDidRestart,
@@ -96,6 +105,11 @@ class AudioPlaybackManager: ObservableObject {
                 let drop = self.pendingChunks.count - SightLineConfig.audioMaxPendingChunks / 2
                 Self.logger.warning("Audio buffer overflow (\(self.pendingChunks.count) chunks), dropping \(drop) oldest")
                 self.pendingChunks.removeFirst(drop)
+                let overflowCallback = self.onBufferOverflow
+                DispatchQueue.main.async {
+                    overflowCallback?(drop)
+                    NotificationCenter.default.post(name: .audioBufferOverflow, object: nil)
+                }
             }
 
             self.pendingChunks.append(data)

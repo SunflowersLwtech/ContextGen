@@ -671,11 +671,15 @@ struct MainView: View {
 
     private func setupPipeline() {
         // 1. Build WebSocket URL and wire callbacks (configured first, connected after permissions)
-        let url = SightLineConfig.wsURL(
+        guard let url = SightLineConfig.wsURL(
             userId: SightLineConfig.defaultUserId,
             sessionId: SightLineConfig.defaultSessionId,
             resumeHandle: sessionResumptionHandle.isEmpty ? nil : sessionResumptionHandle
-        )
+        ) else {
+            logger.error("Invalid WebSocket URL configuration")
+            connectionStatus = "Configuration error"
+            return
+        }
 
         webSocketManager.onTextSent = { text in
             DispatchQueue.main.async {
@@ -790,6 +794,18 @@ struct MainView: View {
         }
         audioCapture.onAudioLevelUpdate = { rms in
             sensorManager.processAudioRMS(rms)
+        }
+
+        // Wire pipeline error callbacks to developer console
+        SileroVAD.shared.onVADError = { error in
+            DispatchQueue.main.async {
+                devConsoleModel.captureNetworkMessage(direction: "ERR", payload: "VAD: \(error.rawValue)")
+            }
+        }
+        audioPlayback.onBufferOverflow = { dropped in
+            DispatchQueue.main.async {
+                devConsoleModel.captureNetworkMessage(direction: "ERR", payload: "Audio overflow: dropped \(dropped) chunks")
+            }
         }
 
         // 4. Start sensor collection

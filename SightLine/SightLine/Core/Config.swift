@@ -13,17 +13,14 @@ enum SightLineConfig {
     static let sessionResumptionHandleDefaultsKey = "sightline.session_resumption_handle"
 
     // WebSocket path template
-    static func wsURL(userId: String, sessionId: String, resumeHandle: String? = nil) -> URL {
+    static func wsURL(userId: String, sessionId: String, resumeHandle: String? = nil) -> URL? {
         guard var components = URLComponents(string: "\(serverBaseURL)/ws/\(userId)/\(sessionId)") else {
-            fatalError("Invalid WebSocket URL for userId=\(userId), sessionId=\(sessionId)")
+            return nil
         }
         if let resumeHandle, !resumeHandle.isEmpty {
             components.queryItems = [URLQueryItem(name: "resume_handle", value: resumeHandle)]
         }
-        guard let url = components.url else {
-            fatalError("Failed to construct URL from components: \(components)")
-        }
-        return url
+        return components.url
     }
 
     // Audio
