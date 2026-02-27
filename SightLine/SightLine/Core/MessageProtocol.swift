@@ -24,6 +24,12 @@ enum UpstreamMessage {
     case activityStart
     case activityEnd
     case gesture(type: String)
+    case reloadFaceLibrary
+    case clearFaceLibrary
+    case cameraFailure(error: String)
+    case muteToggle(muted: Bool)
+    case emergencyPause(paused: Bool)
+    case cameraToggle(active: Bool)
 
     /// Encode as optimized binary frame (magic byte + raw payload).
     /// Returns nil for message types that must be sent as JSON text.
@@ -63,6 +69,20 @@ enum UpstreamMessage {
             return "{\"type\":\"activity_end\"}"
         case .gesture(let type):
             return "{\"type\":\"gesture\",\"gesture\":\"\(type)\"}"
+        case .reloadFaceLibrary:
+            return "{\"type\":\"reload_face_library\"}"
+        case .clearFaceLibrary:
+            return "{\"type\":\"clear_face_library\"}"
+        case .cameraFailure(let error):
+            let escaped = error.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "{\"type\":\"camera_failure\",\"error\":\"\(escaped)\",\"reason\":\"\(escaped)\"}"
+        case .muteToggle(let muted):
+            return "{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":\(muted)}"
+        case .emergencyPause(let paused):
+            return "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(paused)}"
+        case .cameraToggle(let active):
+            return "{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":\(active)}"
         }
     }
 }

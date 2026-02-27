@@ -63,6 +63,62 @@ struct UpstreamMessageTests {
         let msg = UpstreamMessage.activityEnd
         #expect(msg.toJSON() == "{\"type\":\"activity_end\"}")
     }
+
+    @Test("reloadFaceLibrary encodes correctly")
+    func reloadFaceLibraryEncoding() {
+        let msg = UpstreamMessage.reloadFaceLibrary
+        #expect(msg.toJSON() == "{\"type\":\"reload_face_library\"}")
+    }
+
+    @Test("clearFaceLibrary encodes correctly")
+    func clearFaceLibraryEncoding() {
+        let msg = UpstreamMessage.clearFaceLibrary
+        #expect(msg.toJSON() == "{\"type\":\"clear_face_library\"}")
+    }
+
+    @Test("cameraFailure encodes error and reason")
+    func cameraFailureEncoding() {
+        let msg = UpstreamMessage.cameraFailure(error: "no permission")
+        let json = msg.toJSON()
+        #expect(json.contains("\"type\":\"camera_failure\""))
+        #expect(json.contains("\"error\":\"no permission\""))
+        #expect(json.contains("\"reason\":\"no permission\""))
+    }
+
+    @Test("cameraFailure escapes special characters")
+    func cameraFailureEscaping() {
+        let msg = UpstreamMessage.cameraFailure(error: "bad \"quote\" and \\slash")
+        let json = msg.toJSON()
+        #expect(json.contains("\\\"quote\\\""))
+        #expect(json.contains("\\\\slash"))
+    }
+
+    @Test("muteToggle encodes muted state")
+    func muteToggleEncoding() {
+        let muted = UpstreamMessage.muteToggle(muted: true)
+        #expect(muted.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":true}")
+
+        let unmuted = UpstreamMessage.muteToggle(muted: false)
+        #expect(unmuted.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":false}")
+    }
+
+    @Test("emergencyPause encodes paused state")
+    func emergencyPauseEncoding() {
+        let paused = UpstreamMessage.emergencyPause(paused: true)
+        #expect(paused.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":true}")
+
+        let resumed = UpstreamMessage.emergencyPause(paused: false)
+        #expect(resumed.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":false}")
+    }
+
+    @Test("cameraToggle encodes active state")
+    func cameraToggleEncoding() {
+        let on = UpstreamMessage.cameraToggle(active: true)
+        #expect(on.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":true}")
+
+        let off = UpstreamMessage.cameraToggle(active: false)
+        #expect(off.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":false}")
+    }
 }
 
 @Suite("DownstreamMessage Parsing")

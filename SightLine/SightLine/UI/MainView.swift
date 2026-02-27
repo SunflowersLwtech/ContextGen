@@ -113,7 +113,7 @@ struct MainView: View {
             isVoiceOverActive = UIAccessibility.isVoiceOverRunning
         }
         .onReceive(NotificationCenter.default.publisher(for: .faceLibraryChanged)) { _ in
-            webSocketManager.sendText("{\"type\":\"reload_face_library\"}")
+            webSocketManager.sendText(UpstreamMessage.reloadFaceLibrary.toJSON())
             logger.info("Face library changed notification received, sending reload request")
         }
         // Recheck permissions when returning from Settings
@@ -352,7 +352,7 @@ struct MainView: View {
         } else if !isEmergencyPaused {
             audioCapture.startCapture()
         }
-        webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":\(isMuted)}")
+        webSocketManager.sendText(UpstreamMessage.muteToggle(muted: isMuted).toJSON())
         UIAccessibility.post(notification: .announcement, argument: isMuted ? "Microphone muted" : "Microphone unmuted")
         devConsoleModel.captureTranscript(text: "Gesture: mute_toggle (muted=\(isMuted))", role: "gesture")
         logger.info("Gesture: mute_toggle (isMuted=\(isMuted))")
@@ -393,7 +393,7 @@ struct MainView: View {
             }
             // Camera is NOT auto-resumed — user must explicitly re-enable via swipe.
         }
-        webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(isEmergencyPaused)}")
+        webSocketManager.sendText(UpstreamMessage.emergencyPause(paused: isEmergencyPaused).toJSON())
         UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
         devConsoleModel.captureTranscript(text: "Gesture: emergency_pause (paused=\(isEmergencyPaused))", role: "gesture")
         logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
@@ -723,7 +723,7 @@ struct MainView: View {
 
         // 2. Setup camera with LOD-based frame selector + pixel-diff dedup (SL-75)
         cameraManager.onCameraFailure = { reason in
-            webSocketManager.sendText("{\"type\":\"camera_failure\",\"error\":\"\(reason)\",\"reason\":\"\(reason)\"}")
+            webSocketManager.sendText(UpstreamMessage.cameraFailure(error: reason).toJSON())
         }
         cameraManager.frameSelector = frameSelector
         cameraManager.onFrameCaptured = { jpegData in
@@ -801,7 +801,7 @@ struct MainView: View {
             cameraManager.stopCapture()
             isCameraActive = false
             HapticManager.shared.cameraOff()
-            webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":false}")
+            webSocketManager.sendText(UpstreamMessage.cameraToggle(active: false).toJSON())
             UIAccessibility.post(notification: .announcement, argument: "Camera off")
             logger.info("Camera deactivated by user")
         } else {
@@ -822,7 +822,7 @@ struct MainView: View {
                     cameraManager.startCapture()
                     isCameraActive = true
                     HapticManager.shared.cameraOn()
-                    webSocketManager.sendText("{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":true}")
+                    webSocketManager.sendText(UpstreamMessage.cameraToggle(active: true).toJSON())
                     UIAccessibility.post(notification: .announcement, argument: "Camera on")
                     logger.info("Camera activated by user")
                 }
@@ -1105,7 +1105,7 @@ struct MainView: View {
     // MARK: - Face Privacy Action (SL-59)
 
     private func clearFaceLibrary() {
-        webSocketManager.sendText("{\"type\":\"clear_face_library\"}")
+        webSocketManager.sendText(UpstreamMessage.clearFaceLibrary.toJSON())
     }
 
     // MARK: - User Switching

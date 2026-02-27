@@ -12,7 +12,9 @@ from memory.memory_bank import (
     MemoryBankService,
     _sanitize_memory_content,
     load_relevant_memories,
-    preload_memory,
+    evict_stale_banks,
+    _bank_instances,
+    _bank_last_accessed,
 )
 
 
@@ -22,11 +24,16 @@ from memory.memory_bank import (
 
 
 def _make_bank(user_id: str = "test_user") -> MemoryBankService:
-    """Create a MemoryBankService with Firestore disabled (ephemeral mode)."""
-    with patch("memory.memory_bank.MemoryBankService._init_backend"):
+    """Create a MemoryBankService with Firestore disabled (ephemeral mode).
+
+    Both _try_init and _ensure_firestore are neutralised so the bank
+    stays in ephemeral (cache-only) mode for the entire test.
+    """
+    with patch.object(MemoryBankService, "_try_init"):
         bank = MemoryBankService(user_id)
-        bank._firestore = None  # ensure ephemeral mode
-        return bank
+    bank._firestore = None  # ensure ephemeral mode
+    bank._ensure_firestore = lambda: None  # prevent lazy re-init
+    return bank
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +138,7 @@ class TestMemoryBankFirestore:
         bank = _make_bank()
         mock_fs = MagicMock()
         bank._firestore = mock_fs
+        bank._ensure_firestore = lambda: mock_fs
 
         mock_doc_ref = MagicMock()
         mock_doc_ref.id = "generated_doc_id"
@@ -150,6 +158,7 @@ class TestMemoryBankFirestore:
         bank = _make_bank()
         mock_fs = MagicMock()
         bank._firestore = mock_fs
+        bank._ensure_firestore = lambda: mock_fs
 
         mock_doc_ref = MagicMock()
         mock_doc = MagicMock()
@@ -165,6 +174,7 @@ class TestMemoryBankFirestore:
         bank = _make_bank()
         mock_fs = MagicMock()
         bank._firestore = mock_fs
+        bank._ensure_firestore = lambda: mock_fs
 
         mock_doc_ref = MagicMock()
         mock_doc = MagicMock()
@@ -179,6 +189,7 @@ class TestMemoryBankFirestore:
         bank = _make_bank()
         mock_fs = MagicMock()
         bank._firestore = mock_fs
+        bank._ensure_firestore = lambda: mock_fs
 
         # Mock query returning 2 documents
         mock_doc1 = MagicMock()
@@ -196,6 +207,7 @@ class TestMemoryBankFirestore:
         bank = _make_bank()
         mock_fs = MagicMock()
         bank._firestore = mock_fs
+        bank._ensure_firestore = lambda: mock_fs
 
         # Make vector search fail
         mock_coll = MagicMock()
@@ -237,7 +249,7 @@ class TestMemoryBankFirestore:
 
 
 class TestConvenienceFunctions:
-    """Tests for load_relevant_memories and preload_memory."""
+    """Tests for load_relevant_memories and evict_stale_banks."""
 
     def test_load_relevant_memories(self):
         with patch("memory.memory_bank._get_bank") as mock_get:
@@ -263,29 +275,32 @@ class TestConvenienceFunctions:
 
         assert result == []
 
-    def test_preload_memory_format(self):
-        with patch("memory.memory_bank.load_relevant_memories") as mock_load:
-            mock_load.return_value = ["Memory X", "Memory Y"]
+    def test_evict_stale_banks_removes_old_entries(self):
+        # Seed cache with a stale entry
+        mock_bank = MagicMock(spec=MemoryBankService)
+        _bank_instances["stale_user"] = mock_bank
+        _bank_last_accessed["stale_user"] = time.time() - 7200  # 2 hours ago
 
-            result = preload_memory("user1", "test context")
+        evicted = evict_stale_banks(max_age_sec=3600)
 
-        assert result == {
-            "memories": ["Memory X", "Memory Y"],
-            "count": 2,
-            "user_id": "user1",
-        }
+        assert evicted == 1
+        assert "stale_user" not in _bank_instances
+        assert "stale_user" not in _bank_last_accessed
 
-    def test_preload_memory_empty(self):
-        with patch("memory.memory_bank.load_relevant_memories") as mock_load:
-            mock_load.return_value = []
+    def test_evict_stale_banks_keeps_recent_entries(self):
+        # Seed cache with a recent entry
+        mock_bank = MagicMock(spec=MemoryBankService)
+        _bank_instances["recent_user"] = mock_bank
+        _bank_last_accessed["recent_user"] = time.time()
 
-            result = preload_memory("user1", "")
+        evicted = evict_stale_banks(max_age_sec=3600)
 
-        assert result == {
-            "memories": [],
-            "count": 0,
-            "user_id": "user1",
-        }
+        assert evicted == 0
+        assert "recent_user" in _bank_instances
+
+        # Clean up
+        _bank_instances.pop("recent_user", None)
+        _bank_last_accessed.pop("recent_user", None)
 
 
 # ---------------------------------------------------------------------------
@@ -294,64 +309,47 @@ class TestConvenienceFunctions:
 
 
 class TestFirestoreRetry:
-    """Tests for _init_backend retry with exponential backoff."""
+    """Tests for _try_init and lazy _ensure_firestore retry."""
 
-    def test_retry_succeeds_on_second_attempt(self):
-        """Firestore init should retry and succeed on 2nd attempt."""
-        mock_client_cls = MagicMock()
-        mock_client_cls.side_effect = [Exception("transient"), MagicMock()]
+    def test_try_init_sets_firestore_on_success(self):
+        """_try_init should set _firestore when Firestore import succeeds."""
+        mock_client = MagicMock()
 
-        with patch.dict("sys.modules", {"google.cloud": MagicMock(), "google.cloud.firestore": MagicMock()}):
-            with patch("memory.memory_bank.MemoryBankService._init_backend.__module__", create=True):
-                bank = MemoryBankService.__new__(MemoryBankService)
-                bank.user_id = "retry_user"
-                bank._firestore = None
-                bank._memories_cache = []
+        bank = MemoryBankService.__new__(MemoryBankService)
+        bank.user_id = "retry_user"
+        bank._firestore = None
+        bank._memories_cache = []
 
-                import importlib
-                from unittest.mock import call
+        # _try_init does: from google.cloud import firestore; firestore.Client(...)
+        with patch("google.cloud.firestore.Client", return_value=mock_client):
+            bank._try_init()
 
-                with patch("time.sleep") as mock_sleep:
-                    # Simulate: first call raises, second succeeds
-                    call_count = 0
-                    original_init = MemoryBankService._init_backend
+        assert bank._firestore is mock_client
 
-                    def patched_init(self, max_retries=3):
-                        nonlocal call_count
-                        for attempt in range(max_retries):
-                            try:
-                                if call_count == 0:
-                                    call_count += 1
-                                    raise Exception("transient")
-                                self._firestore = MagicMock()
-                                return
-                            except Exception as e:
-                                wait = min(2 ** attempt, 4)
-                                if attempt < max_retries - 1:
-                                    import time as _time
-                                    _time.sleep(wait)
-                        self._firestore = None
-
-                    patched_init(bank)
-                    assert bank._firestore is not None
-
-    def test_retry_exhausted_falls_back_to_ephemeral(self):
-        """After all retries fail, Firestore should be None (ephemeral mode)."""
+    def test_try_init_falls_back_to_ephemeral_on_failure(self):
+        """_try_init should leave _firestore as None when import fails."""
         bank = MemoryBankService.__new__(MemoryBankService)
         bank.user_id = "fail_user"
         bank._firestore = None
         bank._memories_cache = []
 
-        with patch("time.sleep"):
-            with patch.dict("sys.modules", {}):
-                # _init_backend imports firestore inside; make it always fail
-                with patch.object(
-                    MemoryBankService, "_init_backend",
-                    lambda self, max_retries=3: None,
-                ):
-                    MemoryBankService._init_backend(bank)
+        with patch.dict("sys.modules", {"google.cloud.firestore": None, "google.cloud": None}):
+            bank._try_init()
 
         assert bank._firestore is None
+
+    def test_ensure_firestore_retries_on_use(self):
+        """_ensure_firestore should call _try_init again if _firestore is None."""
+        with patch.object(MemoryBankService, "_try_init"):
+            bank = MemoryBankService("retry_ensure_user")
+        bank._firestore = None  # simulate failed init
+        assert bank._firestore is None
+
+        mock_client = MagicMock()
+        with patch.object(MemoryBankService, "_try_init", lambda self: setattr(self, "_firestore", mock_client)):
+            result = bank._ensure_firestore()
+
+        assert result is mock_client
 
 
 # ---------------------------------------------------------------------------

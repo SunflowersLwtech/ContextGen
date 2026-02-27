@@ -106,6 +106,7 @@ logger = logging.getLogger("sightline.server")
 LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
 PORT = int(os.getenv("PORT", "8080"))
 SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT", "3600"))
+WS_INACTIVITY_TIMEOUT_SEC = int(os.getenv("WS_INACTIVITY_TIMEOUT", str(SESSION_TIMEOUT_SEC)))
 
 app = FastAPI(title="SightLine Backend", version="0.3.0")
 
@@ -494,7 +495,7 @@ from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_beh
 _memory_available = False
 _memory_extractor_available = False
 try:
-    from memory.memory_bank import load_relevant_memories, MemoryBankService
+    from memory.memory_bank import load_relevant_memories, MemoryBankService, evict_stale_banks
     from memory.memory_budget import MemoryBudgetTracker, MEMORY_WRITE_BUDGET
     _memory_available = True
 except ImportError:
@@ -1676,8 +1677,25 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
         try:
             while True:
-                # Use low-level receive() to handle both text and binary
-                ws_message = await websocket.receive()
+                # Use low-level receive() with inactivity timeout.
+                # If no message arrives within WS_INACTIVITY_TIMEOUT_SEC,
+                # the connection is considered stale (e.g. silent disconnect).
+                try:
+                    ws_message = await asyncio.wait_for(
+                        websocket.receive(),
+                        timeout=WS_INACTIVITY_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.info(
+                        "WebSocket inactivity timeout (%ds): user=%s session=%s",
+                        WS_INACTIVITY_TIMEOUT_SEC, user_id, session_id,
+                    )
+                    stop_downstream.set()
+                    try:
+                        await websocket.close(code=1000, reason="inactivity_timeout")
+                    except Exception:
+                        pass
+                    return
 
                 # --- Binary frame (optimized path) ---
                 if "bytes" in ws_message and ws_message["bytes"]:
@@ -2614,6 +2632,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         ctx_queue.stop()
         live_request_queue.close()
         session_manager.remove_session(session_id)
+        if _memory_available:
+            evict_stale_banks(max_age_sec=SESSION_TIMEOUT_SEC)
         logger.info("Session cleaned up: user=%s session=%s", user_id, session_id)
 
 

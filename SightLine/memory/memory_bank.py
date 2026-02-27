@@ -323,6 +323,7 @@ class MemoryBankService:
 # ---------------------------------------------------------------------------
 
 _bank_instances: dict[str, MemoryBankService] = {}
+_bank_last_accessed: dict[str, float] = {}
 
 
 def _get_bank(user_id: str) -> MemoryBankService:
@@ -330,6 +331,7 @@ def _get_bank(user_id: str) -> MemoryBankService:
 
     Re-attempts Firestore init if a cached instance has no connection.
     """
+    _bank_last_accessed[user_id] = time.time()
     if user_id in _bank_instances:
         bank = _bank_instances[user_id]
         if bank._firestore is None:
@@ -337,6 +339,24 @@ def _get_bank(user_id: str) -> MemoryBankService:
         return bank
     _bank_instances[user_id] = MemoryBankService(user_id)
     return _bank_instances[user_id]
+
+
+def evict_stale_banks(max_age_sec: int = 3600) -> int:
+    """Remove cached MemoryBankService instances not accessed within max_age_sec.
+
+    Returns the number of evicted instances.
+    """
+    now = time.time()
+    stale = [
+        uid for uid, ts in _bank_last_accessed.items()
+        if now - ts > max_age_sec
+    ]
+    for uid in stale:
+        _bank_instances.pop(uid, None)
+        _bank_last_accessed.pop(uid, None)
+    if stale:
+        logger.info("Evicted %d stale MemoryBankService instances", len(stale))
+    return len(stale)
 
 
 def _sanitize_memory_content(text: str) -> str:
