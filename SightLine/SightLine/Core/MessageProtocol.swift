@@ -21,8 +21,6 @@ enum UpstreamMessage {
     case audio(data: Data)                         // PCM 16kHz mono
     case image(data: Data, mimeType: String)       // JPEG 768x768
     case telemetry(data: TelemetryData)
-    case activityStart
-    case activityEnd
     case gesture(type: String)
     case reloadFaceLibrary
     case clearFaceLibrary
@@ -65,10 +63,6 @@ enum UpstreamMessage {
                 return "{\"type\":\"telemetry\",\"data\":{}}"
             }
             return "{\"type\":\"telemetry\",\"data\":\(jsonStr)}"
-        case .activityStart:
-            return "{\"type\":\"activity_start\"}"
-        case .activityEnd:
-            return "{\"type\":\"activity_end\"}"
         case .gesture(let type):
             return "{\"type\":\"gesture\",\"gesture\":\"\(type)\"}"
         case .reloadFaceLibrary:
@@ -140,6 +134,7 @@ enum DownstreamMessage {
     case debugActivity(data: [String: Any])
     case interrupted
     case profileUpdatedAck
+    case toolsManifest(tools: [[String: Any]], contextModules: [[String: Any]], subAgents: [String: String])
     case unknown(raw: String)
 
     static func parse(text: String) -> DownstreamMessage? {
@@ -252,6 +247,11 @@ enum DownstreamMessage {
             return .interrupted
         case "profile_updated_ack":
             return .profileUpdatedAck
+        case "tools_manifest":
+            let tools = json["tools"] as? [[String: Any]] ?? []
+            let modules = json["context_modules"] as? [[String: Any]] ?? []
+            let agents = json["sub_agents"] as? [String: String] ?? [:]
+            return .toolsManifest(tools: tools, contextModules: modules, subAgents: agents)
         default:
             return .unknown(raw: text)
         }

@@ -952,6 +952,9 @@ struct MainView: View {
             if !status.isEmpty {
                 DispatchQueue.main.async {
                     devConsoleModel.captureTranscript(text: "Tool \(tool): \(status)", role: "system")
+                    devConsoleModel.captureToolActivity(
+                        tool: tool, behavior: behavior.rawValue, status: status
+                    )
                 }
             }
             switch status {
@@ -1058,6 +1061,10 @@ struct MainView: View {
             }
             UserDefaults.standard.set(handle, forKey: SightLineConfig.sessionResumptionHandleDefaultsKey)
             logger.info("Session resumption handle updated: \(handle.prefix(20))...")
+        case .toolsManifest(let tools, let modules, let agents):
+            DispatchQueue.main.async {
+                devConsoleModel.captureToolsManifest(tools: tools, modules: modules, subAgents: agents)
+            }
         case .profileUpdatedAck:
             logger.info("Profile update acknowledged by server")
         case .unknown(let raw):

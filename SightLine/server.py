@@ -64,6 +64,7 @@ class MessageType(str, Enum):
     NAVIGATION_RESULT = "navigation_result"
     SEARCH_RESULT = "search_result"
     PROFILE_UPDATED_ACK = "profile_updated_ack"
+    TOOLS_MANIFEST = "tools_manifest"
 
 
 from agents.orchestrator import create_orchestrator_agent
@@ -603,7 +604,7 @@ except ImportError:
 
 FACE_LIBRARY_REFRESH_SEC: float = 60.0
 
-from tools import ALL_FUNCTIONS
+from tools import ALL_FUNCTIONS, ALL_TOOL_DECLARATIONS
 from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
 from tools.plus_codes import PLUS_CODES_FUNCTIONS
@@ -611,6 +612,31 @@ from tools.accessibility import ACCESSIBILITY_FUNCTIONS
 from tools.maps_grounding import MAPS_GROUNDING_FUNCTIONS
 from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
+
+# ---------------------------------------------------------------------------
+# Tool category / behavior mapping for tools_manifest
+# ---------------------------------------------------------------------------
+
+_TOOL_CATEGORY_MAP: dict[str, tuple[str, str]] = {
+    "navigate_to": ("navigation", "INTERRUPT"),
+    "get_location_info": ("navigation", "WHEN_IDLE"),
+    "nearby_search": ("navigation", "WHEN_IDLE"),
+    "reverse_geocode": ("navigation", "WHEN_IDLE"),
+    "get_walking_directions": ("navigation", "WHEN_IDLE"),
+    "preview_destination": ("navigation", "WHEN_IDLE"),
+    "validate_address": ("navigation", "WHEN_IDLE"),
+    "google_search": ("search", "WHEN_IDLE"),
+    "identify_person": ("face", "SILENT"),
+    "resolve_plus_code": ("plus_codes", "WHEN_IDLE"),
+    "convert_to_plus_code": ("plus_codes", "WHEN_IDLE"),
+    "get_accessibility_info": ("accessibility", "WHEN_IDLE"),
+    "maps_query": ("maps_grounding", "WHEN_IDLE"),
+    "preload_memory": ("memory", "SILENT"),
+    "remember_entity": ("memory", "SILENT"),
+    "what_do_you_remember": ("memory", "WHEN_IDLE"),
+    "forget_entity": ("memory", "SILENT"),
+    "forget_recent_memory": ("memory", "SILENT"),
+}
 
 # ---------------------------------------------------------------------------
 # Memory system (Phase 4, SL-71)
@@ -1281,6 +1307,56 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "behavior": behavior_to_text(ToolBehavior.SILENT),
             })
 
+    def _build_tools_manifest() -> dict:
+        """Build a tools_manifest payload for the iOS Dev Console."""
+        tools_list = [
+            {
+                "name": decl["name"],
+                "category": _TOOL_CATEGORY_MAP.get(decl["name"], ("unknown", "WHEN_IDLE"))[0],
+                "behavior": _TOOL_CATEGORY_MAP.get(decl["name"], ("unknown", "WHEN_IDLE"))[1],
+                "description": decl.get("description", ""),
+            }
+            for decl in ALL_TOOL_DECLARATIONS
+        ]
+        # Include memory tools (not in ALL_TOOL_DECLARATIONS but in ALL_FUNCTIONS)
+        for mem_name in ("preload_memory", "remember_entity", "what_do_you_remember", "forget_entity", "forget_recent_memory"):
+            if mem_name in _TOOL_CATEGORY_MAP:
+                cat, beh = _TOOL_CATEGORY_MAP[mem_name]
+                tools_list.append({
+                    "name": mem_name,
+                    "category": cat,
+                    "behavior": beh,
+                    "description": "",
+                })
+
+        # Context modules — check which were successfully initialised
+        _entity_graph_available = False
+        try:
+            from context.entity_graph import EntityGraphService  # noqa: F811
+            _entity_graph_available = True
+        except ImportError:
+            pass
+
+        context_modules = [
+            {"name": "LocationContext", "status": "ready" if _location_ctx_service is not None else "unavailable"},
+            {"name": "LODEvaluator", "status": "ready" if _lod_evaluator is not None else "unavailable"},
+            {"name": "ProfileAssembler", "status": "ready" if _assembled_profile is not None else "unavailable"},
+            {"name": "HabitDetector", "status": "ready" if _proactive_hints is not None else "unavailable"},
+            {"name": "SceneMatcher", "status": "ready" if _location_ctx_service is not None else "unavailable"},
+            {"name": "EntityGraph", "status": "ready" if _entity_graph_available else "unavailable"},
+        ]
+
+        return {
+            "type": MessageType.TOOLS_MANIFEST,
+            "tools": tools_list,
+            "context_modules": context_modules,
+            "sub_agents": {
+                "vision": "ready",
+                "ocr": "ready",
+                "face": "ready" if _face_available else "unavailable",
+            },
+        }
+
     # Notify client immediately so the iOS layer knows the
     # WebSocket is live before the Gemini connection is ready.
     if not await _safe_send_json({"type": MessageType.SESSION_READY}):
@@ -1303,6 +1379,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     _lod_evaluator = None
     _assembled_profile = None
     _current_location_ctx = None  # latest LocationContext from GPS
+    _proactive_hints = None  # set by HabitDetector inside try block
     try:
         from context.location_context import LocationContextService
         from context.lod_evaluator import LODEvaluator
@@ -1337,6 +1414,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         )
     except Exception:
         logger.debug("Context engine init skipped (import error)", exc_info=True)
+
+    # Send tools manifest so iOS Dev Console shows tool/context status
+    await _safe_send_json(_build_tools_manifest())
 
     # -- E-7: Initial LOD context injection at session start -----------------
     # Inject the full dynamic system prompt so the model has LOD context
@@ -2105,45 +2185,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 elif message.get("type") == "telemetry":
                     telemetry_data = message.get("data", {})
                     await _process_telemetry(telemetry_data)
-
-                elif message.get("type") == "activity_start":
-                    _last_user_activity_at = time.monotonic()
-                    queue_status = "forwarded"
-                    queue_note = ""
-                    try:
-                        live_request_queue.send_activity_start()
-                        logger.info("Forwarded activity_start to LiveRequestQueue")
-                    except Exception as exc:
-                        queue_status = "forward_failed"
-                        queue_note = str(exc)[:200]
-                        logger.warning(
-                            "Failed to forward activity_start to LiveRequestQueue: %s",
-                            queue_note,
-                        )
-                    await _emit_activity_debug_event(
-                        event_name="activity_start",
-                        queue_status=queue_status,
-                        queue_note=queue_note,
-                    )
-
-                elif message.get("type") == "activity_end":
-                    queue_status = "forwarded"
-                    queue_note = ""
-                    try:
-                        live_request_queue.send_activity_end()
-                        logger.info("Forwarded activity_end to LiveRequestQueue")
-                    except Exception as exc:
-                        queue_status = "forward_failed"
-                        queue_note = str(exc)[:200]
-                        logger.warning(
-                            "Failed to forward activity_end to LiveRequestQueue: %s",
-                            queue_note,
-                        )
-                    await _emit_activity_debug_event(
-                        event_name="activity_end",
-                        queue_status=queue_status,
-                        queue_note=queue_note,
-                    )
 
                 elif message.get("type") == "gesture":
                     gesture = message.get("gesture")

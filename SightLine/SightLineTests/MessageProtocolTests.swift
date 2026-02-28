@@ -51,18 +51,6 @@ struct UpstreamMessageTests {
         #expect(json.contains("\"step_cadence\":110"))
     }
 
-    @Test("activityStart encodes correctly")
-    func activityStartEncoding() {
-        let msg = UpstreamMessage.activityStart
-        #expect(msg.toJSON() == "{\"type\":\"activity_start\"}")
-    }
-
-    @Test("activityEnd encodes correctly")
-    func activityEndEncoding() {
-        let msg = UpstreamMessage.activityEnd
-        #expect(msg.toJSON() == "{\"type\":\"activity_end\"}")
-    }
-
     @Test("reloadFaceLibrary encodes correctly")
     func reloadFaceLibraryEncoding() {
         let msg = UpstreamMessage.reloadFaceLibrary

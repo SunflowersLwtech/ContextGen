@@ -36,6 +36,7 @@ try:
         remember_entity,
         what_do_you_remember,
         forget_entity,
+        forget_recent_memory,
     )
 except ImportError:
     def preload_memory(user_id: str, context: str = "") -> dict:
@@ -47,6 +48,8 @@ except ImportError:
         return {"summary": "Memory system not available.", "user_id": user_id}
     def forget_entity(user_id: str, name: str) -> dict:
         return {"name": name, "status": "unavailable"}
+    def forget_recent_memory(user_id: str, minutes: int = 30) -> dict:
+        return {"deleted_count": 0, "status": "unavailable"}
 
 SYSTEM_PROMPT = """\
 You are SightLine, a warm and patient AI companion for blind and low-vision users.
@@ -172,7 +175,7 @@ Called automatically when faces are detected. Results arrive as \
 your descriptions without making it obvious the system is doing face matching.
 Example: Instead of "Face recognized: David", say "David is sitting across from you."
 
-### preload_memory / remember_entity / what_do_you_remember / forget_entity
+### preload_memory / remember_entity / what_do_you_remember / forget_entity / forget_recent_memory
 Memory and entity tools for managing the user's long-term memory:
 - **preload_memory(user_id, context)**: Retrieve relevant memories for the current context. \
 Called automatically at session start and LOD transitions. You may also call it proactively \
@@ -187,6 +190,9 @@ Always respond naturally, not as a data dump.
 - **forget_entity(user_id, name)**: When the user asks to forget a person or place entirely. \
 Example: "Forget about David." Deletes the entity and related memories. Confirm: "I've forgotten \
 about David."
+- **forget_recent_memory(user_id, minutes)**: When the user says "forget what I just told you" \
+or "delete my recent memories". Deletes memories created within the last N minutes (default 30). \
+Confirm: "I've forgotten what you told me recently."
 Always respect the user's request to forget. Memory operations are SILENT — do not announce \
 them to the user unless confirming a remember/forget request.
 
@@ -233,5 +239,6 @@ def create_orchestrator_agent(model_name: str) -> Agent:
             remember_entity,
             what_do_you_remember,
             forget_entity,
+            forget_recent_memory,
         ],
     )
