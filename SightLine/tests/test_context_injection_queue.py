@@ -311,21 +311,42 @@ class TestPrioritySorting:
 
 
 class TestSilentWrapping:
-    def test_all_silent_items_get_prefix(self, queue, lrq):
+    def test_all_silent_items_skip_flush(self, queue, lrq):
+        """Silent-only flush() returns False and does NOT call send_content."""
         queue.set_model_speaking(True)
         queue.enqueue("lod", "lod update", priority=3, speak=False)
         queue.enqueue("telemetry", "sensor", priority=8, speak=False)
-        queue.flush()
+        result = queue.flush()
+        assert result is False
+        assert len(lrq.sent) == 0
+        # Items should remain in queue
+        assert len(queue._queue) == 2
+
+    def test_silent_flush_force(self, queue, lrq):
+        """flush(force=True) sends silent-only items with DO NOT SPEAK prefix."""
+        queue.set_model_speaking(True)
+        queue.enqueue("lod", "lod update", priority=3, speak=False)
+        queue.enqueue("telemetry", "sensor", priority=8, speak=False)
+        result = queue.flush(force=True)
+        assert result is True
+        assert len(lrq.sent) == 1
         text = lrq.sent[0].parts[0].text
         assert text.startswith("[CONTEXT UPDATE - DO NOT SPEAK]")
+        # Queue should be cleared
+        assert len(queue._queue) == 0
 
-    def test_mixed_speak_no_prefix(self, queue, lrq):
+    def test_mixed_items_include_silent(self, queue, lrq):
+        """When at least one item has speak=True, all items flush together."""
         queue.set_model_speaking(True)
         queue.enqueue("vision", "scene", priority=5, speak=True)
         queue.enqueue("telemetry", "sensor", priority=8, speak=False)
-        queue.flush()
+        result = queue.flush()
+        assert result is True
+        assert len(lrq.sent) == 1
         text = lrq.sent[0].parts[0].text
         assert not text.startswith("[CONTEXT UPDATE - DO NOT SPEAK]")
+        assert "scene" in text
+        assert "sensor" in text
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +409,21 @@ class TestMaxAge:
         queue._ios_playback_drained = True
         assert queue.check_max_age() is True
         assert len(lrq.sent) == 1
+
+    def test_flush_after_max_age_silent_items(self, queue, lrq):
+        """check_max_age uses force=True, so even silent-only items get flushed."""
+        queue.set_model_speaking(True)
+        queue.enqueue("telemetry", "sensor", priority=8, speak=False)
+        queue.enqueue("lod", "level update", priority=3, speak=False)
+        # Backdate items
+        for item in queue._queue.values():
+            item.enqueued_at = time.monotonic() - QUEUE_MAX_AGE_SEC - 1
+        queue.set_model_speaking(False)
+        queue._ios_playback_drained = True
+        assert queue.check_max_age() is True
+        assert len(lrq.sent) == 1
+        text = lrq.sent[0].parts[0].text
+        assert text.startswith("[CONTEXT UPDATE - DO NOT SPEAK]")
 
 
 # ---------------------------------------------------------------------------

@@ -40,11 +40,9 @@ class AudioCaptureManager: ObservableObject {
     var lastModelAudioReceivedAt: CFAbsoluteTime = 0
 
     /// How long after the last audio chunk we still consider the model "speaking".
-    /// Must be close to the server-side window (3.0s) to prevent the iOS client
-    /// from sending real audio (containing residual echo) while the server still
-    /// considers the model active.  Covers: network jitter, sub-agent / function
-    /// call pauses (1-3s), natural speech pauses, and AEC tail.
-    private let modelSpeakingTimeout: Double = 2.5
+    /// Reduced from 2.5s to 1.5s to shrink the dead zone after model finishes,
+    /// giving the user more time to speak before the next context flush.
+    private let modelSpeakingTimeout: Double = 1.5
 
     /// RMS threshold for voice barge-in during model playback.
     /// Post-AEC residual echo is typically < 0.02 RMS; human speech at arm's length > 0.08.
@@ -59,11 +57,11 @@ class AudioCaptureManager: ObservableObject {
     /// Barge-in confirmation counter: requires consecutive frames above threshold + VAD active.
     /// Prevents AEC residual echo bursts (< 200ms) from triggering false barge-in.
     private var bargeInConfirmCount: Int = 0
-    private let bargeInConfirmRequired: Int = 8  // ~800ms at 100ms/frame — reduces false barge-in from AEC residual
+    private let bargeInConfirmRequired: Int = 4  // ~400ms at 100ms/frame — closer to ChatGPT-level responsiveness
 
     /// Ignore barge-in candidates immediately after each model audio chunk.
     /// This protects against AEC tail and speaker leakage right after playback resumes.
-    private let bargeInGuardAfterModelChunkSec: Double = 0.5
+    private let bargeInGuardAfterModelChunkSec: Double = 0.15  // AEC processes in 10-30ms; 150ms sufficient
 
     /// Require stronger VAD confidence for barge-in while model is speaking.
     /// `isSpeechActive` alone can remain true for a short hangover window.
@@ -188,7 +186,8 @@ class AudioCaptureManager: ObservableObject {
                     // Model speaking: send silence to prevent echo reaching Gemini VAD.
                     // Multi-frame confirmation prevents AEC residual bursts from false barge-in.
                     if (now - self.lastModelAudioReceivedAt) < self.bargeInGuardAfterModelChunkSec {
-                        self.bargeInConfirmCount = 0
+                        // Don't reset bargeInConfirmCount — let evidence accumulate
+                        // across guard windows so barge-in can trigger during active speech
                         let silence = Data(count: byteCount)
                         self.onAudioCaptured?(silence)
                         return

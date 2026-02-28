@@ -387,32 +387,49 @@ class ContextInjectionQueue:
         self._cancel_deferred_flush()
         self._schedule_deferred_flush(delay=delay)
 
-    def flush_or_defer_first_turn(self, first_turn_delay: float = 2.5) -> None:
-        """Flush queued items, always deferring slightly to let audio drain."""
+    def flush_or_defer_first_turn(self, first_turn_delay: float = 2.5,
+                                   camera_active: bool = False) -> None:
+        """Flush queued items, always deferring slightly to let audio drain.
+
+        When camera is active, use a longer delay (4.0s) to give the user more
+        time to speak before vision context is flushed.
+        """
         if self._first_turn:
             self._first_turn = False
             self.schedule_flush_after(first_turn_delay)
             logger.info("Post-greeting pause: flush deferred %.1fs", first_turn_delay)
         else:
-            # Defer 2s to let model finish speaking before flushing queued context.
-            # 0.3s was too aggressive — caused mid-sentence interruptions.
-            self.schedule_flush_after(2.0)
+            delay = 4.0 if camera_active else 2.5
+            self.schedule_flush_after(delay)
 
     # -- Flush ---------------------------------------------------------------
 
-    def flush(self) -> bool:
+    def flush(self, force: bool = False) -> bool:
         """Merge and send all queued items as one Content message.
 
         Returns True if anything was flushed.
+
+        When all items are speak=False and force is False, skip send_content()
+        to avoid triggering model audio response for silent-only context.
+        Items stay in queue; check_max_age() will force-flush after 15s.
         """
         self._cancel_deferred_flush()  # prevent double-flush
         if not self._queue:
             return False
 
         items = sorted(self._queue.values(), key=lambda it: it.priority)
+        all_silent = all(not it.speak for it in items)
+
+        if all_silent and not force:
+            # Don't inject silent-only context — avoids triggering model audio.
+            # Raw images already in Gemini context via send_realtime().
+            # Items stay in queue; check_max_age() will force-flush after 15s.
+            logger.info("Skipped silent-only flush (%d items); awaiting speech-worthy item or max-age",
+                         len(items))
+            return False
+
         self._queue.clear()
 
-        all_silent = all(not it.speak for it in items)
         merged_parts: list[str] = []
         for it in items:
             merged_parts.append(it.text)
@@ -444,7 +461,7 @@ class ContextInjectionQueue:
         if (time.monotonic() - oldest) > QUEUE_MAX_AGE_SEC:
             logger.info("Max-age flush triggered (oldest=%.1fs)",
                         time.monotonic() - oldest)
-            return self.flush()
+            return self.flush(force=True)
         return False
 
     # -- Vision spoken cooldown -----------------------------------------------
@@ -2447,16 +2464,26 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     # Client-initiated barge-in (under NO_INTERRUPTION mode).
                     # Gemini VAD won't set interrupted=True, so we simulate it
                     # server-side: suppress audio forwarding until turn_complete.
+                    # Only suppress if model was actually speaking recently (2.0s
+                    # window aligns with iOS 1.5s timeout + network latency).
                     now_mono = time.monotonic()
                     if (now_mono - _last_interrupt_at) < _INTERRUPT_DEBOUNCE_SEC:
                         logger.debug("Client barge-in debounced (%.0fms since last)",
                                      (now_mono - _last_interrupt_at) * 1000)
                     else:
-                        _is_interrupted = True
-                        _last_interrupt_at = now_mono
-                        _model_audio_last_seen_at = 0.0
-                        ctx_queue.set_model_speaking(False)
-                        logger.info("Client barge-in — suppressing audio forwarding")
+                        model_was_speaking = (
+                            _model_audio_last_seen_at > 0
+                            and (now_mono - _model_audio_last_seen_at) < 2.0
+                        )
+                        if model_was_speaking:
+                            _is_interrupted = True
+                            _last_interrupt_at = now_mono
+                            _model_audio_last_seen_at = 0.0
+                            ctx_queue.set_model_speaking(False)
+                            logger.info("Client barge-in — suppressing audio forwarding")
+                        else:
+                            logger.info("Client barge-in ignored — model not speaking (last audio %.1fs ago)",
+                                        now_mono - _model_audio_last_seen_at if _model_audio_last_seen_at > 0 else -1)
 
                 else:
                     logger.warning("Unknown upstream message type: %s", message.get("type"))
@@ -2679,7 +2706,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         if not await _flush_transcript_buffer():
                             break
                     # Flush queued context injections
-                    ctx_queue.flush_or_defer_first_turn()
+                    ctx_queue.flush_or_defer_first_turn(camera_active=_client_camera_active)
 
                 # --- Content parts (audio / text) — BEFORE function calls ---
                 # Process audio/text first so that any subsequent
