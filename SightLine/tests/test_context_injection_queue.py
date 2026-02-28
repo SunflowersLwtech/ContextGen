@@ -142,7 +142,6 @@ for fn_name in [
 ]:
     _patch_attr("live_api.session_manager", fn_name, MagicMock())
 for fn_name in [
-    "PanicHandler",
     "build_full_dynamic_prompt",
     "build_lod_update_message",
     "decide_lod",

@@ -3,14 +3,13 @@
 Rule-based (non-LLM) engine that fuses three context layers
 (Ephemeral, Session, Profile) into a LOD 1/2/3 decision in <1 ms.
 
-Decision priority (high → low):
-    1. PANIC interrupt (heart_rate > 120)
-    2. Motion-state baseline
-    3. Ambient noise override
-    4. Space transition boost
-    5. User verbosity preference
-    6. O&M level adjustment
-    7. Explicit user override (final)
+Decision priority (high -> low):
+    1. Motion-state baseline (experience-driven)
+    2. Ambient noise adjustment
+    3. Space transition boost
+    4. User verbosity preference
+    5. O&M level adjustment
+    6. Explicit user override (final)
 
 Every decision produces an explainable ``LODDecisionLog``.
 """
@@ -41,7 +40,6 @@ class LODDecisionLog:
     step_cadence: float = 0.0
     ambient_noise_db: float = 70.0
     heart_rate: float | None = None
-    panic: bool = False
     space_transition: bool = False
     verbosity_preference: str = "concise"
     om_level: str = "intermediate"
@@ -68,7 +66,8 @@ class LODDecisionLog:
             "motion": self.motion_state,
             "cadence": self.step_cadence,
             "noise_db": self.ambient_noise_db,
-            "panic": self.panic,
+            "watch_heading": getattr(self, "watch_heading", None),
+            "stability": getattr(self, "stability_score", None),
         }
 
 
@@ -80,7 +79,6 @@ class LODDecisionLog:
 BASE_SPEECH_THRESHOLD = 3.5
 
 INFO_VALUES: dict[str, float] = {
-    "safety_warning": 10.0,
     "navigation": 8.0,
     "face_recognition": 7.0,
     "spatial_description": 5.0,
@@ -95,14 +93,8 @@ def should_speak(
     step_cadence: float = 0.0,
     ambient_noise_db: float = 70.0,
 ) -> bool:
-    """Determine whether the agent should vocalise this information.
-
-    Safety warnings always pass.  Everything else is gated by the
-    combined movement + noise penalty on top of ``BASE_SPEECH_THRESHOLD``.
-    """
+    """Determine whether the agent should vocalise this information."""
     info_value = INFO_VALUES.get(info_type, 1.0)
-    if info_value >= 10.0:
-        return True  # safety always speaks
 
     movement_penalty = (step_cadence / 60.0) * 2.0
     noise_penalty = max(0.0, (ambient_noise_db - 60) * 0.1)
@@ -155,7 +147,6 @@ def decide_lod(
     else:
         ambient_noise_db = _to_float(_raw_noise, 70.0)
     heart_rate = _to_opt_float(getattr(ephemeral, "heart_rate", None))
-    panic = bool(getattr(ephemeral, "panic", False))
     _raw_gesture = getattr(ephemeral, "user_gesture", None)
     if isinstance(_raw_gesture, str) and _raw_gesture.strip():
         user_gesture = _raw_gesture.strip().lower()
@@ -180,7 +171,6 @@ def decide_lod(
         step_cadence=step_cadence,
         ambient_noise_db=ambient_noise_db,
         heart_rate=heart_rate,
-        panic=panic,
         space_transition=recent_space_transition,
         verbosity_preference=verbosity_preference,
         om_level=om_level,
@@ -188,91 +178,77 @@ def decide_lod(
         previous_lod=previous_lod,
     )
 
-    # ── Rule 0: Explicit PANIC flag from iOS ──────────────────────────
-    if panic:
-        log.triggered_rules.append("Rule0:PANIC_flag→LOD1")
-        log.final_lod = 1
-        log.reason = "PANIC flag set by client"
-        logger.warning("PANIC flag active → LOD 1")
-        return 1, log
-
-    # ── Rule 1: Heart-rate PANIC (only if watch connected) ────────────
-    if heart_rate is not None and heart_rate > 120:
-        log.triggered_rules.append(f"Rule1:HR={heart_rate:.0f}>120→LOD1")
-        log.final_lod = 1
-        log.reason = f"PANIC: heart_rate={heart_rate:.0f}>120"
-        logger.warning("Heart-rate PANIC (%.0f bpm) → LOD 1", heart_rate)
-        return 1, log
-
-    # ── Rule 2: Motion-state baseline ─────────────────────────────────
+    # ── Rule 1: Motion-state baseline (experience-driven) ───────────
     if motion_state == "running" or step_cadence >= 120:
-        base_lod = 1
-        log.triggered_rules.append("Rule2:running→LOD1")
+        base_lod = 1  # brief — user is busy moving fast
+        log.triggered_rules.append("Rule1:running→LOD1(brief)")
     elif motion_state == "walking":
-        if step_cadence < 60:
-            base_lod = 2  # slow exploration
-            log.triggered_rules.append("Rule2:slow_walk(<60spm)→LOD2")
-        else:
-            base_lod = 1  # normal walking
-            log.triggered_rules.append("Rule2:walking(≥60spm)→LOD1")
-    elif motion_state == "in_vehicle":
-        base_lod = 3
-        log.triggered_rules.append("Rule2:in_vehicle→LOD3")
+        base_lod = 2  # standard — user can listen while walking
+        log.triggered_rules.append("Rule1:walking→LOD2")
     elif motion_state == "cycling":
-        base_lod = 1
-        log.triggered_rules.append("Rule2:cycling→LOD1")
+        base_lod = 1  # brief — user is busy
+        log.triggered_rules.append("Rule1:cycling→LOD1(brief)")
+    elif motion_state == "in_vehicle":
+        base_lod = 3  # detailed — user has attention available
+        log.triggered_rules.append("Rule1:in_vehicle→LOD3")
     else:  # stationary
-        base_lod = 3
-        log.triggered_rules.append("Rule2:stationary→LOD3")
+        base_lod = 3  # detailed — user is relaxed
+        log.triggered_rules.append("Rule1:stationary→LOD3")
 
     log.base_lod_before_adjustments = base_lod
 
-    # ── Rule 2b: Time-of-day adjustment ─────────────────────────────
+    # ── Rule 1b: Time-of-day adjustment ─────────────────────────────
     time_context = getattr(ephemeral, "time_context", "unknown") or "unknown"
     if time_context in ("morning_commute", "late_night") and base_lod > 1:
         base_lod = max(1, base_lod - 1)
-        log.triggered_rules.append(f"Rule2b:{time_context}→-1")
+        log.triggered_rules.append(f"Rule1b:{time_context}→-1")
 
-    # ── Rule 3: Ambient noise override ────────────────────────────────
+    # ── Rule 1c: Watch stability adjustment (experience-driven) ─────
+    stability = _to_float(getattr(ephemeral, "watch_stability_score", 1.0), 1.0)
+    if stability < 0.4 and base_lod > 1:
+        base_lod = max(1, base_lod - 1)
+        log.triggered_rules.append(f"Rule1c:unstable({stability:.2f})→-1(brief)")
+
+    # ── Rule 2: Ambient noise adjustment ────────────────────────────
     if ambient_noise_db > 80:
         if base_lod > 1:
-            log.triggered_rules.append(f"Rule3:noise={ambient_noise_db:.0f}dB>80→cap_LOD1")
+            log.triggered_rules.append(f"Rule2:noise={ambient_noise_db:.0f}dB>80→cap_LOD1")
         base_lod = min(base_lod, 1)
 
-    # ── Rule 4: Space transition boost ────────────────────────────────
+    # ── Rule 3: Space transition boost ────────────────────────────────
     if recent_space_transition:
         if base_lod < 2:
-            log.triggered_rules.append("Rule4:space_transition→boost_LOD2")
+            log.triggered_rules.append("Rule3:space_transition→boost_LOD2")
         base_lod = max(base_lod, 2)
 
-    # ── Rule 5: User verbosity preference ─────────────────────────────
+    # ── Rule 4: User verbosity preference ─────────────────────────────
     if verbosity_preference == "concise":
         if base_lod >= 3:
             base_lod -= 1
-            log.triggered_rules.append("Rule5:concise_pref→-1")
+            log.triggered_rules.append("Rule4:concise_pref→-1")
     elif verbosity_preference == "detailed":
         prev = base_lod
         base_lod = min(3, base_lod + 1)
         if base_lod != prev:
-            log.triggered_rules.append("Rule5:detailed_pref→+1")
+            log.triggered_rules.append("Rule4:detailed_pref→+1")
 
-    # ── Rule 6: O&M expert adjustment ─────────────────────────────────
+    # ── Rule 5: O&M expert adjustment ─────────────────────────────────
     if om_level == "advanced" and travel_frequency == "daily":
         prev = base_lod
         base_lod = max(1, base_lod - 1)
         if base_lod != prev:
-            log.triggered_rules.append("Rule6:advanced_daily→-1")
+            log.triggered_rules.append("Rule5:advanced_daily→-1")
 
-    # ── Rule 6b: Familiarity-based adjustment ─────────────────────────
+    # ── Rule 5b: Familiarity-based adjustment ─────────────────────────
     familiarity = _to_float(getattr(session, "familiarity_score", 0.5), 0.5)
     if familiarity > 0.8 and base_lod > 1:
         base_lod = max(1, base_lod - 1)
-        log.triggered_rules.append(f"Rule6b:familiar({familiarity:.2f})→-1")
+        log.triggered_rules.append(f"Rule5b:familiar({familiarity:.2f})→-1")
     elif familiarity < 0.2 and base_lod < 3:
         base_lod = min(3, base_lod + 1)
-        log.triggered_rules.append(f"Rule6b:unfamiliar({familiarity:.2f})→+1")
+        log.triggered_rules.append(f"Rule5b:unfamiliar({familiarity:.2f})→+1")
 
-    # ── Rule 7: Explicit user override + gesture (highest priority after PANIC)
+    # ── Rule 6: Explicit user override + gesture (final) ──────────────
     if user_gesture == "lod_up":
         prev = base_lod
         base_lod = min(3, base_lod + 1)
@@ -285,11 +261,11 @@ def decide_lod(
             log.triggered_rules.append("Gesture:lod_down→-1")
     elif user_requested_detail:
         base_lod = 3
-        log.triggered_rules.append("Rule7:user_requested_detail→LOD3")
+        log.triggered_rules.append("Rule6:user_requested_detail→LOD3")
         log.user_override = "detail"
     elif user_said_stop:
         base_lod = 1
-        log.triggered_rules.append("Rule7:user_said_stop→LOD1")
+        log.triggered_rules.append("Rule6:user_said_stop→LOD1")
         log.user_override = "stop"
 
     # ── Finalise ──────────────────────────────────────────────────────

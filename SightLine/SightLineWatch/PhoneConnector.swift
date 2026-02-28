@@ -2,7 +2,7 @@
 //  PhoneConnector.swift
 //  SightLineWatch
 //
-//  Manages WCSession from watchOS → iPhone for real-time heart rate delivery.
+//  Manages WCSession from watchOS → iPhone for real-time context delivery.
 //  Uses sendMessage when iPhone is reachable (<1s), falls back to
 //  transferUserInfo when unreachable (queued for later delivery).
 //
@@ -40,40 +40,67 @@ class PhoneConnector: NSObject, ObservableObject {
         Self.logger.info("WCSession activation requested")
     }
 
-    // MARK: - Send Heart Rate
+    // MARK: - Send Watch Context
 
-    /// Send heart rate to iPhone.
-    /// - Parameters:
-    ///   - bpm: Heart rate in beats per minute. 0 means monitoring stopped.
-    ///   - isMonitoring: Whether the workout session is actively monitoring.
-    func sendHeartRate(_ bpm: Double, isMonitoring: Bool = true) {
-        let payload: [String: Any] = [
-            "heartRate": bpm,
+    /// Send full watch context to iPhone.
+    func sendWatchContext(
+        heartRate: Double,
+        isMonitoring: Bool = true,
+        motion: (pitch: Double, roll: Double, yaw: Double, stabilityScore: Double)? = nil,
+        heading: Double? = nil,
+        headingAccuracy: Double? = nil,
+        spO2: Double? = nil,
+        noiseExposure: Double? = nil
+    ) {
+        var payload: [String: Any] = [
+            "heartRate": heartRate,
             "ts": Date().timeIntervalSince1970,
             "isMonitoring": isMonitoring,
         ]
-        let session = WCSession.default
 
+        if let m = motion {
+            payload["motion"] = [
+                "pitch": m.pitch,
+                "roll": m.roll,
+                "yaw": m.yaw,
+                "stabilityScore": m.stabilityScore,
+            ]
+        }
+
+        if let h = heading {
+            payload["heading"] = h
+            if let acc = headingAccuracy {
+                payload["headingAccuracy"] = acc
+            }
+        }
+
+        if let spo2 = spO2 {
+            payload["spO2"] = spo2
+        }
+
+        if let noise = noiseExposure {
+            payload["noiseExposure"] = noise
+        }
+
+        let session = WCSession.default
         guard session.activationState == .activated else {
-            Self.logger.warning("WCSession not activated, dropping heart rate")
+            Self.logger.warning("WCSession not activated, dropping watch context")
             return
         }
 
         if session.isReachable {
-            // Real-time path: sendMessage (<1s delivery)
-            session.sendMessage(
-                payload,
-                replyHandler: nil
-            ) { error in
+            session.sendMessage(payload, replyHandler: nil) { error in
                 Self.logger.error("sendMessage failed: \(error.localizedDescription)")
-                // Fallback to transferUserInfo on failure
                 session.transferUserInfo(payload)
             }
         } else {
-            // Offline path: transferUserInfo (queued, delivered when reachable)
             session.transferUserInfo(payload)
-            Self.logger.debug("iPhone unreachable — queued via transferUserInfo")
         }
+    }
+
+    /// Convenience wrapper for backward compatibility.
+    func sendHeartRate(_ bpm: Double, isMonitoring: Bool = true) {
+        sendWatchContext(heartRate: bpm, isMonitoring: isMonitoring)
     }
 }
 

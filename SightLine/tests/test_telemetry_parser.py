@@ -35,7 +35,7 @@ def test_moderate_noise_kv():
 
 def test_elevated_heart_rate_kv():
     result = parse_telemetry({"heart_rate": 125})
-    assert "hr=125/high" in result
+    assert "hr=125/elevated" in result
 
 
 def test_normal_heart_rate_kv():
@@ -109,9 +109,9 @@ def test_ephemeral_heart_rate_none():
     assert ctx.heart_rate is None
 
 
-def test_ephemeral_panic_flag():
-    ctx = parse_telemetry_to_ephemeral({"panic": True})
-    assert ctx.panic is True
+def test_ephemeral_watch_stability_score():
+    ctx = parse_telemetry_to_ephemeral({"watch_stability_score": 0.75})
+    assert abs(ctx.watch_stability_score - 0.75) < 0.01
 
 
 def test_ephemeral_invalid_values():

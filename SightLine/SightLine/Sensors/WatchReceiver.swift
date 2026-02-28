@@ -31,6 +31,16 @@ class WatchReceiver: NSObject, ObservableObject {
     /// Timestamp of the last received heart rate sample.
     @Published var lastUpdateTime: Date? = nil
 
+    // Watch extended context
+    @Published var watchPitch: Double?
+    @Published var watchRoll: Double?
+    @Published var watchYaw: Double?
+    @Published var watchStabilityScore: Double?
+    @Published var watchHeading: Double?
+    @Published var watchHeadingAccuracy: Double?
+    @Published var spO2: Double?
+    @Published var watchNoiseExposure: Double?
+
     private static let logger = Logger(
         subsystem: "com.sightline.app",
         category: "WatchReceiver"
@@ -68,31 +78,58 @@ class WatchReceiver: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private func processHeartRateMessage(_ message: [String: Any]) {
-        guard let bpm = message["heartRate"] as? Double else { return }
+    private func processWatchMessage(_ payload: [String: Any]) {
+        let bpm = payload["heartRate"] as? Double
+        let isMonitoring = payload["isMonitoring"] as? Bool ?? (bpm != nil)
+        let timestamp = payload["ts"] as? TimeInterval
 
-        let isMonitoring = message["isMonitoring"] as? Bool ?? true
-        let timestamp = message["ts"] as? TimeInterval
+        // New: motion data
+        let motion = payload["motion"] as? [String: Any]
+        let pitch = motion?["pitch"] as? Double
+        let roll = motion?["roll"] as? Double
+        let yaw = motion?["yaw"] as? Double
+        let stabilityScore = motion?["stabilityScore"] as? Double
+
+        // New: heading
+        let heading = payload["heading"] as? Double
+        let headingAccuracy = payload["headingAccuracy"] as? Double
+
+        // New: health data
+        let spO2Value = payload["spO2"] as? Double
+        let noiseExposure = payload["noiseExposure"] as? Double
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            if isMonitoring && bpm > 0 {
+            if isMonitoring, let bpm = bpm, bpm > 0 {
                 self.heartRate = bpm
                 self.lastUpdateTime = timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
                 self.isWatchMonitoring = true
-            } else {
-                // Monitoring stopped (bpm = 0 or isMonitoring = false)
+            } else if !isMonitoring {
                 self.isWatchMonitoring = false
                 self.heartRate = nil
                 self.lastUpdateTime = nil
             }
+
+            // Motion data
+            self.watchPitch = pitch
+            self.watchRoll = roll
+            self.watchYaw = yaw
+            self.watchStabilityScore = stabilityScore
+
+            // Heading
+            self.watchHeading = heading
+            self.watchHeadingAccuracy = headingAccuracy
+
+            // Health data
+            if let spO2Value { self.spO2 = spO2Value }
+            if let noiseExposure { self.watchNoiseExposure = noiseExposure }
         }
 
-        if isMonitoring && bpm > 0 {
-            Self.logger.debug("Watch HR received: \(Int(bpm)) BPM")
+        if let bpm = bpm, bpm > 0 {
+            Self.logger.debug("Watch data received: HR=\(Int(bpm)) BPM, motion=\(motion != nil), heading=\(heading != nil)")
         } else {
-            Self.logger.info("Watch monitoring stopped")
+            Self.logger.info("Watch payload received (no HR)")
         }
     }
 }
@@ -138,7 +175,7 @@ extension WatchReceiver: WCSessionDelegate {
         _ session: WCSession,
         didReceiveMessage message: [String: Any]
     ) {
-        processHeartRateMessage(message)
+        processWatchMessage(message)
     }
 
     // Queued transfer from watch (transferUserInfo path, delayed)
@@ -146,7 +183,7 @@ extension WatchReceiver: WCSessionDelegate {
         _ session: WCSession,
         didReceiveUserInfo userInfo: [String: Any] = [:]
     ) {
-        processHeartRateMessage(userInfo)
+        processWatchMessage(userInfo)
     }
 
     // Reachability changed

@@ -38,7 +38,7 @@ struct MainView: View {
     @State private var showProfileSettings = false
     @State private var isMuted = false
     @State private var isCameraActive = false
-    @State private var isEmergencyPaused = false
+    @State private var isPaused = false
     @State private var lastAgentTranscript = ""
     @State private var toastMessage: String?
     @State private var isVoiceOverActive = UIAccessibility.isVoiceOverRunning
@@ -103,10 +103,6 @@ struct MainView: View {
         .onDisappear {
             teardownPipeline()
         }
-        // Shake detection via NotificationCenter
-        .onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
-            handleShake()
-        }
         .onReceive(NotificationCenter.default.publisher(
             for: UIAccessibility.voiceOverStatusDidChangeNotification
         )) { _ in
@@ -130,7 +126,7 @@ struct MainView: View {
                 webSocketManager: webSocketManager,
                 cameraManager: cameraManager,
                 isMuted: $isMuted,
-                isEmergencyPaused: $isEmergencyPaused
+                isPaused: $isPaused
             )
         }
         .sheet(isPresented: $showProfileSettings) {
@@ -151,7 +147,7 @@ struct MainView: View {
         .accessibilityAction(named: "Repeat Last Message") {
             handleTripleTap()
         }
-        .accessibilityAction(named: isEmergencyPaused ? "Resume from Emergency Pause" : "Emergency Pause") {
+        .accessibilityAction(named: isPaused ? "Resume Session" : "Pause Session") {
             handleLongPress()
         }
         .accessibilityAction(named: "Increase Detail Level") {
@@ -162,9 +158,6 @@ struct MainView: View {
         }
         .accessibilityAction(named: isCameraActive ? "Turn Off Camera" : "Turn On Camera") {
             toggleCamera()
-        }
-        .accessibilityAction(named: "Send SOS") {
-            handleShake()
         }
     }
 
@@ -370,7 +363,7 @@ struct MainView: View {
         HapticManager.shared.singleTap()
         if isMuted {
             audioCapture.stopCapture()
-        } else if !isEmergencyPaused {
+        } else if !isPaused {
             audioCapture.startCapture()
         }
         webSocketManager.sendText(UpstreamMessage.muteToggle(muted: isMuted).toJSON())
@@ -400,9 +393,9 @@ struct MainView: View {
     }
 
     private func handleLongPress() {
-        isEmergencyPaused.toggle()
+        isPaused.toggle()
         HapticManager.shared.longPress()
-        if isEmergencyPaused {
+        if isPaused {
             audioCapture.stopCapture()
             audioPlayback.stopImmediately()
             if isCameraActive {
@@ -415,10 +408,10 @@ struct MainView: View {
             }
             // Camera is NOT auto-resumed — user must explicitly re-enable via swipe.
         }
-        webSocketManager.sendText(UpstreamMessage.emergencyPause(paused: isEmergencyPaused).toJSON())
-        UIAccessibility.post(notification: .announcement, argument: isEmergencyPaused ? "Emergency pause activated" : "Emergency pause released")
-        devConsoleModel.captureTranscript(text: "Gesture: emergency_pause (paused=\(isEmergencyPaused))", role: "gesture")
-        logger.info("Gesture: emergency_pause (paused=\(isEmergencyPaused))")
+        webSocketManager.sendText(UpstreamMessage.pause(paused: isPaused).toJSON())
+        UIAccessibility.post(notification: .announcement, argument: isPaused ? "Session paused" : "Session resumed")
+        devConsoleModel.captureTranscript(text: "Gesture: pause (paused=\(isPaused))", role: "gesture")
+        logger.info("Gesture: pause (paused=\(isPaused))")
     }
 
     private func handleSwipe(translation: CGSize) {
@@ -441,15 +434,6 @@ struct MainView: View {
             devConsoleModel.captureTranscript(text: "Gesture: camera_toggle", role: "gesture")
             toggleCamera()
         }
-    }
-
-    private func handleShake() {
-        HapticManager.shared.sos()
-        webSocketManager.sendText(UpstreamMessage.gesture(type: "sos").toJSON())
-        UIAccessibility.post(notification: .announcement, argument: "SOS signal sent")
-        devConsoleModel.captureTranscript(text: "Gesture: sos", role: "gesture")
-        showToast("SOS signal sent")
-        logger.info("Gesture: sos (shake)")
     }
 
     // MARK: - LOD Background Colors
@@ -515,7 +499,7 @@ struct MainView: View {
                 )
             }
 
-            if isEmergencyPaused {
+            if isPaused {
                 statusBadge(
                     icon: "pause.circle.fill",
                     text: "Paused",
@@ -537,7 +521,7 @@ struct MainView: View {
         }
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.2), value: isMuted)
-        .animation(.easeInOut(duration: 0.2), value: isEmergencyPaused)
+        .animation(.easeInOut(duration: 0.2), value: isPaused)
         .animation(.easeInOut(duration: 0.2), value: isCameraActive)
         .animation(.easeInOut(duration: 0.2), value: currentLOD)
     }
@@ -594,7 +578,7 @@ struct MainView: View {
         parts.append("detail level \(currentLOD)")
         if isMuted { parts.append("microphone muted") }
         if isCameraActive { parts.append("camera on") }
-        if isEmergencyPaused { parts.append("emergency pause active") }
+        if isPaused { parts.append("session paused") }
         if isVoiceOverActive { parts.append("Use the Actions rotor for controls") }
         return parts.joined(separator: ", ")
     }
@@ -868,7 +852,7 @@ struct MainView: View {
 
     /// Toggle camera on/off. Triggered by horizontal swipe gesture.
     private func toggleCamera() {
-        guard isActive, !isEmergencyPaused else { return }
+        guard isActive, !isPaused else { return }
 
         if isCameraActive {
             // Turn off
@@ -1051,13 +1035,6 @@ struct MainView: View {
             DispatchQueue.main.async {
                 debugModel.updateFromActivityDebug(data)
             }
-        case .panic(let message):
-            DispatchQueue.main.async {
-                currentLOD = 1
-                debugModel.currentLOD = 1
-                transcript = message
-            }
-            logger.warning("PANIC: \(message, privacy: .public)")
         case .interrupted:
             logger.info("Model output interrupted — flushing playback buffer")
             DispatchQueue.main.async {
@@ -1223,21 +1200,6 @@ struct MainView: View {
         audioPlayback.teardown()
         SharedAudioEngine.shared.teardown()
         webSocketManager.disconnect()
-    }
-}
-
-// MARK: - Shake Detection
-
-extension Notification.Name {
-    static let deviceDidShake = Notification.Name("deviceDidShake")
-}
-
-extension UIWindow {
-    open override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
-        super.motionEnded(motion, with: event)
-        if motion == .motionShake {
-            NotificationCenter.default.post(name: .deviceDidShake, object: nil)
-        }
     }
 }
 

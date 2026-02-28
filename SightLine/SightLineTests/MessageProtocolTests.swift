@@ -42,7 +42,6 @@ struct UpstreamMessageTests {
         telemetry.stepCadence = 110
         telemetry.ambientNoiseDb = 65.5
         telemetry.heartRate = 80.0
-        telemetry.panic = false
 
         let msg = UpstreamMessage.telemetry(data: telemetry)
         let json = msg.toJSON()
@@ -413,18 +412,6 @@ struct DownstreamMessageTests {
         }
     }
 
-    @Test("panic message parses")
-    func panicParsing() {
-        let json = "{\"type\":\"panic\",\"message\":\"PANIC detected. Entering safety mode.\"}"
-        let msg = DownstreamMessage.parse(text: json)
-
-        if case .panic(let message) = msg {
-            #expect(message == "PANIC detected. Entering safety mode.")
-        } else {
-            Issue.record("Expected panic message")
-        }
-    }
-
     @Test("interrupted message parses")
     func interruptedParsing() {
         let json = "{\"type\":\"interrupted\",\"message\":\"Model output was interrupted.\"}"
@@ -478,7 +465,6 @@ struct TelemetryDataTests {
         telemetry.gps = GPSData(lat: 37.7749, lng: -122.4194, accuracy: 5.0, speed: 2.5, altitude: 10.0)
         telemetry.heading = 180.0
         telemetry.heartRate = 120.0
-        telemetry.panic = true
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(telemetry)
@@ -492,7 +478,6 @@ struct TelemetryDataTests {
         #expect(decoded.gps?.lng == -122.4194)
         #expect(decoded.heading == 180.0)
         #expect(decoded.heartRate == 120.0)
-        #expect(decoded.panic == true)
     }
 
     @Test("snake_case coding keys")
@@ -519,7 +504,6 @@ struct TelemetryDataTests {
         #expect(telemetry.ambientNoiseDb == 50.0)
         #expect(telemetry.gps == nil)
         #expect(telemetry.heartRate == nil)
-        #expect(telemetry.panic == false)
     }
 }
 

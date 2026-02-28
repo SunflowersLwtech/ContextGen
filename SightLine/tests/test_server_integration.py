@@ -165,8 +165,8 @@ class TestTelemetryLODIntegration:
 
         lod, log = decide_lod(ephemeral, session, profile)
 
-        # Walking at 80 spm → should be LOD 1
-        assert lod == 1
+        # Walking at 80 spm → LOD 2 (experience-driven: walking = standard)
+        assert lod == 2
         assert log.motion_state == "walking"
         assert len(log.triggered_rules) > 0
 
@@ -184,23 +184,6 @@ class TestTelemetryLODIntegration:
         ephemeral = parse_telemetry_to_ephemeral(raw)
         lod, _ = decide_lod(ephemeral, SessionContext(), UserProfile.default())
         assert lod == 2
-
-    def test_panic_overrides_everything(self):
-        """PANIC flag should force LOD 1 regardless of other context."""
-        from telemetry.telemetry_parser import parse_telemetry_to_ephemeral
-        from lod import decide_lod
-        from lod.models import SessionContext, UserProfile
-
-        raw = {
-            "motion_state": "stationary",
-            "step_cadence": 0,
-            "ambient_noise_db": 30,
-            "panic": True,
-        }
-        ephemeral = parse_telemetry_to_ephemeral(raw)
-        lod, log = decide_lod(ephemeral, SessionContext(), UserProfile.default())
-        assert lod == 1
-        assert "PANIC" in log.reason
 
 
 # ---------------------------------------------------------------------------

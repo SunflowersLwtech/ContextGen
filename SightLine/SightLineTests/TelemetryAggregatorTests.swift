@@ -2,7 +2,7 @@
 //  TelemetryAggregatorTests.swift
 //  SightLineTests
 //
-//  Validates safety-critical immediate trigger rules for telemetry sending.
+//  Validates immediate trigger rules for telemetry sending.
 //
 
 import Testing
@@ -62,20 +62,11 @@ struct TelemetryAggregatorTests {
         #expect(aggregator.immediateTrigger(old: old, new: new) == .noiseThresholdCrossed)
     }
 
-    @Test("panic flag rising edge triggers immediate send")
-    func panicTrigger() {
-        let aggregator = TelemetryAggregator()
-        let old = makeTelemetry(panic: false)
-        let new = makeTelemetry(panic: true)
-
-        #expect(aggregator.immediateTrigger(old: old, new: new) == .panicDetected)
-    }
-
     @Test("user gesture triggers immediate send")
     func userGestureTrigger() {
         let aggregator = TelemetryAggregator()
         let old = makeTelemetry(userGesture: nil)
-        let new = makeTelemetry(userGesture: "sos")
+        let new = makeTelemetry(userGesture: "lod_up")
 
         #expect(aggregator.immediateTrigger(old: old, new: new) == .userGesture)
     }
@@ -86,14 +77,12 @@ struct TelemetryAggregatorTests {
         let old = makeTelemetry(
             motionState: "walking",
             ambientNoiseDb: 60,
-            heartRate: 88,
-            panic: false
+            heartRate: 88
         )
         let new = makeTelemetry(
             motionState: "walking",
             ambientNoiseDb: 62,
-            heartRate: 90,
-            panic: false
+            heartRate: 90
         )
 
         #expect(aggregator.immediateTrigger(old: old, new: new) == nil)
@@ -103,14 +92,12 @@ struct TelemetryAggregatorTests {
         motionState: String = "stationary",
         ambientNoiseDb: Double = 50,
         heartRate: Double? = nil,
-        panic: Bool = false,
         userGesture: String? = nil
     ) -> TelemetryData {
         var telemetry = TelemetryData()
         telemetry.motionState = motionState
         telemetry.ambientNoiseDb = ambientNoiseDb
         telemetry.heartRate = heartRate
-        telemetry.panic = panic
         telemetry.userGesture = userGesture
         return telemetry
     }

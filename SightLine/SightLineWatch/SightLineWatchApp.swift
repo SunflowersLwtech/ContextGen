@@ -3,11 +3,9 @@
 //  SightLineWatch
 //
 //  watchOS Companion App for SightLine.
-//  Sole purpose: real-time heart rate capture via HKWorkoutSession
-//  and transmission to iPhone via WCSession (<1s latency).
-//
-//  This replaces the HealthKit system sync path (10-20 min delay)
-//  for PANIC detection (>120 BPM → force LOD 1).
+//  Captures heart rate, motion, heading, and health context via
+//  HKWorkoutSession and transmits to iPhone via WCSession (<1s latency)
+//  to enrich AI responses with real-time Watch context.
 //
 
 import SwiftUI

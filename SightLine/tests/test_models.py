@@ -9,7 +9,6 @@ def test_ephemeral_context_defaults():
     assert ctx.step_cadence == 0.0
     assert ctx.ambient_noise_db == 70.0
     assert ctx.heart_rate is None
-    assert ctx.panic is False
     assert ctx.gps is None
     assert ctx.user_gesture is None
     assert ctx.device_type == "phone_only"

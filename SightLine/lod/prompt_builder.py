@@ -35,12 +35,11 @@ def _language_display(code: str) -> str:
 
 LOD_INSTRUCTIONS: dict[int, str] = {
     1: (
-        "LOD 1 — SILENT / WHISPER mode.\n"
-        "Rules: Stay silent OR say at most 1 sentence (15-40 words). "
-        "Only communicate safety-critical information.\n"
-        "Style: Brief, calm, do not demand attention.\n"
-        "Examples: 'Steps ahead.' / 'Person approaching on your right.'\n"
-        "If nothing is safety-critical, remain completely silent."
+        "LOD 1 -- BRIEF mode.\n"
+        "Rules: Keep responses to 1-2 short sentences (15-40 words max).\n"
+        "Style: Quick, clear, minimal. User is busy (moving fast or in a loud place).\n"
+        "Examples: 'Cafe on your left, outdoor seating.' / 'Crosswalk ahead, sounds busy.'\n"
+        "Focus on what's immediately useful. Skip atmosphere and detail."
     ),
     2: (
         "LOD 2 — STANDARD mode.\n"
@@ -69,7 +68,7 @@ LOD_INSTRUCTIONS: dict[int, str] = {
 LOD_COT_PROMPT = (
     "Before responding, internally reason about the right response depth:\n"
     "<think>\n"
-    "1. Check latest sensor context for safety issues\n"
+    "1. Check latest sensor context for relevant changes\n"
     "2. Decide what information is most valuable right now\n"
     "3. Confirm response fits LOD {lod} guidelines\n"
     "</think>\n"
@@ -213,13 +212,12 @@ def build_lod_update_message(
         for m in memories:
             parts.append(f"- {m}")
 
-    # 6. Safety guardrails (always)
-    parts.append("\n## Safety Guardrails")
+    # 6. Interaction guidelines
+    parts.append("\n## Interaction Guidelines")
     parts.append(
-        "- ALWAYS interrupt immediately for safety hazards (stairs, vehicles, obstacles).\n"
-        "- If heart rate is elevated (>120 bpm), keep responses ultra-brief and calming.\n"
         "- Treat telemetry refreshes as silent context; do not speak them unless user asks.\n"
-        "- Never describe colours to congenital-blind users unless explicitly asked."
+        "- Never describe colours to congenital-blind users unless explicitly asked.\n"
+        "- Match your verbosity to the LOD level. Do not over-explain at LOD 1."
     )
 
     # 7. CoT (only LOD 2/3, not LOD 1 — latency matters)
@@ -259,10 +257,10 @@ def build_full_dynamic_prompt(
         "interpretation of the visual world for blind and low-vision users.",
         "",
         "## Core Principles",
-        "1. SAFETY FIRST — Immediately alert about hazards (stairs, vehicles, obstacles).",
+        "1. EXPERIENCE FIRST — Enrich the user's understanding of their surroundings.",
         "2. SILENCE BY DEFAULT — Only speak when the information is genuinely useful.",
         "3. SINGLE VOICE — You are the only voice the user hears; be warm, concise, calm.",
-        "4. PROACTIVE BUT EVENT-DRIVEN — alert on meaningful new changes, "
+        "4. PROACTIVE BUT EVENT-DRIVEN — Alert on meaningful new changes, "
         "not periodic duplicate context updates.",
         "5. ADAPTIVE — Follow the LOD level set by the context engine.",
         "",
@@ -314,15 +312,14 @@ def build_full_dynamic_prompt(
     if face_result:
         parts.append(f"\n## Face Recognition\n{face_result}")
 
-    # Safety guardrails
-    parts.append("\n## Safety Guardrails")
+    # Interaction guidelines
+    parts.append("\n## Interaction Guidelines")
     parts.append(
-        "- ALWAYS interrupt for safety hazards regardless of LOD level.\n"
-        "- If heart rate > 120 bpm: ultra-brief, calming responses only.\n"
         "- Treat telemetry/context refreshes as silent input; do not narrate them unless user asks.\n"
         "- Never describe colours to congenital-blind users.\n"
         "- When user says 'stop' or 'quiet': immediately go silent.\n"
-        "- When user says 'tell me more' or 'details': switch to LOD 3."
+        "- When user says 'tell me more' or 'details': switch to LOD 3.\n"
+        "- Match your verbosity to the LOD level. Do not over-explain at LOD 1."
     )
 
     # CoT for LOD 2/3

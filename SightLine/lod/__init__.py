@@ -13,7 +13,6 @@ from lod.models import (
     UserProfile,
 )
 from lod.narrative_snapshot import on_lod_change
-from lod.panic_handler import PanicHandler
 from lod.prompt_builder import (
     build_dynamic_prompt,
     build_full_dynamic_prompt,
@@ -28,7 +27,6 @@ __all__ = [
     "NarrativeSnapshot",
     "SessionContext",
     "UserProfile",
-    "PanicHandler",
     "LOD_TELEMETRY_INTERVAL",
     "TelemetryAggregator",
     "decide_lod",

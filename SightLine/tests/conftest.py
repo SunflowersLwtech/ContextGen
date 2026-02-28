@@ -58,16 +58,6 @@ def vehicle_ephemeral() -> EphemeralContext:
 
 
 @pytest.fixture
-def panic_ephemeral() -> EphemeralContext:
-    return EphemeralContext(panic=True)
-
-
-@pytest.fixture
-def high_hr_ephemeral() -> EphemeralContext:
-    return EphemeralContext(heart_rate=130)
-
-
-@pytest.fixture
 def noisy_ephemeral() -> EphemeralContext:
     """High ambient noise (>80 dB) — caps LOD to 1."""
     return EphemeralContext(ambient_noise_db=85)

@@ -382,7 +382,7 @@ struct DeveloperConsoleView: View {
     @ObservedObject var webSocketManager: WebSocketManager
     @ObservedObject var cameraManager: CameraManager
     @Binding var isMuted: Bool
-    @Binding var isEmergencyPaused: Bool
+    @Binding var isPaused: Bool
 
     @State private var selectedTab = 0
     @Environment(\.dismiss) private var dismiss
@@ -509,8 +509,8 @@ struct DeveloperConsoleView: View {
                 sectionHeader("GESTURE STATES")
                 dataRow("Microphone", value: isMuted ? "MUTED" : "ACTIVE",
                          color: isMuted ? .red : .green)
-                dataRow("Emergency", value: isEmergencyPaused ? "PAUSED" : "NORMAL",
-                         color: isEmergencyPaused ? .orange : .green)
+                dataRow("Session", value: isPaused ? "PAUSED" : "ACTIVE",
+                         color: isPaused ? .orange : .green)
                 dataRow("Camera", value: model.isCameraRunning ? "ON" : "OFF",
                          color: model.isCameraRunning ? .green : .red)
                 dataRow("LOD", value: "\(model.currentLOD)", color: lodColor)

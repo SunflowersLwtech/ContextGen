@@ -97,17 +97,6 @@ final class HapticManager {
         selection.selectionChanged()
     }
 
-    /// SOS: three warning haptics in rapid succession.
-    func sos() {
-        notification.notificationOccurred(.warning)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.notification.notificationOccurred(.warning)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
-            self?.notification.notificationOccurred(.warning)
-        }
-    }
-
     /// Safe mode: three heavy impacts signaling disconnection.
     func safeMode() {
         heavyImpact.impactOccurred()

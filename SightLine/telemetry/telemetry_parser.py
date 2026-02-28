@@ -11,9 +11,29 @@ Phase 2 additions:
 import json
 import logging
 
+from typing import Optional
+
 from lod.models import EphemeralContext, GPSData
 
 logger = logging.getLogger(__name__)
+
+
+def _to_float(value, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _to_optional_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _noise_bucket(noise_db: float) -> str:
@@ -30,12 +50,9 @@ def _noise_bucket(noise_db: float) -> str:
 
 def _hr_bucket(hr: float) -> str:
     """Classify heart rate into a bucket label."""
-    if hr > 120:
-        return "high"
-    elif hr > 100:
+    if hr > 100:
         return "elevated"
-    else:
-        return "normal"
+    return "normal"
 
 
 def parse_telemetry(data: dict) -> str:
@@ -147,6 +164,24 @@ def parse_telemetry(data: dict) -> str:
                 depth_parts.append(f"depth_closest={min_d:.1f}m/{min_region}")
             pairs.append(" ".join(depth_parts))
 
+    # Watch extended context
+    stability = data.get("watch_stability_score")
+    if stability is not None:
+        pairs.append(f"stability={float(stability):.2f}")
+
+    w_heading = data.get("watch_heading")
+    if w_heading is not None:
+        cardinal = _degrees_to_cardinal(float(w_heading))
+        pairs.append(f"watch_heading={cardinal}({float(w_heading):.0f}°)")
+
+    sp_o2 = data.get("sp_o2")
+    if sp_o2 is not None:
+        pairs.append(f"spO2={float(sp_o2):.0f}%")
+
+    w_noise = data.get("watch_noise_exposure")
+    if w_noise is not None:
+        pairs.append(f"watch_noise={float(w_noise):.0f}dB")
+
     if not pairs:
         logger.debug("Telemetry data had no parseable fields: %s", json.dumps(data))
         return "[TELEMETRY UPDATE] No sensor data available."
@@ -246,9 +281,6 @@ def parse_telemetry_to_ephemeral(data: dict) -> EphemeralContext:
     # User gesture (lod_up, lod_down, tap, shake)
     ctx.user_gesture = data.get("user_gesture")
 
-    # Panic flag
-    ctx.panic = bool(data.get("panic", False))
-
     # Device type
     ctx.device_type = data.get("device_type", "phone_only")
 
@@ -272,5 +304,15 @@ def parse_telemetry_to_ephemeral(data: dict) -> EphemeralContext:
             ctx.depth_min_region = depth.get("min_distance_region")
         except (ValueError, TypeError):
             pass
+
+    # Watch extended context
+    ctx.watch_pitch = _to_float(data.get("watch_pitch"), 0.0)
+    ctx.watch_roll = _to_float(data.get("watch_roll"), 0.0)
+    ctx.watch_yaw = _to_float(data.get("watch_yaw"), 0.0)
+    ctx.watch_stability_score = _to_float(data.get("watch_stability_score"), 1.0)
+    ctx.watch_heading = _to_optional_float(data.get("watch_heading"))
+    ctx.watch_heading_accuracy = _to_optional_float(data.get("watch_heading_accuracy"))
+    ctx.sp_o2 = _to_optional_float(data.get("sp_o2"))
+    ctx.watch_noise_exposure = _to_optional_float(data.get("watch_noise_exposure"))
 
     return ctx

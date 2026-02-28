@@ -35,7 +35,6 @@ class TelemetryAggregator: ObservableObject {
         case motionStateChanged
         case heartRateSpike
         case noiseThresholdCrossed
-        case panicDetected
         case userGesture
     }
 
@@ -88,14 +87,6 @@ class TelemetryAggregator: ObservableObject {
         }
     }
 
-    /// Force an immediate telemetry send with panic flag.
-    func sendPanic() {
-        guard let sensor = sensorManager, let ws = webSocketManager else { return }
-        var data = sensor.snapshot()
-        data.panic = true
-        sendTelemetry(data, via: ws, trigger: .panicDetected)
-    }
-
     /// Send a gesture event immediately.
     func sendGesture(_ gesture: String) {
         guard let sensor = sensorManager, let ws = webSocketManager else { return }
@@ -136,7 +127,7 @@ class TelemetryAggregator: ObservableObject {
     }
 
     /// Evaluates whether telemetry should bypass throttle and send immediately.
-    /// Kept internal so unit tests can verify safety-critical trigger rules.
+    /// Kept internal so unit tests can verify trigger rules.
     func immediateTrigger(old: TelemetryData?, new: TelemetryData) -> ImmediateTrigger? {
         guard let old = old else { return nil }
 
@@ -162,11 +153,6 @@ class TelemetryAggregator: ObservableObject {
         let crossedHigh = (oldNoise >= 80 && newNoise < 80) || (oldNoise < 80 && newNoise >= 80)
         if crossedLow || crossedHigh {
             return .noiseThresholdCrossed
-        }
-
-        // Panic flag
-        if new.panic && !old.panic {
-            return .panicDetected
         }
 
         // User gesture

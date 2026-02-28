@@ -28,7 +28,7 @@ enum UpstreamMessage {
     case clearFaceLibrary
     case cameraFailure(error: String)
     case muteToggle(muted: Bool)
-    case emergencyPause(paused: Bool)
+    case pause(paused: Bool)
     case cameraToggle(active: Bool)
     case playbackDrained
     case clientBargeIn
@@ -81,8 +81,8 @@ enum UpstreamMessage {
             return "{\"type\":\"camera_failure\",\"error\":\"\(escaped)\",\"reason\":\"\(escaped)\"}"
         case .muteToggle(let muted):
             return "{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":\(muted)}"
-        case .emergencyPause(let paused):
-            return "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":\(paused)}"
+        case .pause(let paused):
+            return "{\"type\":\"gesture\",\"gesture\":\"pause\",\"paused\":\(paused)}"
         case .cameraToggle(let active):
             return "{\"type\":\"gesture\",\"gesture\":\"camera_toggle\",\"active\":\(active)}"
         case .playbackDrained:
@@ -138,7 +138,6 @@ enum DownstreamMessage {
     case capabilityDegraded(capability: String, reason: String, recoverable: Bool)
     case debugLod(data: [String: Any])
     case debugActivity(data: [String: Any])
-    case panic(message: String)
     case interrupted
     case profileUpdatedAck
     case unknown(raw: String)
@@ -249,9 +248,6 @@ enum DownstreamMessage {
         case "debug_activity":
             let activityData = json["data"] as? [String: Any] ?? json
             return .debugActivity(data: activityData)
-        case "panic":
-            let message = json["message"] as? String ?? "PANIC detected"
-            return .panic(message: message)
         case "interrupted":
             return .interrupted
         case "profile_updated_ack":
@@ -273,10 +269,19 @@ struct TelemetryData: Codable {
     var timeContext: String = "unknown"
     var heartRate: Double?
     var userGesture: String?
-    var panic: Bool = false
     var deviceType: String = "phone_only"
     var weather: WeatherManager.WeatherSnapshot?
     var depth: DepthEstimator.DepthSummary?
+
+    // Watch extended context
+    var watchPitch: Double?
+    var watchRoll: Double?
+    var watchYaw: Double?
+    var watchStabilityScore: Double?
+    var watchHeading: Double?
+    var watchHeadingAccuracy: Double?
+    var spO2: Double?
+    var watchNoiseExposure: Double?
 
     enum CodingKeys: String, CodingKey {
         case motionState = "motion_state"
@@ -287,10 +292,17 @@ struct TelemetryData: Codable {
         case timeContext = "time_context"
         case heartRate = "heart_rate"
         case userGesture = "user_gesture"
-        case panic
         case deviceType = "device_type"
         case weather
         case depth
+        case watchPitch = "watch_pitch"
+        case watchRoll = "watch_roll"
+        case watchYaw = "watch_yaw"
+        case watchStabilityScore = "watch_stability_score"
+        case watchHeading = "watch_heading"
+        case watchHeadingAccuracy = "watch_heading_accuracy"
+        case spO2 = "sp_o2"
+        case watchNoiseExposure = "watch_noise_exposure"
     }
 }
 

@@ -71,7 +71,7 @@ def test_full_prompt_contains_principles():
         ephemeral_semantic="test context",
         session=SessionContext(),
     )
-    assert "SAFETY FIRST" in msg
+    assert "EXPERIENCE FIRST" in msg
 
 
 def test_congenital_blind_no_color():

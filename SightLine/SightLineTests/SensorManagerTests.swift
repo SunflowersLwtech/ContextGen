@@ -24,7 +24,7 @@ struct SensorManagerTests {
         #expect(telemetry.motionState == "stationary")
         #expect(telemetry.stepCadence == 0)
         #expect(telemetry.ambientNoiseDb == 50.0)
-        #expect(telemetry.panic == false)
+        #expect(telemetry.deviceType == "phone_only")
     }
 
     @Test("TelemetryData encodes with snake_case keys")

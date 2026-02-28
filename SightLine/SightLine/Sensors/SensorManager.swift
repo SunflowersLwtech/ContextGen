@@ -100,9 +100,18 @@ class SensorManager: ObservableObject {
             ? "phone_and_watch"
             : "phone_only"
 
-        data.panic = false
         data.weather = weatherManager.currentWeather
         data.depth = latestDepth
+
+        // Watch extended context
+        data.watchPitch = watchReceiver.watchPitch
+        data.watchRoll = watchReceiver.watchRoll
+        data.watchYaw = watchReceiver.watchYaw
+        data.watchStabilityScore = watchReceiver.watchStabilityScore
+        data.watchHeading = watchReceiver.watchHeading
+        data.watchHeadingAccuracy = watchReceiver.watchHeadingAccuracy
+        data.spO2 = watchReceiver.spO2
+        data.watchNoiseExposure = watchReceiver.watchNoiseExposure
 
         return data
     }
@@ -147,6 +156,20 @@ class SensorManager: ObservableObject {
                 self?.currentTelemetry = self?.snapshot() ?? TelemetryData()
             }
             .store(in: &cancellables)
+
+        // Group 4: Watch extended context
+        Publishers.CombineLatest4(
+            watchReceiver.$watchPitch,
+            watchReceiver.$watchHeading,
+            watchReceiver.$spO2,
+            watchReceiver.$watchStabilityScore
+        )
+        .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+        .sink { [weak self] _, _, _, _ in
+            guard let self else { return }
+            self.currentTelemetry = self.snapshot()
+        }
+        .store(in: &cancellables)
     }
 
     /// Derive time context from current hour.

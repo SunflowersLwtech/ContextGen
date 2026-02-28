@@ -4,8 +4,7 @@ Provides an async evaluator that can suggest ±1 LOD adjustments based
 on rich context that the rule engine cannot see (location familiarity,
 entity graph, memory patterns).
 
-Safety invariants:
-    - NEVER overrides PANIC/HR-forced LOD 1
+Invariants:
     - Adjustment capped at ±1
     - Hard timeout: 500ms
     - Debounce: max once per 30 seconds
@@ -80,9 +79,9 @@ class LODEvaluator:
         Returns LODAdjustment with delta in {-1, 0, +1}.
         On timeout or error, returns delta=0 (KEEP).
         """
-        # Safety: never adjust LOD 1 from PANIC/HR
+        # LOD 1 is already the minimum — no further adjustment
         if baseline_lod == 1:
-            return LODAdjustment(delta=0, reason="Safety LOD 1 — no override", confidence=1.0)
+            return LODAdjustment(delta=0, reason="LOD 1 — already minimum", confidence=1.0)
 
         # Debounce
         now = time.time()

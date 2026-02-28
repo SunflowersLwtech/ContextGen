@@ -44,7 +44,6 @@ class EphemeralContext:
     time_context: str = "unknown"  # morning_commute | work_hours | evening | late_night
     heart_rate: Optional[float] = None  # BPM (None when no watch)
     user_gesture: Optional[str] = None  # lod_up | lod_down | tap | shake
-    panic: bool = False
     device_type: str = "phone_only"  # phone_only | phone_and_watch
     weather_condition: str = "unknown"  # clear | rain | snow | fog | cloudy etc.
     weather_visibility: float = 10000.0  # meters
@@ -52,6 +51,15 @@ class EphemeralContext:
     depth_center: Optional[float] = None  # center distance in meters (None = no depth data)
     depth_min: Optional[float] = None  # closest object distance in meters
     depth_min_region: Optional[str] = None  # region of closest object
+    # Watch extended context
+    watch_pitch: float = 0.0
+    watch_roll: float = 0.0
+    watch_yaw: float = 0.0
+    watch_stability_score: float = 1.0  # 1.0 = stable, 0.0 = unstable
+    watch_heading: Optional[float] = None  # magnetic heading from watch compass
+    watch_heading_accuracy: Optional[float] = None
+    sp_o2: Optional[float] = None  # blood oxygen %
+    watch_noise_exposure: Optional[float] = None  # dB from watch HealthKit
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

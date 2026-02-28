@@ -43,7 +43,6 @@ class MessageType(str, Enum):
     SESSION_READY = "session_ready"
     SESSION_RESUMPTION = "session_resumption"
     LOD_UPDATE = "lod_update"
-    PANIC = "panic"
     INTERRUPTED = "interrupted"
     GO_AWAY = "go_away"
     ERROR = "error"
@@ -76,7 +75,6 @@ from live_api.session_manager import (
     supports_runtime_vad_reconfiguration,
 )
 from lod import (
-    PanicHandler,
     build_full_dynamic_prompt,
     build_lod_update_message,
     decide_lod,
@@ -157,9 +155,7 @@ VISION_SPOKEN_COOLDOWN_SEC = 25.0
 QUEUE_FLUSH_CHECK_INTERVAL_SEC = 1.0
 AGENT_TEXT_REPEAT_SUPPRESS_SEC = 14.0
 VISION_REPEAT_SUPPRESS_SEC = 18.0
-VISION_SAFETY_REPEAT_SUPPRESS_SEC = 6.0
 OCR_REPEAT_SUPPRESS_SEC = 20.0
-OCR_SAFETY_REPEAT_SUPPRESS_SEC = 8.0
 VISION_PREFEEDBACK_COOLDOWN_SEC = 12.0
 OCR_PREFEEDBACK_COOLDOWN_SEC = 15.0
 
@@ -487,8 +483,6 @@ class ContextInjectionQueue:
 def _heart_rate_bucket(heart_rate: float | None) -> str:
     if heart_rate is None or heart_rate <= 0:
         return "unknown"
-    if heart_rate > 120:
-        return "panic"
     if heart_rate > 100:
         return "elevated"
     return "normal"
@@ -1059,7 +1053,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         logger.info("Received resume handle from client for session %s", session_id)
 
     # -- Per-session LOD state -----------------------------------------------
-    panic_handler = PanicHandler()
     telemetry_agg = TelemetryAggregator()
     session_ctx = session_manager.get_session_context(session_id)
     user_profile = await session_manager.load_user_profile(user_id)
@@ -1539,35 +1532,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             },
         })
 
-    async def _handle_panic(ephemeral_ctx) -> None:
-        """Handle a new PANIC event: flush TTS, force LOD 1, notify iOS."""
-        await _safe_send_json({
-            "type": MessageType.PANIC,
-            "message": "PANIC detected. Entering safety mode.",
-        })
-
-        old_lod = session_ctx.current_lod
-        session_ctx.current_lod = 1
-        on_lod_change(session_ctx, old_lod, 1)
-        session_meta.record_lod_time(1)
-
-        panic_reason = "PANIC: safety mode activated"
-        vad_update = await _sync_runtime_vad_update(1)
-        await _notify_ios_lod_change(
-            1,
-            panic_reason,
-            {
-                "lod": 1,
-                "prev": old_lod,
-                "reason": panic_reason,
-                "rules": ["Rule0:PANIC_flag->LOD1"],
-                "panic": True,
-            },
-            vad_update=vad_update,
-        )
-        await _send_lod_update(1, ephemeral_ctx, panic_reason)
-        logger.warning("PANIC activated for session %s: LOD %d -> 1", session_id, old_lod)
-
     # -- Sub-agent helpers (Phase 3) -----------------------------------------
 
     async def _run_vision_analysis(image_base64: str) -> None:
@@ -1617,13 +1581,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 "motion_state": session_manager.get_ephemeral_context(session_id).motion_state,
             }
             result = await analyze_scene(image_base64, session_ctx.current_lod, ctx_dict)
-            warnings = result.get("safety_warnings", [])
             vision_text = _format_vision_result(result, session_ctx.current_lod)
-            vision_repeat_window = (
-                VISION_SAFETY_REPEAT_SUPPRESS_SEC
-                if warnings
-                else VISION_REPEAT_SUPPRESS_SEC
-            )
+            vision_repeat_window = VISION_REPEAT_SUPPRESS_SEC
             now_mono = time.monotonic()
             repeated = _is_repeated_text(
                 vision_text,
@@ -1663,13 +1622,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             )
 
             if result.get("confidence", 0) > 0 and not repeated:
-                # Vision spoken cooldown: suppress non-safety descriptions
-                # when model recently spoke about the scene.
-                if ctx_queue.vision_spoken_cooldown_active and not warnings:
+                if ctx_queue.vision_spoken_cooldown_active:
                     logger.info("Suppressed vision: vision_spoken_cooldown active")
                 else:
-                    # Determine info_type for should_speak gate
-                    info_type = "safety_warning" if warnings else "spatial_description"
+                    info_type = "spatial_description"
                     ephemeral = session_manager.get_ephemeral_context(session_id)
                     speak = should_speak(
                         info_type=info_type,
@@ -1683,7 +1639,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     ctx_queue.enqueue(
                         category="vision",
                         text=vision_text,
-                        priority=2 if warnings else 5,
+                        priority=5,
                         speak=speak,
                     )
                     # Structural cooldown: activate when vision is injected with speak=True
@@ -1857,7 +1813,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
             result = await extract_text(image_base64, context_hint=hint, safety_only=safety_only)
             ocr_text = _format_ocr_result(result)
-            repeat_window = OCR_SAFETY_REPEAT_SUPPRESS_SEC if safety_only else OCR_REPEAT_SUPPRESS_SEC
+            repeat_window = OCR_REPEAT_SUPPRESS_SEC
             now_mono = time.monotonic()
             repeated = _is_repeated_text(
                 ocr_text,
@@ -1898,7 +1854,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
             if result.get("confidence", 0) > 0.3 and result.get("text") and not repeated:
                 ephemeral = session_manager.get_ephemeral_context(session_id)
-                info_type = "safety_warning" if safety_only else "object_enumeration"
+                info_type = "object_enumeration"
                 speak = should_speak(
                     info_type=info_type,
                     current_lod=session_ctx.current_lod,
@@ -1911,7 +1867,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                 ctx_queue.enqueue(
                     category="ocr",
                     text=ocr_text,
-                    priority=3 if safety_only else 5,
+                    priority=5,
                     speak=speak,
                 )
                 logger.info("Injected [OCR RESULT] (%s, confidence %.2f, speak=%s)",
@@ -2290,47 +2246,32 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         muted = _coerce_bool(message.get("muted"), default=True)
                         logger.info("Mute toggle acknowledged: muted=%s", muted)
 
-                    elif gesture == "sos":
-                        logger.warning("SOS gesture received for session %s", session_id)
-                        ephemeral_ctx = session_manager.get_ephemeral_context(session_id)
-                        ephemeral_ctx.panic = True
-                        await _handle_panic(ephemeral_ctx)
-
-                    elif gesture == "emergency_pause":
+                    elif gesture == "pause":
                         paused = _coerce_bool(message.get("paused", True), default=True)
                         ctx_queue.set_ios_playback_drained(True)
                         if paused:
-                            old_lod = session_ctx.current_lod
-                            logger.warning("Emergency pause activated: LOD %d -> 1", old_lod)
-                            on_lod_change(session_ctx, old_lod, 1)
-                            session_ctx.current_lod = 1
-                            session_meta.record_lod_time(1)
+                            logger.info("Pause activated for session %s", session_id)
                             content = types.Content(
-                                parts=[types.Part(text="[EMERGENCY PAUSE] The user has activated emergency pause. Switch to LOD 1 (safety-only mode). Go silent and only respond to direct safety-critical queries until further notice.")],
+                                parts=[types.Part(text="[PAUSE] The user has paused the session. Go silent until the user resumes.")],
                                 role="user",
                             )
                             ctx_queue.inject_immediate(content)
                             await _safe_send_json({
                                 "type": MessageType.LOD_UPDATE,
-                                "lod": 1,
-                                "reason": "emergency_pause",
+                                "lod": session_ctx.current_lod,
+                                "reason": "paused",
                             })
                         else:
-                            resume_lod = 2
-                            old_lod = session_ctx.current_lod
-                            logger.info("Emergency pause resumed: LOD %d -> %d", old_lod, resume_lod)
-                            on_lod_change(session_ctx, old_lod, resume_lod)
-                            session_ctx.current_lod = resume_lod
-                            session_meta.record_lod_time(resume_lod)
+                            logger.info("Session resumed for session %s", session_id)
                             content = types.Content(
-                                parts=[types.Part(text="[EMERGENCY RESUME] The user has deactivated emergency pause. Resume normal operation at LOD 2 (balanced mode). You may speak again.")],
+                                parts=[types.Part(text="[RESUME] The user has resumed the session. You may speak again.")],
                                 role="user",
                             )
                             ctx_queue.inject_immediate(content)
                             await _safe_send_json({
                                 "type": MessageType.LOD_UPDATE,
-                                "lod": resume_lod,
-                                "reason": "emergency_resume",
+                                "lod": session_ctx.current_lod,
+                                "reason": "resumed",
                             })
 
                     elif gesture == "camera_toggle":
@@ -2496,28 +2437,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
         ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
-
-        # Check PANIC first
-        is_panic = panic_handler.evaluate(
-            heart_rate=ephemeral_ctx.heart_rate,
-            panic_flag=ephemeral_ctx.panic,
-        )
-        if is_panic:
-            semantic_text = parse_telemetry(telemetry_data)
-            content = types.Content(
-                parts=[types.Part(
-                    text=(
-                        "<<<SENSOR_DATA_CRITICAL>>>\n"
-                        f"{semantic_text}\n"
-                        "<<<END_SENSOR_DATA>>>\n"
-                        "PANIC detected. Switch to ultra-brief calming mode."
-                    )
-                )],
-                role="user",
-            )
-            ctx_queue.inject_immediate(content)
-            await _handle_panic(ephemeral_ctx)
-            return
 
         # Semantic text injection (LOD-aware throttle)
         now = _time.monotonic()
@@ -3028,10 +2947,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 def _format_vision_result(result: dict, lod: int) -> str:
     """Format vision analysis result for Gemini context injection."""
     parts = ["[VISION ANALYSIS]"]
-
-    warnings = result.get("safety_warnings", [])
-    if warnings:
-        parts.append("SAFETY WARNINGS: " + "; ".join(warnings))
 
     nav = result.get("navigation_info", {})
     if lod >= 2:

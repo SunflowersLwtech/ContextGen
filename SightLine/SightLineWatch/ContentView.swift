@@ -52,6 +52,22 @@ struct ContentView: View {
                 .foregroundColor(.gray)
                 .accessibilityHidden(true)
 
+            // Stability and heading context
+            if workoutManager.isRunning {
+                if workoutManager.watchMotion.stabilityScore < 1.0 {
+                    Text("Stability: \(Int(workoutManager.watchMotion.stabilityScore * 100))%")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .accessibilityLabel("Stability \(Int(workoutManager.watchMotion.stabilityScore * 100)) percent")
+                }
+                if let heading = workoutManager.watchHeading.heading {
+                    Text("Heading: \(Int(heading))\u{00B0}")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .accessibilityLabel("Heading \(Int(heading)) degrees")
+                }
+            }
+
             Spacer()
 
             // Start / Stop button

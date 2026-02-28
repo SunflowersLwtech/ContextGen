@@ -2,12 +2,12 @@
 //  WorkoutManager.swift
 //  SightLineWatch
 //
-//  Manages HKWorkoutSession for continuous heart rate capture.
+//  Manages HKWorkoutSession for continuous heart rate and sensor capture.
 //  When a workout is active, Apple Watch samples heart rate every 1-5 seconds
 //  (vs. 5-15 minutes at rest). Each new reading is forwarded to iPhone
-//  via PhoneConnector (WCSession) for real-time PANIC detection.
+//  via PhoneConnector (WCSession) along with motion, heading, and health context.
 //
-//  Reference: Apple SpeedySloth sample, trimmed to heart-rate-only.
+//  Reference: Apple SpeedySloth sample, extended for full sensor payload.
 //
 
 import HealthKit
@@ -21,6 +21,12 @@ class WorkoutManager: NSObject, ObservableObject {
     @Published var heartRate: Double = 0
     @Published var isRunning: Bool = false
     @Published var isAuthorized: Bool = false
+
+    // MARK: - Sensor Managers
+
+    let watchMotion = WatchMotionManager()
+    let watchHeading = WatchHeadingManager()
+    let watchHealth = WatchHealthContext()
 
     // MARK: - Private
 
@@ -86,6 +92,11 @@ class WorkoutManager: NSObject, ObservableObject {
 
         isRunning = false
 
+        // Stop sensor managers
+        watchMotion.stopUpdates()
+        watchHeading.stopUpdates()
+        watchHealth.stop()
+
         // Notify iPhone that monitoring stopped
         PhoneConnector.shared.sendHeartRate(0, isMonitoring: false)
 
@@ -121,9 +132,12 @@ class WorkoutManager: NSObject, ObservableObject {
 
             await MainActor.run {
                 isRunning = true
+                watchMotion.startUpdates()
+                watchHeading.startUpdates()
             }
+            await watchHealth.requestAuthorizationAndStart()
 
-            Self.logger.info("Workout session started — high-frequency HR active")
+            Self.logger.info("Workout session started — high-frequency HR + sensors active")
         } catch {
             Self.logger.error("Failed to start workout: \(error.localizedDescription)")
         }
@@ -192,11 +206,25 @@ extension WorkoutManager: HKLiveWorkoutBuilderDelegate {
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.heartRate = bpm
-            PhoneConnector.shared.sendHeartRate(bpm, isMonitoring: true)
+            guard let self else { return }
+            self.heartRate = bpm
+            PhoneConnector.shared.sendWatchContext(
+                heartRate: bpm,
+                isMonitoring: true,
+                motion: (
+                    pitch: self.watchMotion.pitch,
+                    roll: self.watchMotion.roll,
+                    yaw: self.watchMotion.yaw,
+                    stabilityScore: self.watchMotion.stabilityScore
+                ),
+                heading: self.watchHeading.heading,
+                headingAccuracy: self.watchHeading.headingAccuracy,
+                spO2: self.watchHealth.spO2,
+                noiseExposure: self.watchHealth.noiseExposure
+            )
         }
 
-        Self.logger.debug("Heart rate: \(Int(bpm)) BPM → sent to iPhone")
+        Self.logger.debug("Heart rate: \(Int(bpm)) BPM + context → sent to iPhone")
     }
 
     nonisolated func workoutBuilderDidCollectEvent(
