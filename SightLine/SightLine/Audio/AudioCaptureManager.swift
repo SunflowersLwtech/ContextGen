@@ -57,7 +57,7 @@ class AudioCaptureManager: ObservableObject {
     /// Barge-in confirmation counter: requires consecutive frames above threshold + VAD active.
     /// Prevents AEC residual echo bursts (< 200ms) from triggering false barge-in.
     private var bargeInConfirmCount: Int = 0
-    private let bargeInConfirmRequired: Int = 4  // ~400ms at 100ms/frame — closer to ChatGPT-level responsiveness
+    private let bargeInConfirmRequired: Int = 6  // ~600ms at 100ms/frame — more robust against echo accumulation
 
     /// Ignore barge-in candidates immediately after each model audio chunk.
     /// This protects against AEC tail and speaker leakage right after playback resumes.
@@ -66,6 +66,12 @@ class AudioCaptureManager: ObservableObject {
     /// Require stronger VAD confidence for barge-in while model is speaking.
     /// `isSpeechActive` alone can remain true for a short hangover window.
     private let bargeInVADProbabilityThreshold: Float = 0.75
+
+    /// Echo suppression: count consecutive guard windows with RMS above threshold.
+    /// If >= echoGuardWindowThreshold consecutive windows trigger, it's likely echo
+    /// leaking through AEC rather than real user speech → suppress barge-in.
+    private var echoGuardWindowCount: Int = 0
+    private let echoGuardWindowThreshold: Int = 3
 
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
@@ -186,8 +192,16 @@ class AudioCaptureManager: ObservableObject {
                     // Model speaking: send silence to prevent echo reaching Gemini VAD.
                     // Multi-frame confirmation prevents AEC residual bursts from false barge-in.
                     if (now - self.lastModelAudioReceivedAt) < self.bargeInGuardAfterModelChunkSec {
-                        // Don't reset bargeInConfirmCount — let evidence accumulate
-                        // across guard windows so barge-in can trigger during active speech
+                        // Inside guard window: reset confirm count to prevent
+                        // echo residuals from accumulating across guard windows.
+                        // Track whether guard windows consistently have high RMS (echo pattern).
+                        let rms = self.lastRMS
+                        if rms > self.bargeInRMSThreshold {
+                            self.echoGuardWindowCount += 1
+                        } else {
+                            self.echoGuardWindowCount = 0
+                        }
+                        self.bargeInConfirmCount = 0
                         let silence = Data(count: byteCount)
                         self.onAudioCaptured?(silence)
                         return
@@ -195,6 +209,17 @@ class AudioCaptureManager: ObservableObject {
 
                     let rms = self.lastRMS
                     if rms > self.bargeInRMSThreshold {
+                        // Echo suppression: if consecutive guard windows all had
+                        // high RMS, this is likely speaker echo leaking through AEC,
+                        // not real user speech → suppress barge-in entirely.
+                        if self.echoGuardWindowCount >= self.echoGuardWindowThreshold {
+                            Self.logger.debug("Barge-in suppressed: echo detected (\(self.echoGuardWindowCount) consecutive guard windows)")
+                            self.bargeInConfirmCount = 0
+                            let silence = Data(count: byteCount)
+                            self.onAudioCaptured?(silence)
+                            return
+                        }
+
                         SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
                         if SileroVAD.shared.isSpeechActive &&
                             SileroVAD.shared.lastProbability >= self.bargeInVADProbabilityThreshold {
@@ -202,6 +227,7 @@ class AudioCaptureManager: ObservableObject {
                             if self.bargeInConfirmCount >= self.bargeInConfirmRequired {
                                 // Sustained speech confirmed: real barge-in
                                 self.bargeInConfirmCount = 0
+                                self.echoGuardWindowCount = 0
                                 let data = Data(bytes: channelData[0], count: byteCount)
                                 self.onAudioCaptured?(data)
                                 self.lastModelAudioReceivedAt = 0  // Exit speaking state
@@ -218,14 +244,16 @@ class AudioCaptureManager: ObservableObject {
                             self.onAudioCaptured?(silence)
                         }
                     } else {
-                        // Echo residual (RMS < threshold): reset counter, send silence
+                        // Echo residual (RMS < threshold): reset counters, send silence
                         self.bargeInConfirmCount = 0
+                        self.echoGuardWindowCount = 0
                         let silence = Data(count: byteCount)
                         self.onAudioCaptured?(silence)
                     }
                 } else {
-                    // Model idle: reset counter, send real audio
+                    // Model idle: reset all barge-in counters, send real audio
                     self.bargeInConfirmCount = 0
+                    self.echoGuardWindowCount = 0
                     SileroVAD.shared.processAudioFrame(channelData[0], count: Int(outputBuffer.frameLength))
                     let data = Data(bytes: channelData[0], count: byteCount)
                     self.onAudioCaptured?(data)

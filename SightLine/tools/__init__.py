@@ -60,6 +60,11 @@ from tools.maps_grounding import (
     MAPS_GROUNDING_TOOL_DECLARATIONS,
     maps_query,
 )
+from tools.ocr_tool import (
+    OCR_TOOL_FUNCTIONS,
+    OCR_TOOL_DECLARATIONS,
+    extract_text_from_camera,
+)
 from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
@@ -119,6 +124,7 @@ ALL_TOOL_DECLARATIONS = (
     + PLUS_CODES_TOOL_DECLARATIONS
     + ACCESSIBILITY_TOOL_DECLARATIONS
     + MAPS_GROUNDING_TOOL_DECLARATIONS
+    + OCR_TOOL_DECLARATIONS
 )
 
 ALL_FUNCTIONS = {
@@ -129,6 +135,7 @@ ALL_FUNCTIONS = {
     **PLUS_CODES_FUNCTIONS,
     **ACCESSIBILITY_FUNCTIONS,
     **MAPS_GROUNDING_FUNCTIONS,
+    **OCR_TOOL_FUNCTIONS,
 }
 
 __all__ = [

@@ -27,6 +27,7 @@ from tools import (
     validate_address,
     get_accessibility_info,
     maps_query,
+    extract_text_from_camera,
 )
 
 # Memory tools (custom Firestore Memory Bank + Entity Graph)
@@ -196,12 +197,32 @@ Confirm: "I've forgotten what you told me recently."
 Always respect the user's request to forget. Memory operations are SILENT — do not announce \
 them to the user unless confirming a remember/forget request.
 
+### extract_text_from_camera
+Read and extract text from the current camera view. Use ONLY when the user \
+explicitly asks to read text: "what does it say?", "read this for me", \
+"any text here?", "what's written there?", or similar. Do NOT call this \
+proactively — safety-critical text (danger signs, warnings) is detected \
+automatically. Deliver results WHEN_IDLE.
+
 ## Context Injections (Read-Only)
 You will receive pre-computed analysis results as context injections.
 These arrive automatically — you do NOT call any tool to trigger them:
 - ``[VISION ANALYSIS]``: Scene understanding. Integrate naturally into speech.
-- ``[OCR RESULT]``: Text detected in the scene. Read aloud when relevant.
-Do NOT mention the analysis systems by name. Do NOT attempt to call tools to produce these results.
+- ``[OCR RESULT]``: Safety-critical text detected automatically. Read aloud when relevant.
+Do NOT mention the analysis systems by name.
+
+## Context Injection Priority
+When multiple context injections arrive simultaneously, follow this priority:
+1. **Safety warnings** → ALWAYS speak immediately, interrupt if needed
+2. **User-requested info** → Respond to what the user specifically asked about
+3. **Significant scene changes** → Speak only if the change is meaningful \
+   (new obstacle, person approaching, environment change)
+4. **Routine vision updates** → Integrate silently as background awareness, \
+   do NOT narrate unless user asks
+
+CRITICAL: Do NOT start describing the scene unprompted when the camera activates. \
+Wait for the user to ask, or for a safety-critical detection. The first few seconds \
+after camera activation are for silent observation only.
 """
 
 
@@ -235,6 +256,7 @@ def create_orchestrator_agent(model_name: str) -> Agent:
             convert_to_plus_code,
             get_accessibility_info,
             maps_query,
+            extract_text_from_camera,
             preload_memory,
             remember_entity,
             what_do_you_remember,

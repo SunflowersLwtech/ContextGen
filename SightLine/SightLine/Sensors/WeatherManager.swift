@@ -14,6 +14,7 @@ import os
 
 class WeatherManager: ObservableObject {
     @Published var currentWeather: WeatherSnapshot?
+    @Published var isAvailable: Bool = true
 
     private static let logger = Logger(subsystem: "com.sightline.app", category: "Weather")
     private let weatherService = WeatherService.shared
@@ -71,6 +72,10 @@ class WeatherManager: ObservableObject {
             Self.logger.info("Weather updated: \(current.condition.description), \(current.temperature.converted(to: .celsius).value, format: .fixed(precision: 1))°C")
         } catch {
             Self.logger.error("Weather fetch failed: \(error.localizedDescription)")
+            await MainActor.run {
+                self.currentWeather = nil
+                self.isAvailable = false
+            }
         }
     }
 

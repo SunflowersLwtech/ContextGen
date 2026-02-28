@@ -223,71 +223,128 @@ class _QueuedItem:
     enqueued_at: float = dc_field(default_factory=time.monotonic)
 
 
+class ModelState(str, Enum):
+    """State machine for model generation/playback lifecycle.
+
+    Transitions:
+        IDLE → GENERATING  (on inject_immediate / flush that produces audio)
+        GENERATING → DRAINING  (on first audio chunk received from Gemini)
+        DRAINING → IDLE  (on turn_complete + quiet period confirmed)
+        Any → IDLE  (on interrupt / barge-in)
+
+    Flush is ONLY allowed in IDLE state.  This eliminates the 5 overlapping
+    guard timers (generation ramp-up, deferred flush, iOS playback drain,
+    model audio freshness, playback started tracking) and replaces them with
+    a single, deterministic state check.
+    """
+    IDLE = "idle"
+    GENERATING = "generating"
+    DRAINING = "draining"
+
+
 class ContextInjectionQueue:
     """Queue that batches non-urgent send_content() calls.
 
-    When the model is speaking, enqueued items are held and merged into a
-    single Content message at the next turn_complete event.  Bypass items
-    (safety, gestures, function responses) skip the queue entirely.
+    When the model is generating or draining audio, enqueued items are held
+    and merged into a single Content message when state returns to IDLE.
+    Bypass items (safety, gestures, function responses) skip the queue.
+
+    State machine replaces the previous multi-timer approach:
+    - IDLE: Model is silent, flush is allowed
+    - GENERATING: send_content sent, awaiting first audio chunk
+    - DRAINING: Audio chunks flowing / iOS playing back, no flush
 
     Thread safety: All public methods are intentionally synchronous (no
     ``await`` inside mutation paths).  In asyncio cooperative scheduling,
     dict reads/writes cannot be preempted mid-operation, so no explicit
-    lock is needed.  If ``await`` is ever added inside a mutation method,
-    a lock must be introduced to protect ``_queue``.
+    lock is needed.
     """
 
-    # Cooldown after send_content to avoid interrupting ramp-up generation.
-    # Gemini needs ~0.5–2s from receiving content to producing the first audio
-    # chunk.  During that window _model_speaking is still False, so a new
-    # enqueue would trigger an immediate flush → interrupt the pending
-    # generation.  This guard prevents that.
-    _GENERATION_RAMP_GUARD_SEC = 3.0
+    # How long to stay in GENERATING before timing out to IDLE.
+    # Covers the case where Gemini never produces audio for a silent context.
+    _GENERATING_TIMEOUT_SEC = 5.0
+
+    # Safety-net timeout for DRAINING state (iOS playback stall).
+    _DRAINING_TIMEOUT_SEC = 8.0
+
+    BATCH_WINDOW_SEC = 0.4  # 400ms collection window for sub-agent results
 
     def __init__(self, live_request_queue: "LiveRequestQueue") -> None:
         self._lrq = live_request_queue
         self._queue: dict[str, _QueuedItem] = {}
-        self._model_speaking = False
+        self._state = ModelState.IDLE
+        self._state_entered_at: float = time.monotonic()
         self._vision_spoken_at: float = 0.0
         self._bg_task: asyncio.Task | None = None
         self._stopped = False
         self._deferred_flush_handle: asyncio.TimerHandle | None = None
         self._first_turn: bool = True
-        self._model_audio_last_seen_at: float = 0.0
-        self._ios_playback_drained: bool = True  # Initially True (not playing)
-        self._playback_started_at: float = 0.0   # When _ios_playback_drained was last set False
-        self._last_send_content_at: float = 0.0   # When send_content was last called
 
-    # -- Model speaking state ------------------------------------------------
+    # -- State machine -------------------------------------------------------
+
+    def _transition_to(self, new_state: ModelState) -> None:
+        """Transition to a new state, cancelling any pending flush timer."""
+        old = self._state
+        if old == new_state:
+            return
+        self._state = new_state
+        self._state_entered_at = time.monotonic()
+        self._cancel_deferred_flush()
+        logger.debug("State: %s → %s", old.value, new_state.value)
+
+        # Auto-schedule flush when entering IDLE with pending items
+        if new_state == ModelState.IDLE and self._queue:
+            self._schedule_deferred_flush()
+
+    @property
+    def state(self) -> ModelState:
+        return self._state
+
+    # -- Public API (backwards-compatible) -----------------------------------
 
     def set_model_speaking(self, speaking: bool) -> None:
-        self._model_speaking = speaking
+        """Called when model audio chunks start/stop.
+
+        speaking=True  → transition to DRAINING (audio is flowing)
+        speaking=False → handled by on_turn_complete (don't go IDLE here;
+                         wait for quiet period confirmation)
+        """
         if speaking:
-            self._cancel_deferred_flush()
+            self._transition_to(ModelState.DRAINING)
 
     def set_model_audio_timestamp(self, ts: float) -> None:
-        """Record when the last model audio chunk was seen (monotonic clock)."""
-        self._model_audio_last_seen_at = ts
+        """Record that a model audio chunk was just received."""
+        # Any audio chunk means we're in DRAINING (audio actively flowing)
+        if self._state == ModelState.GENERATING:
+            self._transition_to(ModelState.DRAINING)
 
     def set_ios_playback_drained(self, drained: bool) -> None:
         """Mark whether iOS has finished playing all buffered audio."""
-        self._ios_playback_drained = drained
-        if not drained:
-            self._playback_started_at = time.monotonic()
-        if drained and self._queue and self._deferred_flush_handle is None:
-            # iOS finished playback and we have pending items — schedule flush
-            self._schedule_deferred_flush(delay=0.2)
+        if drained and self._state == ModelState.DRAINING:
+            # iOS finished playback — transition to IDLE
+            self._transition_to(ModelState.IDLE)
+        # If not drained and we're IDLE (shouldn't happen often), stay put
 
     @property
     def model_speaking(self) -> bool:
-        return self._model_speaking
+        """Backwards-compatible property: True when model is active."""
+        return self._state != ModelState.IDLE
+
+    def on_turn_complete(self) -> None:
+        """Called on turn_complete event.  Transitions to IDLE.
+
+        The downstream handler adds a quiet period check (Step 3) before
+        calling this, so we can safely go to IDLE here.
+        """
+        self._transition_to(ModelState.IDLE)
 
     # -- Immediate bypass (safety / gestures / function responses) -----------
 
     def inject_immediate(self, content: "types.Content") -> None:
         """Send directly to LiveRequestQueue, bypassing the queue."""
         self._lrq.send_content(content)
-        self._last_send_content_at = time.monotonic()
+        # We just sent content → model will start generating
+        self._transition_to(ModelState.GENERATING)
 
     # -- Queued injection ----------------------------------------------------
 
@@ -299,30 +356,19 @@ class ContextInjectionQueue:
         speak: bool = True,
     ) -> None:
         """Queue a context injection.  Always queues; never sends immediately."""
-        # ALWAYS queue — never send immediately
         self._queue[category] = _QueuedItem(
             category=category, text=text, priority=priority, speak=speak,
         )
-        logger.info("Queued [%s] (priority=%d, speak=%s, queue_size=%d)",
-                     category, priority, speak, len(self._queue))
-        # Model idle + no timer pending → schedule deferred flush
-        # Also guard against ramp-up window: if send_content was called
-        # recently, Gemini is likely still generating — don't flush yet.
-        if not self._model_speaking and self._deferred_flush_handle is None:
-            since_last_send = time.monotonic() - self._last_send_content_at
-            if since_last_send < self._GENERATION_RAMP_GUARD_SEC:
-                remaining = self._GENERATION_RAMP_GUARD_SEC - since_last_send + 0.1
-                logger.debug("Enqueue: deferring flush — send_content %.1fs ago (guard %.1fs)",
-                             since_last_send, remaining)
-                self._schedule_deferred_flush(delay=remaining)
-            else:
-                self._schedule_deferred_flush()
+        logger.info("Queued [%s] (priority=%d, speak=%s, queue_size=%d, state=%s)",
+                     category, priority, speak, len(self._queue), self._state.value)
+        # Only schedule flush if IDLE and no timer pending
+        if self._state == ModelState.IDLE and self._deferred_flush_handle is None:
+            self._schedule_deferred_flush()
 
     # -- Deferred flush (batching window) ------------------------------------
 
-    BATCH_WINDOW_SEC = 0.4  # 400ms collection window for sub-agent results
-
     def _schedule_deferred_flush(self, delay: float = BATCH_WINDOW_SEC):
+        self._cancel_deferred_flush()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -334,45 +380,9 @@ class ContextInjectionQueue:
 
     def _deferred_flush_callback(self):
         self._deferred_flush_handle = None
-        if self._model_speaking:
-            logger.debug("Deferred flush skipped — model is now speaking")
+        if self._state != ModelState.IDLE:
+            logger.debug("Deferred flush skipped — state=%s", self._state.value)
             return
-        # Generation ramp-up guard: send_content was called recently,
-        # Gemini is likely still generating (no audio chunk yet).
-        since_last_send = time.monotonic() - self._last_send_content_at
-        if self._last_send_content_at > 0 and since_last_send < self._GENERATION_RAMP_GUARD_SEC:
-            remaining = self._GENERATION_RAMP_GUARD_SEC - since_last_send + 0.1
-            logger.debug("Deferred flush skipped — send_content %.1fs ago (guard %.1fs)",
-                         since_last_send, remaining)
-            self._schedule_deferred_flush(delay=remaining)
-            return
-        # Playback gate: wait for iOS to finish playing before flushing
-        if not self._ios_playback_drained:
-            elapsed = (
-                time.monotonic() - self._playback_started_at
-                if self._playback_started_at > 0
-                else 999
-            )
-            if elapsed < 5.0:  # 5s safety-net timeout
-                logger.debug(
-                    "Deferred flush skipped — iOS playback not drained (%.1fs)",
-                    elapsed,
-                )
-                self._schedule_deferred_flush(delay=1.0)
-                return
-            else:
-                logger.warning(
-                    "Playback drain timeout (%.1fs) — forcing flush", elapsed
-                )
-                self._ios_playback_drained = True
-        # Freshness guard: avoid flushing while model generation is ramping up
-        # (first audio chunk hasn't arrived yet, so _model_speaking is still False)
-        if self._model_audio_last_seen_at > 0:
-            staleness = time.monotonic() - self._model_audio_last_seen_at
-            if staleness < 3.0:
-                logger.debug("Deferred flush skipped — model audio seen %.1fs ago", staleness)
-                self._schedule_deferred_flush(delay=3.0 - staleness + 0.1)
-                return
         if self._queue:
             logger.info("Deferred flush firing (%d items)", len(self._queue))
             self.flush()
@@ -421,9 +431,6 @@ class ContextInjectionQueue:
         all_silent = all(not it.speak for it in items)
 
         if all_silent and not force:
-            # Don't inject silent-only context — avoids triggering model audio.
-            # Raw images already in Gemini context via send_realtime().
-            # Items stay in queue; check_max_age() will force-flush after 15s.
             logger.info("Skipped silent-only flush (%d items); awaiting speech-worthy item or max-age",
                          len(items))
             return False
@@ -443,24 +450,41 @@ class ContextInjectionQueue:
             role="user",
         )
         self._lrq.send_content(content)
-        self._last_send_content_at = time.monotonic()
         if not all_silent:
-            self._ios_playback_drained = False  # Will produce new audio; wait for iOS drain
-        logger.info("Flushed %d queued items (all_silent=%s)", len(items), all_silent)
+            # Will produce audio → enter GENERATING
+            self._transition_to(ModelState.GENERATING)
+        logger.info("Flushed %d queued items (all_silent=%s, state=%s)",
+                     len(items), all_silent, self._state.value)
         return True
 
     def check_max_age(self) -> bool:
-        """Force-flush if the oldest item exceeds QUEUE_MAX_AGE_SEC."""
-        if self._model_speaking:
-            return False  # Don't force-flush while model is speaking
-        if not self._ios_playback_drained:
-            return False  # Don't force-flush while iOS is still playing
+        """Force-flush if the oldest item exceeds QUEUE_MAX_AGE_SEC.
+
+        Also handles state timeouts:
+        - GENERATING for too long without audio → force to IDLE
+        - DRAINING for too long without iOS drain → force to IDLE
+        """
+        now = time.monotonic()
+        elapsed = now - self._state_entered_at
+
+        # State timeout: GENERATING without audio chunks
+        if self._state == ModelState.GENERATING and elapsed > self._GENERATING_TIMEOUT_SEC:
+            logger.warning("GENERATING timeout (%.1fs) — forcing to IDLE", elapsed)
+            self._transition_to(ModelState.IDLE)
+
+        # State timeout: DRAINING without iOS drain confirmation
+        if self._state == ModelState.DRAINING and elapsed > self._DRAINING_TIMEOUT_SEC:
+            logger.warning("DRAINING timeout (%.1fs) — forcing to IDLE", elapsed)
+            self._transition_to(ModelState.IDLE)
+
+        if self._state != ModelState.IDLE:
+            return False
         if not self._queue:
             return False
         oldest = min(it.enqueued_at for it in self._queue.values())
-        if (time.monotonic() - oldest) > QUEUE_MAX_AGE_SEC:
+        if (now - oldest) > QUEUE_MAX_AGE_SEC:
             logger.info("Max-age flush triggered (oldest=%.1fs)",
-                        time.monotonic() - oldest)
+                        now - oldest)
             return self.flush(force=True)
         return False
 
@@ -627,6 +651,7 @@ from tools.search import SEARCH_FUNCTIONS
 from tools.plus_codes import PLUS_CODES_FUNCTIONS
 from tools.accessibility import ACCESSIBILITY_FUNCTIONS
 from tools.maps_grounding import MAPS_GROUNDING_FUNCTIONS
+from tools.ocr_tool import set_latest_frame as _ocr_set_latest_frame, clear_session as _ocr_clear_session
 from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
@@ -653,6 +678,7 @@ _TOOL_CATEGORY_MAP: dict[str, tuple[str, str]] = {
     "what_do_you_remember": ("memory", "WHEN_IDLE"),
     "forget_entity": ("memory", "SILENT"),
     "forget_recent_memory": ("memory", "SILENT"),
+    "extract_text_from_camera": ("ocr", "WHEN_IDLE"),
 }
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1076,33 @@ async def _dispatch_function_call(
     # Memory tools: hard-set user_id from session (security: prevents cross-user access)
     if func_name in MEMORY_FUNCTIONS:
         func_args["user_id"] = user_id
+
+    # OCR tool: intercept and run async OCR pipeline with latest camera frame
+    if func_name == "extract_text_from_camera":
+        from tools.ocr_tool import _latest_frames
+        frame_b64 = _latest_frames.get(session_id)
+        if not frame_b64:
+            return {
+                "text": "",
+                "text_type": "unknown",
+                "items": [],
+                "confidence": 0.0,
+                "message": "No camera frame available. The camera may not be active.",
+            }
+        try:
+            from agents.ocr_agent import extract_text as _ocr_extract
+            hint = func_args.get("context_hint", "")
+            result = await _ocr_extract(frame_b64, context_hint=hint, safety_only=False)
+            return result
+        except Exception:
+            logger.exception("OCR tool dispatch failed")
+            return {
+                "text": "",
+                "text_type": "unknown",
+                "items": [],
+                "confidence": 0.0,
+                "error": "OCR extraction failed",
+            }
 
     try:
         return await asyncio.to_thread(ALL_FUNCTIONS[func_name], **func_args)
@@ -1479,7 +1532,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # not flushed to Gemini mid-greeting.  The real audio-chunk callback
     # (set_model_speaking(True)) confirms this ~200ms later; turn_complete
     # resets it when the greeting finishes.
-    ctx_queue.set_model_speaking(True)
+    # inject_immediate already transitions state to GENERATING
     logger.info(
         "Injected combined context (LOD %d) + greeting for session %s",
         session_ctx.current_lod, session_id,
@@ -1488,7 +1541,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
     # -- Track client camera state for context injection ----------------------
     _client_camera_active = False
     _camera_activated_at: float = 0.0
-    _CAMERA_GRACE_PERIOD_SEC: float = 8.0
+    _CAMERA_GRACE_PERIOD_SEC: float = 12.0
+    _first_vision_after_camera: bool = True  # First vision post-grace period is silent
 
     # -- Throttle raw frames to Gemini Live API ------------------------------
     _last_frame_to_gemini_at: float = 0.0
@@ -1635,6 +1689,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         """Run async vision analysis and inject results into Live session."""
         nonlocal _vision_in_progress, _last_vision_context_text
         nonlocal _last_vision_context_sent_at, _last_vision_prefeedback_at
+        nonlocal _first_vision_after_camera
         if not _vision_available:
             await _emit_tool_event(
                 "analyze_scene",
@@ -1730,6 +1785,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         step_cadence=getattr(ephemeral, "step_cadence", 0.0) or 0.0,
                         ambient_noise_db=getattr(ephemeral, "ambient_noise_db", 50.0) or 50.0,
                     )
+
+                    # First vision after camera activation is always silent
+                    # to avoid unprompted scene narration
+                    if _first_vision_after_camera:
+                        speak = False
+                        _first_vision_after_camera = False  # type: ignore[has-type]
+                        logger.info("First vision post-camera: forced silent injection")
 
                     if not speak:
                         vision_text = "[SILENT - context only, do not speak aloud]\n" + vision_text
@@ -2040,6 +2102,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                     elif magic == _MAGIC_IMAGE:
                         _frame_seq += 1
+                        # Store latest frame for on-demand OCR tool
+                        _ocr_set_latest_frame(session_id, base64.b64encode(payload).decode("ascii"))
                         now_frame = time.monotonic()
                         if now_frame - _last_frame_to_gemini_at >= _FRAME_TO_GEMINI_INTERVAL:
                             blob = types.Blob(
@@ -2053,7 +2117,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         import time as _time
                         now = _time.monotonic()
                         lod = session_ctx.current_lod
-                        vision_interval = {1: 8.0, 2: 5.0, 3: 3.0}.get(lod, 5.0)
+                        # Vision intervals widened: LOD1: 10s, LOD2: 8s, LOD3: 5s
+                        vision_interval = {1: 10.0, 2: 8.0, 3: 5.0}.get(lod, 8.0)
                         queued_agents: list[str] = []
                         if now - _last_vision_time >= vision_interval:
                             _last_vision_time = now
@@ -2078,13 +2143,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 )
                                 asyncio.create_task(_run_face_recognition(image_b64))
 
-                            # OCR: safety-only at LOD 1-2, full at LOD 3
-                            if lod >= 1:
+                            # OCR: safety-only at LOD 1 with 15s interval only.
+                            # Full OCR is now user-intent driven (Orchestrator tool).
+                            if lod == 1 and now - getattr(_run_ocr_analysis, '_last_safety_ocr_at', 0) >= 15.0:
+                                _run_ocr_analysis._last_safety_ocr_at = now  # type: ignore[attr-defined]
                                 await _emit_tool_event(
                                     "extract_text", ToolBehavior.WHEN_IDLE, status="queued",
                                 )
                                 queued_agents.append("ocr")
-                                asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
+                                asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=True))
                         await _safe_send_json({
                             "type": MessageType.FRAME_ACK,
                             "frame_id": _frame_seq,
@@ -2122,6 +2189,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     image_bytes = base64.b64decode(message["data"])
                     mime_type = message.get("mimeType", "image/jpeg")
                     _frame_seq += 1
+                    # Store latest frame for on-demand OCR tool
+                    _ocr_set_latest_frame(session_id, message["data"])
                     # Throttle raw frames to Gemini (sub-agents still run at LOD intervals)
                     now_frame = time.monotonic()
                     if now_frame - _last_frame_to_gemini_at >= _FRAME_TO_GEMINI_INTERVAL:
@@ -2137,9 +2206,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     now = _time.monotonic()
                     lod = session_ctx.current_lod
 
-                    # Vision analysis: LOD-aware frequency
-                    # LOD 1: every 5s, LOD 2: every 3s, LOD 3: every 2s
-                    vision_interval = {1: 8.0, 2: 5.0, 3: 3.0}.get(lod, 5.0)
+                    # Vision analysis: LOD-aware frequency (widened)
+                    # LOD 1: every 10s, LOD 2: every 8s, LOD 3: every 5s
+                    vision_interval = {1: 10.0, 2: 8.0, 3: 5.0}.get(lod, 8.0)
                     queued_agents: list[str] = []
                     if now - _last_vision_time >= vision_interval:
                         _last_vision_time = now
@@ -2161,7 +2230,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                                 status="queued",
                             )
                             queued_agents.append("face")
-                            # Emit an early SILENT identity update for edge contracts.
                             await _emit_identity_event(
                                 person_name="unknown",
                                 matched=False,
@@ -2170,15 +2238,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             )
                             asyncio.create_task(_run_face_recognition(image_b64))
 
-                        # OCR: safety-only at LOD 1-2, full at LOD 3
-                        if lod >= 1:
+                        # OCR: safety-only at LOD 1 with 15s interval only.
+                        # Full OCR is now user-intent driven (Orchestrator tool).
+                        if lod == 1 and now - getattr(_run_ocr_analysis, '_last_safety_ocr_at', 0) >= 15.0:
+                            _run_ocr_analysis._last_safety_ocr_at = now  # type: ignore[attr-defined]
                             await _emit_tool_event(
                                 "extract_text",
                                 ToolBehavior.WHEN_IDLE,
                                 status="queued",
                             )
                             queued_agents.append("ocr")
-                            asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=(lod < 3)))
+                            asyncio.create_task(_run_ocr_analysis(image_b64, safety_only=True))
                     await _safe_send_json({
                         "type": MessageType.FRAME_ACK,
                         "frame_id": _frame_seq,
@@ -2333,13 +2403,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             })
 
                     elif gesture == "camera_toggle":
-                        nonlocal _client_camera_active, _camera_activated_at
+                        nonlocal _client_camera_active, _camera_activated_at, _first_vision_after_camera
                         _client_camera_active = _coerce_bool(
                             message.get("active"), default=not _client_camera_active,
                         )
                         logger.info("Camera toggle: active=%s", _client_camera_active)
                         if _client_camera_active:
                             _camera_activated_at = time.monotonic()
+                            _first_vision_after_camera = True
                             # Camera toggle is informational, not safety-critical → use queue
                             # to avoid interrupting current generation via turn_complete=True
                             ctx_queue.enqueue(
@@ -2479,7 +2550,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                             _is_interrupted = True
                             _last_interrupt_at = now_mono
                             _model_audio_last_seen_at = 0.0
-                            ctx_queue.set_model_speaking(False)
+                            ctx_queue._transition_to(ModelState.IDLE)
                             logger.info("Client barge-in — suppressing audio forwarding")
                         else:
                             logger.info("Client barge-in ignored — model not speaking (last audio %.1fs ago)",
@@ -2680,11 +2751,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         _is_interrupted = True
                         _last_interrupt_at = now_mono
                         _model_audio_last_seen_at = 0.0
-                        ctx_queue.set_model_speaking(False)
-                        # Do NOT mark _ios_playback_drained here — let iOS
-                        # confirm via its own "playback_drained" message after
-                        # stopImmediately() completes.  Premature drain marking
-                        # causes the context flush gate to open too early.
+                        # Interrupt → force state machine to IDLE (no flush)
+                        ctx_queue._transition_to(ModelState.IDLE)
                         # Note: do NOT flush queue on interrupt — user is speaking
                         await _safe_send_json({
                             "type": MessageType.INTERRUPTED,
@@ -2692,11 +2760,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                         logger.info("Interrupt detected — suppressing audio forwarding")
 
                 # --- Turn complete: resume audio forwarding + flush buffer ---
+                # Step 3: Quiet period confirmation — wait 500ms after
+                # turn_complete to confirm Gemini isn't just pausing for a
+                # function call.  If new audio arrives within 500ms, stay
+                # in DRAINING state instead of transitioning to IDLE.
                 if event.turn_complete:
                     if _is_interrupted:
                         logger.info("Turn complete — resuming audio forwarding")
                     _is_interrupted = False
-                    ctx_queue.set_model_speaking(False)
                     # Track vision spoken cooldown
                     if _turn_had_vision_content:
                         ctx_queue.record_vision_spoken()
@@ -2705,8 +2776,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     if _transcript_buffer:
                         if not await _flush_transcript_buffer():
                             break
-                    # Flush queued context injections
-                    ctx_queue.flush_or_defer_first_turn(camera_active=_client_camera_active)
+                    # Quiet period: wait 500ms before confirming turn is done
+                    _tc_audio_before = _model_audio_last_seen_at
+                    await asyncio.sleep(0.5)
+                    if _model_audio_last_seen_at > _tc_audio_before:
+                        # New audio arrived during quiet period — model resumed
+                        logger.info("Turn complete revoked — audio arrived during quiet period")
+                    else:
+                        # Confirmed: model is truly done
+                        ctx_queue.on_turn_complete()
+                        # Flush queued context injections
+                        ctx_queue.flush_or_defer_first_turn(camera_active=_client_camera_active)
 
                 # --- Content parts (audio / text) — BEFORE function calls ---
                 # Process audio/text first so that any subsequent
@@ -2719,9 +2799,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
                         if part.inline_data and part.inline_data.data:
                             _model_audio_last_seen_at = time.monotonic()
-                            ctx_queue.set_model_speaking(True)
+                            # Audio chunk → GENERATING→DRAINING or stay DRAINING
                             ctx_queue.set_model_audio_timestamp(_model_audio_last_seen_at)
-                            ctx_queue.set_ios_playback_drained(False)
+                            ctx_queue.set_model_speaking(True)
                             audio_data = part.inline_data.data
                             if isinstance(audio_data, str):
                                 audio_data = base64.b64decode(audio_data)
@@ -3001,6 +3081,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
 
         ctx_queue.stop()
         live_request_queue.close()
+        _ocr_clear_session(session_id)
         session_manager.remove_session(session_id)
         if _memory_available:
             evict_stale_banks(max_age_sec=SESSION_TIMEOUT_SEC)

@@ -164,6 +164,7 @@ if _sightline_dir not in sys.path:
 
 from server import (
     ContextInjectionQueue,
+    ModelState,
     QUEUE_MAX_AGE_SEC,
     VISION_SPOKEN_COOLDOWN_SEC,
     _QueuedItem,
@@ -249,9 +250,9 @@ class TestEnqueueModelSpeaking:
     def test_flush_sends_queued(self, queue, lrq):
         queue.set_model_speaking(True)
         queue.enqueue("vision", "scene description", priority=5, speak=True)
-        queue.set_model_speaking(False)
-        result = queue.flush()
-        assert result is True
+        # on_turn_complete transitions to IDLE which auto-flushes pending items
+        # (without an event loop, the deferred flush fires immediately)
+        queue.on_turn_complete()
         assert len(lrq.sent) == 1
         assert "scene description" in lrq.sent[0].parts[0].text
 
@@ -357,15 +358,30 @@ class TestSilentWrapping:
 class TestModelSpeakingState:
     def test_default_not_speaking(self, queue):
         assert queue.model_speaking is False
+        assert queue.state == ModelState.IDLE
 
     def test_set_speaking(self, queue):
         queue.set_model_speaking(True)
         assert queue.model_speaking is True
+        assert queue.state == ModelState.DRAINING
 
-    def test_set_not_speaking(self, queue):
+    def test_on_turn_complete_returns_to_idle(self, queue):
         queue.set_model_speaking(True)
-        queue.set_model_speaking(False)
+        queue.on_turn_complete()
         assert queue.model_speaking is False
+        assert queue.state == ModelState.IDLE
+
+    def test_inject_immediate_enters_generating(self, queue):
+        content = Content(parts=[Part(text="test")])
+        queue.inject_immediate(content)
+        assert queue.state == ModelState.GENERATING
+
+    def test_audio_timestamp_transitions_generating_to_draining(self, queue):
+        content = Content(parts=[Part(text="test")])
+        queue.inject_immediate(content)
+        assert queue.state == ModelState.GENERATING
+        queue.set_model_audio_timestamp(time.monotonic())
+        assert queue.state == ModelState.DRAINING
 
 
 # ---------------------------------------------------------------------------
@@ -404,10 +420,8 @@ class TestMaxAge:
         # Manually backdate the enqueued_at
         for item in queue._queue.values():
             item.enqueued_at = time.monotonic() - QUEUE_MAX_AGE_SEC - 1
-        # check_max_age only fires when model is not speaking and iOS is drained
-        queue.set_model_speaking(False)
-        queue._ios_playback_drained = True
-        assert queue.check_max_age() is True
+        # on_turn_complete auto-flushes pending items when transitioning to IDLE
+        queue.on_turn_complete()
         assert len(lrq.sent) == 1
 
     def test_flush_after_max_age_silent_items(self, queue, lrq):
@@ -418,8 +432,9 @@ class TestMaxAge:
         # Backdate items
         for item in queue._queue.values():
             item.enqueued_at = time.monotonic() - QUEUE_MAX_AGE_SEC - 1
-        queue.set_model_speaking(False)
-        queue._ios_playback_drained = True
+        # Silent-only items don't auto-flush via deferred, but check_max_age
+        # with force=True will flush them. Put queue in IDLE first.
+        queue._transition_to(ModelState.IDLE)
         assert queue.check_max_age() is True
         assert len(lrq.sent) == 1
         text = lrq.sent[0].parts[0].text

@@ -89,15 +89,6 @@ struct UpstreamMessageTests {
         #expect(unmuted.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"mute_toggle\",\"muted\":false}")
     }
 
-    @Test("emergencyPause encodes paused state")
-    func emergencyPauseEncoding() {
-        let paused = UpstreamMessage.emergencyPause(paused: true)
-        #expect(paused.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":true}")
-
-        let resumed = UpstreamMessage.emergencyPause(paused: false)
-        #expect(resumed.toJSON() == "{\"type\":\"gesture\",\"gesture\":\"emergency_pause\",\"paused\":false}")
-    }
-
     @Test("cameraToggle encodes active state")
     func cameraToggleEncoding() {
         let on = UpstreamMessage.cameraToggle(active: true)

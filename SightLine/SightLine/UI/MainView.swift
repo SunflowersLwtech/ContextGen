@@ -598,15 +598,34 @@ struct MainView: View {
     }
 
     /// Recheck permissions when returning from Settings. Dismiss prompt if granted.
+    /// If WebSocket was blocked due to missing mic permission, connect now.
     private func recheckPermissionsAfterSettings() {
         Task {
             let granted = await mediaPermissionGate.preflightMediaPermissions()
+            let micGranted = await mediaPermissionGate.ensureMicPermission()
             await MainActor.run {
                 if granted {
                     showPermissionPrompt = false
                     connectionStatus = "Permissions granted"
                     UIAccessibility.post(notification: .announcement,
                                          argument: "Permissions granted. Starting audio.")
+                } else if micGranted {
+                    // Mic restored but camera still denied — audio-only
+                    showPermissionPrompt = true
+                    connectionStatus = "Audio-only mode (camera denied)"
+                }
+
+                // If mic is now granted and WebSocket was never connected, connect now
+                if micGranted && !webSocketManager.isConnected {
+                    if let url = SightLineConfig.wsURL(
+                        userId: SightLineConfig.defaultUserId,
+                        sessionId: SightLineConfig.defaultSessionId,
+                        resumeHandle: sessionResumptionHandle.isEmpty ? nil : sessionResumptionHandle
+                    ) {
+                        webSocketManager.connect(url: url)
+                    }
+                } else if micGranted {
+                    // Already connected, just start audio
                     startAudioCapture()
                 }
             }
@@ -735,20 +754,35 @@ struct MainView: View {
             }
         }
 
-        // Await permissions before connecting — avoids WS setup before media access is granted
+        // Await permissions before connecting — mic is required, camera is optional (audio-only mode)
         Task {
-            let granted = await mediaPermissionGate.preflightMediaPermissions()
-            if !granted {
+            let allGranted = await mediaPermissionGate.preflightMediaPermissions()
+            let micGranted = await mediaPermissionGate.ensureMicPermission()
+
+            if !micGranted {
+                // Microphone is essential — cannot function without it
                 await MainActor.run {
-                    connectionStatus = "Camera/Microphone permission required"
+                    connectionStatus = "Microphone permission required"
                     showPermissionPrompt = true
                     UIAccessibility.post(notification: .announcement,
-                                         argument: "Camera and microphone permissions required. Use Open Settings button to grant access.")
+                                         argument: "Microphone permission is required. Use Open Settings button to grant access.")
                 }
-                logger.error("Media permissions missing at startup")
+                logger.error("WebSocket connection blocked: microphone permission denied")
+                return
             }
-            // Connect regardless (server can still provide audio-only assistance)
-            // but permissions are resolved first
+
+            if !allGranted {
+                // Mic granted but camera denied — audio-only mode
+                await MainActor.run {
+                    connectionStatus = "Audio-only mode (camera denied)"
+                    showPermissionPrompt = true
+                    UIAccessibility.post(notification: .announcement,
+                                         argument: "Camera permission denied. Running in audio-only mode. Use Open Settings to enable camera.")
+                }
+                logger.warning("Camera permission denied — connecting in audio-only mode")
+            }
+
+            // Connect only after mic permission confirmed
             await MainActor.run {
                 webSocketManager.connect(url: url)
             }
@@ -776,11 +810,18 @@ struct MainView: View {
         }
 
         // 2b. Setup depth estimation pipeline (CoreML Depth Anything V2)
+        // Load the CoreML model on a background thread to avoid blocking the main thread.
         let depthEstimator = DepthEstimator()
-        depthEstimator.loadModel()
         cameraManager.depthEstimator = depthEstimator
         cameraManager.onDepthEstimated = { summary in
             sensorManager.updateDepth(summary)
+        }
+        Task.detached(priority: .userInitiated) {
+            depthEstimator.loadModel()
+            let available = depthEstimator.isAvailable
+            await MainActor.run {
+                logger.info("Depth model async load complete (available: \(available))")
+            }
         }
 
         // 3. Setup audio capture -> WebSocket + NoiseMeter RMS feed
