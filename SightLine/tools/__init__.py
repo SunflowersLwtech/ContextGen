@@ -2,8 +2,13 @@
 
 Tools available to the Orchestrator agent via Gemini Function Calling:
 - navigate_to / get_location_info / nearby_search / reverse_geocode: Google Maps
+- preview_destination: Street View + Vision Agent
+- validate_address: Address Validation API
 - google_search: Grounding search
 - identify_person: Face ID matching (SILENT behavior)
+- resolve_plus_code / convert_to_plus_code: Google Plus Codes (offline)
+- get_accessibility_info: OSM accessibility data
+- maps_query: Gemini Maps Grounding
 """
 
 from __future__ import annotations
@@ -30,12 +35,30 @@ from tools.navigation import (
     get_walking_directions,
     navigate_to,
     nearby_search,
+    preview_destination,
     reverse_geocode,
+    validate_address,
 )
 from tools.search import (
     SEARCH_FUNCTIONS,
     SEARCH_TOOL_DECLARATIONS,
     google_search,
+)
+from tools.plus_codes import (
+    PLUS_CODES_FUNCTIONS,
+    PLUS_CODES_TOOL_DECLARATIONS,
+    convert_to_plus_code,
+    resolve_plus_code,
+)
+from tools.accessibility import (
+    ACCESSIBILITY_FUNCTIONS,
+    ACCESSIBILITY_TOOL_DECLARATIONS,
+    get_accessibility_info,
+)
+from tools.maps_grounding import (
+    MAPS_GROUNDING_FUNCTIONS,
+    MAPS_GROUNDING_TOOL_DECLARATIONS,
+    maps_query,
 )
 from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
@@ -93,6 +116,9 @@ ALL_TOOL_DECLARATIONS = (
     NAVIGATION_TOOL_DECLARATIONS
     + SEARCH_TOOL_DECLARATIONS
     + FACE_TOOL_DECLARATIONS
+    + PLUS_CODES_TOOL_DECLARATIONS
+    + ACCESSIBILITY_TOOL_DECLARATIONS
+    + MAPS_GROUNDING_TOOL_DECLARATIONS
 )
 
 ALL_FUNCTIONS = {
@@ -100,6 +126,9 @@ ALL_FUNCTIONS = {
     **SEARCH_FUNCTIONS,
     **FACE_FUNCTIONS,
     **MEMORY_FUNCTIONS,
+    **PLUS_CODES_FUNCTIONS,
+    **ACCESSIBILITY_FUNCTIONS,
+    **MAPS_GROUNDING_FUNCTIONS,
 }
 
 __all__ = [
@@ -109,6 +138,8 @@ __all__ = [
     "nearby_search",
     "reverse_geocode",
     "get_walking_directions",
+    "preview_destination",
+    "validate_address",
     "bearing_between",
     "bearing_to_clock",
     "format_clock_direction",
@@ -132,6 +163,19 @@ __all__ = [
     "resolve_tool_behavior",
     "FACE_TOOL_DECLARATIONS",
     "FACE_FUNCTIONS",
+    # Plus Codes
+    "resolve_plus_code",
+    "convert_to_plus_code",
+    "PLUS_CODES_TOOL_DECLARATIONS",
+    "PLUS_CODES_FUNCTIONS",
+    # Accessibility
+    "get_accessibility_info",
+    "ACCESSIBILITY_TOOL_DECLARATIONS",
+    "ACCESSIBILITY_FUNCTIONS",
+    # Maps Grounding
+    "maps_query",
+    "MAPS_GROUNDING_TOOL_DECLARATIONS",
+    "MAPS_GROUNDING_FUNCTIONS",
     # Memory
     "MEMORY_FUNCTIONS",
     # Aggregated

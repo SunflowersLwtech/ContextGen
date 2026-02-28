@@ -791,6 +791,14 @@ struct MainView: View {
             frameSelector.markFrameSent()
         }
 
+        // 2b. Setup depth estimation pipeline (CoreML Depth Anything V2)
+        let depthEstimator = DepthEstimator()
+        depthEstimator.loadModel()
+        cameraManager.depthEstimator = depthEstimator
+        cameraManager.onDepthEstimated = { summary in
+            sensorManager.updateDepth(summary)
+        }
+
         // 3. Setup audio capture -> WebSocket + NoiseMeter RMS feed
         //    Phase 5: Binary frame optimization — raw PCM without Base64 encoding
         audioCapture.onAudioCaptured = { pcmData in
@@ -976,6 +984,10 @@ struct MainView: View {
             }
         case .visionResult(let summary, let behavior):
             DispatchQueue.main.async { debugModel.markCapabilityReady("vision") }
+            // Haptic feedback for safety-critical vision alerts
+            if behavior == .INTERRUPT {
+                HapticManager.shared.obstacleProximity(distance: 0.3)
+            }
             handleToolMessage(
                 text: summary.isEmpty ? "Vision analysis updated." : summary,
                 behavior: behavior
@@ -1003,6 +1015,10 @@ struct MainView: View {
                 devConsoleModel.captureFrameAck(frameId: frameId, queuedAgents: queuedAgents)
             }
         case .navigationResult(let summary, let behavior):
+            // Haptic feedback for urgent navigation (LOD 1 safety mode)
+            if currentLOD <= 1 && behavior == .INTERRUPT {
+                HapticManager.shared.directionalCue(.ahead)
+            }
             handleToolMessage(
                 text: summary.isEmpty ? "Navigation result received." : summary,
                 behavior: behavior,

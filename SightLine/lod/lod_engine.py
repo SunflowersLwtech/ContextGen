@@ -263,6 +263,15 @@ def decide_lod(
         if base_lod != prev:
             log.triggered_rules.append("Rule6:advanced_daily→-1")
 
+    # ── Rule 6b: Familiarity-based adjustment ─────────────────────────
+    familiarity = _to_float(getattr(session, "familiarity_score", 0.5), 0.5)
+    if familiarity > 0.8 and base_lod > 1:
+        base_lod = max(1, base_lod - 1)
+        log.triggered_rules.append(f"Rule6b:familiar({familiarity:.2f})→-1")
+    elif familiarity < 0.2 and base_lod < 3:
+        base_lod = min(3, base_lod + 1)
+        log.triggered_rules.append(f"Rule6b:unfamiliar({familiarity:.2f})→+1")
+
     # ── Rule 7: Explicit user override + gesture (highest priority after PANIC)
     if user_gesture == "lod_up":
         prev = base_lod

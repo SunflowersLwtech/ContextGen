@@ -3,7 +3,12 @@
 import time
 from unittest.mock import patch
 
-from telemetry.session_meta_tracker import SessionMetaTracker
+import telemetry.session_meta_tracker as _smt_mod
+
+
+def _real_class():
+    """Access SessionMetaTracker at call time to dodge import-time MagicMock pollution."""
+    return _smt_mod.SessionMetaTracker
 
 
 class TestLodDistribution:
@@ -11,7 +16,7 @@ class TestLodDistribution:
 
     def test_lod_distribution_tracks_time(self):
         """Elapsed seconds are accumulated per LOD level."""
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
 
         # Simulate starting at LOD 2, spending 10s there
         tracker._lod_start_time = time.monotonic() - 10
@@ -30,7 +35,7 @@ class TestLodDistribution:
 
     def test_lod_distribution_accumulates(self):
         """Multiple transitions to the same LOD accumulate time."""
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         tracker._current_lod = 1
         tracker._lod_start_time = time.monotonic() - 3
         tracker.record_lod_time(2)  # 3s at LOD 1
@@ -49,7 +54,7 @@ class TestInteractionCounter:
     """Verify interaction counting."""
 
     def test_interaction_counter(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         assert tracker._total_interactions == 0
 
         tracker.record_interaction()
@@ -59,7 +64,7 @@ class TestInteractionCounter:
         assert tracker._total_interactions == 3
 
     def test_interaction_counter_starts_at_zero(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         assert tracker._total_interactions == 0
 
 
@@ -67,7 +72,7 @@ class TestSpaceTransitions:
     """Verify space transitions are recorded and filtered."""
 
     def test_space_transition(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         tracker.space_transitions = ["outdoor->indoor", "indoor->elevator"]
 
         doc = tracker.build_end_doc()
@@ -75,7 +80,7 @@ class TestSpaceTransitions:
 
     def test_unknown_filtered(self):
         """Transitions containing 'unknown' are filtered out."""
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         tracker.space_transitions = ["outdoor->indoor", "unknown", "indoor->cafe"]
 
         doc = tracker.build_end_doc()
@@ -87,7 +92,7 @@ class TestBuildEndDoc:
     """Verify the output dict structure of build_end_doc."""
 
     def test_build_end_doc_structure(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         tracker.set_trip_purpose("Coffee run")
         tracker.space_transitions = ["outdoor->cafe"]
         tracker.record_interaction()
@@ -106,7 +111,7 @@ class TestBuildEndDoc:
 
     def test_build_end_doc_empty_session(self):
         """An empty session still produces a valid document structure."""
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         doc = tracker.build_end_doc()
 
         assert doc["trip_purpose"] == ""
@@ -119,10 +124,10 @@ class TestSetTripPurpose:
     """Verify trip purpose setter."""
 
     def test_set_trip_purpose(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         tracker.set_trip_purpose("Going to the office")
         assert tracker._trip_purpose == "Going to the office"
 
     def test_default_trip_purpose_empty(self):
-        tracker = SessionMetaTracker(user_id="u1", session_id="s1")
+        tracker = _real_class()(user_id="u1", session_id="s1")
         assert tracker._trip_purpose == ""

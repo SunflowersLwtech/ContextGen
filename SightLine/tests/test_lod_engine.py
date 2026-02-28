@@ -368,3 +368,51 @@ def test_default_ambient_noise_is_70():
     """EphemeralContext default ambient_noise_db should be 70.0."""
     ctx = EphemeralContext()
     assert ctx.ambient_noise_db == 70.0
+
+
+# =====================================================================
+# decide_lod() — Rule 6b: Familiarity adjustment (Phase 6B)
+# =====================================================================
+
+
+def test_high_familiarity_reduces_lod(default_profile):
+    """High familiarity (>0.8) should reduce LOD by 1 when not at LOD 1."""
+    ctx = EphemeralContext(motion_state="stationary")
+    session = SessionContext(familiarity_score=0.9)
+    lod, log = decide_lod(ctx, session, default_profile)
+    # Stationary base LOD 3, concise -1 → 2, familiar -1 → 1
+    assert lod == 1
+    assert any("Rule6b:familiar" in r for r in log.triggered_rules)
+
+
+def test_low_familiarity_increases_lod(default_profile):
+    """Low familiarity (<0.2) should increase LOD by 1 when not at LOD 3."""
+    ctx = EphemeralContext(motion_state="walking", step_cadence=70)
+    session = SessionContext(familiarity_score=0.1)
+    lod, log = decide_lod(ctx, session, default_profile)
+    # Walking fast base LOD 1, unfamiliar +1 → 2
+    assert lod == 2
+    assert any("Rule6b:unfamiliar" in r for r in log.triggered_rules)
+
+
+def test_default_familiarity_no_effect(default_session, default_profile):
+    """Default familiarity (0.5) should not trigger Rule 6b."""
+    ctx = EphemeralContext(motion_state="stationary")
+    lod, log = decide_lod(ctx, default_session, default_profile)
+    assert not any("Rule6b" in r for r in log.triggered_rules)
+
+
+def test_familiarity_does_not_override_panic(default_profile):
+    """PANIC forces LOD 1 regardless of familiarity."""
+    ctx = EphemeralContext(panic=True)
+    session = SessionContext(familiarity_score=0.1)
+    lod, _ = decide_lod(ctx, session, default_profile)
+    assert lod == 1
+
+
+def test_high_familiarity_cannot_reduce_below_lod1(default_profile):
+    """High familiarity should not reduce LOD below 1."""
+    ctx = EphemeralContext(motion_state="running")  # base LOD 1
+    session = SessionContext(familiarity_score=0.95)
+    lod, log = decide_lod(ctx, session, default_profile)
+    assert lod == 1

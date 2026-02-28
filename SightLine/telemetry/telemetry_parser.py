@@ -118,6 +118,35 @@ def parse_telemetry(data: dict) -> str:
         except (ValueError, TypeError):
             pass
 
+    # Weather
+    weather = data.get("weather")
+    if weather and isinstance(weather, dict):
+        condition = weather.get("condition", "")
+        if condition:
+            parts = [f"weather={condition.lower()}"]
+            precip_chance = weather.get("precipitationChance")
+            if precip_chance is not None and precip_chance > 0.1:
+                parts.append(f"precipitation_chance={precip_chance:.0%}")
+            visibility = weather.get("visibility")
+            if visibility is not None and visibility < 5000:
+                parts.append(f"visibility={visibility:.0f}m")
+            wind = weather.get("windSpeed")
+            if wind is not None and wind > 5:
+                parts.append(f"wind={wind:.0f}m/s")
+            pairs.append(" ".join(parts))
+
+    # Depth
+    depth = data.get("depth")
+    if depth and isinstance(depth, dict):
+        center = depth.get("center_distance")
+        min_d = depth.get("min_distance")
+        min_region = depth.get("min_distance_region", "")
+        if center is not None and center > 0:
+            depth_parts = [f"depth_center={center:.1f}m"]
+            if min_d is not None and min_d > 0:
+                depth_parts.append(f"depth_closest={min_d:.1f}m/{min_region}")
+            pairs.append(" ".join(depth_parts))
+
     if not pairs:
         logger.debug("Telemetry data had no parseable fields: %s", json.dumps(data))
         return "[TELEMETRY UPDATE] No sensor data available."
@@ -222,5 +251,26 @@ def parse_telemetry_to_ephemeral(data: dict) -> EphemeralContext:
 
     # Device type
     ctx.device_type = data.get("device_type", "phone_only")
+
+    # Weather
+    weather = data.get("weather")
+    if weather and isinstance(weather, dict):
+        ctx.weather_condition = weather.get("condition", "unknown").lower()
+        ctx.weather_visibility = float(weather.get("visibility", 10000.0))
+        ctx.weather_precipitation = weather.get("precipitation", "none")
+
+    # Depth
+    depth = data.get("depth")
+    if depth and isinstance(depth, dict):
+        try:
+            center = depth.get("center_distance")
+            if center is not None:
+                ctx.depth_center = float(center)
+            min_d = depth.get("min_distance")
+            if min_d is not None:
+                ctx.depth_min = float(min_d)
+            ctx.depth_min_region = depth.get("min_distance_region")
+        except (ValueError, TypeError):
+            pass
 
     return ctx

@@ -275,6 +275,8 @@ struct TelemetryData: Codable {
     var userGesture: String?
     var panic: Bool = false
     var deviceType: String = "phone_only"
+    var weather: WeatherManager.WeatherSnapshot?
+    var depth: DepthEstimator.DepthSummary?
 
     enum CodingKeys: String, CodingKey {
         case motionState = "motion_state"
@@ -287,6 +289,8 @@ struct TelemetryData: Codable {
         case userGesture = "user_gesture"
         case panic
         case deviceType = "device_type"
+        case weather
+        case depth
     }
 }
 

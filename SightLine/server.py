@@ -612,6 +612,9 @@ FACE_LIBRARY_REFRESH_SEC: float = 60.0
 from tools import ALL_FUNCTIONS
 from tools.navigation import NAVIGATION_FUNCTIONS
 from tools.search import SEARCH_FUNCTIONS
+from tools.plus_codes import PLUS_CODES_FUNCTIONS
+from tools.accessibility import ACCESSIBILITY_FUNCTIONS
+from tools.maps_grounding import MAPS_GROUNDING_FUNCTIONS
 from memory.memory_tools import MEMORY_FUNCTIONS
 from tools.tool_behavior import ToolBehavior, behavior_to_text, resolve_tool_behavior
 
@@ -649,11 +652,20 @@ async def health() -> dict:
     return {
         "status": "ok",
         "model": LIVE_MODEL,
-        "phase": 4,
+        "phase": 6,
         "capabilities": {
             "vision": _vision_available,
             "ocr": _ocr_available,
             "face": _face_available,
+            "plus_codes": True,
+            "elevation": True,
+            "street_view": True,
+            "address_validation": True,
+            "accessibility": True,
+            "maps_grounding": bool(os.getenv("GOOGLE_MAPS_API_KEY")),
+            "weather": True,
+            "haptics": True,
+            "depth": True,
         },
     }
 
@@ -970,6 +982,34 @@ async def _dispatch_function_call(
             func_args.setdefault("lat", ephemeral.gps.lat)
             func_args.setdefault("lng", ephemeral.gps.lng)
 
+    # Plus Codes: inject GPS for convert_to_plus_code
+    if func_name in PLUS_CODES_FUNCTIONS:
+        ephemeral = session_manager.get_ephemeral_context(session_id)
+        if func_name == "convert_to_plus_code" and ephemeral.gps:
+            func_args.setdefault("lat", ephemeral.gps.lat)
+            func_args.setdefault("lng", ephemeral.gps.lng)
+
+    # preview_destination: inject GPS if not explicitly provided
+    if func_name == "preview_destination":
+        ephemeral = session_manager.get_ephemeral_context(session_id)
+        if ephemeral.gps:
+            func_args.setdefault("lat", ephemeral.gps.lat)
+            func_args.setdefault("lng", ephemeral.gps.lng)
+
+    # Accessibility: inject GPS
+    if func_name in ACCESSIBILITY_FUNCTIONS:
+        ephemeral = session_manager.get_ephemeral_context(session_id)
+        if ephemeral.gps:
+            func_args.setdefault("lat", ephemeral.gps.lat)
+            func_args.setdefault("lng", ephemeral.gps.lng)
+
+    # Maps grounding: inject GPS
+    if func_name in MAPS_GROUNDING_FUNCTIONS:
+        ephemeral = session_manager.get_ephemeral_context(session_id)
+        if ephemeral.gps:
+            func_args.setdefault("lat", ephemeral.gps.lat)
+            func_args.setdefault("lng", ephemeral.gps.lng)
+
     # Memory tools: hard-set user_id from session (security: prevents cross-user access)
     if func_name in MEMORY_FUNCTIONS:
         func_args["user_id"] = user_id
@@ -1265,6 +1305,46 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         language_code=user_profile.language,
     )
 
+    # -- Phase 6: Context Engine initialisation ---------------------------------
+    _location_ctx_service = None
+    _lod_evaluator = None
+    _assembled_profile = None
+    _current_location_ctx = None  # latest LocationContext from GPS
+    try:
+        from context.location_context import LocationContextService
+        from context.lod_evaluator import LODEvaluator
+        from context.profile_assembler import ProfileAssembler
+        from context.habit_detector import HabitDetector
+        from context.scene_matcher import SceneMatcher
+
+        _location_ctx_service = LocationContextService(user_id)
+        _lod_evaluator = LODEvaluator()
+
+        # Detect habits from session history (background, best-effort)
+        _proactive_hints = []
+        try:
+            _habit_detector = HabitDetector(user_id)
+            _proactive_hints = _habit_detector.detect()
+            if _proactive_hints:
+                logger.info(
+                    "Detected %d habits for user=%s (top: %s)",
+                    len(_proactive_hints), user_id,
+                    _proactive_hints[0].description[:60] if _proactive_hints else "",
+                )
+        except Exception:
+            logger.debug("Habit detection skipped", exc_info=True)
+
+        # Assemble initial profile
+        _assembler = ProfileAssembler()
+        _assembled_profile = _assembler.assemble(
+            profile=user_profile,
+            location_ctx=None,  # no GPS yet at session start
+            entities=None,
+            memories=None,
+        )
+    except Exception:
+        logger.debug("Context engine init skipped (import error)", exc_info=True)
+
     # -- E-7: Initial LOD context injection at session start -----------------
     # Inject the full dynamic system prompt so the model has LOD context
     # immediately, rather than waiting for the first telemetry tick.
@@ -1280,6 +1360,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         ephemeral_semantic="",
         session=session_ctx,
         memories=_initial_memories if _initial_memories else None,
+        assembled_profile=_assembled_profile,
     )
     # -- Merge system prompt + greeting into ONE send_content call -----------
     # Two separate inject_immediate() calls cause Gemini to generate two
@@ -1342,6 +1423,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             profile=user_profile,
             reason=reason,
             memories=memories,
+            assembled_profile=_assembled_profile,
+            location_ctx=_current_location_ctx,
         )
         ctx_queue.enqueue(
             category="lod",
@@ -2409,6 +2492,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
         """Process a telemetry tick: semantic text + LOD decision."""
         import time as _time
         nonlocal _last_telemetry_signature, _last_telemetry_context_sent_at
+        nonlocal _current_location_ctx
 
         ephemeral_ctx = parse_telemetry_to_ephemeral(telemetry_data)
         session_manager.update_ephemeral_context(session_id, ephemeral_ctx)
@@ -2464,6 +2548,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             _last_telemetry_signature = signature
             telemetry_agg.mark_sent(now)
 
+        # Phase 6B: Location context evaluation from GPS
+        if _location_ctx_service and ephemeral_ctx.gps:
+            try:
+                _current_location_ctx = await _location_ctx_service.evaluate(
+                    ephemeral_ctx.gps.lat, ephemeral_ctx.gps.lng,
+                )
+                session_ctx.familiarity_score = _current_location_ctx.familiarity_score
+                # Track unique locations visited this session
+                place = _current_location_ctx.place_name
+                if place and place not in session_meta.locations_visited:
+                    session_meta.locations_visited.append(place)
+            except Exception:
+                logger.debug("Location context evaluation failed", exc_info=True)
+
         await _process_lod_decision(ephemeral_ctx)
 
     async def _process_lod_decision(ephemeral_ctx) -> None:
@@ -2473,6 +2571,28 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
             session=session_ctx,
             profile=user_profile,
         )
+
+        # Phase 6D: LLM micro-adjustment for non-safety LOD decisions
+        if _lod_evaluator and new_lod >= 2:
+            try:
+                adjustment = await _lod_evaluator.evaluate(
+                    baseline_lod=new_lod,
+                    location_ctx=_current_location_ctx,
+                    user_profile=user_profile,
+                )
+                if adjustment.delta != 0:
+                    adjusted = max(1, min(3, new_lod + adjustment.delta))
+                    if adjusted != new_lod:
+                        logger.info(
+                            "LOD micro-adjust: %d -> %d (%s)",
+                            new_lod, adjusted, adjustment.reason,
+                        )
+                        decision_log.triggered_rules.append(
+                            f"LLM:{adjustment.reason[:40]}"
+                        )
+                        new_lod = adjusted
+            except Exception:
+                logger.debug("LOD evaluator failed", exc_info=True)
 
         old_lod = session_ctx.current_lod
 
@@ -2877,6 +2997,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, session_id: str
                     "Memory auto-extraction failed for user=%s session=%s",
                     user_id, session_id,
                 )
+
+        # Phase 6: Record ACE data to session metadata (best-effort)
+        try:
+            if _current_location_ctx:
+                place = getattr(_current_location_ctx, "place_name", "")
+                if place:
+                    session_meta.locations_visited.append(place)
+        except Exception:
+            logger.debug("ACE session end data failed", exc_info=True)
 
         # Write session metadata before cleanup
         session_meta.space_transitions = list(session_ctx.space_transitions)

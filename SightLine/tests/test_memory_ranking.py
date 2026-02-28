@@ -5,7 +5,9 @@ import time
 import pytest
 
 from memory.memory_ranking import (
+    ENTITY_OVERLAP_WEIGHT,
     IMPORTANCE_WEIGHT,
+    LOCATION_WEIGHT,
     RECENCY_WEIGHT,
     RELEVANCE_WEIGHT,
     rank_memories,
@@ -119,13 +121,108 @@ class TestRankMemories:
         assert "_composite_score" in ranked[0]
 
     def test_weights_sum_to_one(self):
-        assert abs(RELEVANCE_WEIGHT + RECENCY_WEIGHT + IMPORTANCE_WEIGHT - 1.0) < 1e-9
+        total = RELEVANCE_WEIGHT + RECENCY_WEIGHT + IMPORTANCE_WEIGHT + LOCATION_WEIGHT + ENTITY_OVERLAP_WEIGHT
+        assert abs(total - 1.0) < 1e-9
 
     def test_original_fields_preserved(self):
         memories = [{"content": "test", "category": "place", "extra": 42}]
         ranked = rank_memories(memories)
         assert ranked[0]["category"] == "place"
         assert ranked[0]["extra"] == 42
+
+
+class TestLayeredDecay:
+    """Tests for layer-aware half-life decay."""
+
+    def test_episodic_decays_faster_than_semantic(self):
+        """Episodic (7-day half-life) should rank lower than semantic (90-day)
+        at the same age."""
+        age = 168  # 7 days in hours
+        memories = [
+            {**_make_memory("episodic", age_hours=age), "half_life_days": 7},
+            {**_make_memory("semantic", age_hours=age), "half_life_days": 90},
+        ]
+        ranked = rank_memories(memories, max_results=2)
+        # Semantic decays slower, so it should rank higher
+        assert ranked[0]["content"] == "semantic"
+        assert ranked[0]["_recency"] > ranked[1]["_recency"]
+
+    def test_procedural_near_permanent(self):
+        """Procedural (999-day half-life) should barely decay even after months."""
+        age = 720  # 30 days in hours
+        memories = [
+            {**_make_memory("proc", age_hours=age), "half_life_days": 999},
+        ]
+        ranked = rank_memories(memories, max_results=1)
+        # 30 days / 999 days ~ 0.03 half-lives → recency ~ 0.98
+        assert ranked[0]["_recency"] > 0.95
+
+    def test_legacy_default_half_life(self):
+        """Memories without half_life_days use 1-day (legacy 24hr decay)."""
+        memories = [_make_memory("legacy", age_hours=24)]
+        ranked = rank_memories(memories)
+        # half_life_days=1 → 24hr old = 0.5 recency
+        assert abs(ranked[0]["_recency"] - 0.5) < 0.01
+
+    def test_backward_compat_no_new_fields(self):
+        """Old memories without memory_layer/entity_refs still rank correctly."""
+        memories = [
+            _make_memory("old_a", relevance_score=0.9, importance=0.8),
+            _make_memory("old_b", relevance_score=0.2, importance=0.3),
+        ]
+        ranked = rank_memories(memories)
+        assert ranked[0]["content"] == "old_a"
+
+
+class TestLocationScoring:
+    """Tests for location-aware ranking dimension."""
+
+    def test_matching_location_boosts_score(self):
+        class FakeLocation:
+            matched_entity_id = "place_001"
+
+        memories = [
+            {**_make_memory("at_place", relevance_score=0.5), "location_ref": "place_001"},
+            {**_make_memory("elsewhere", relevance_score=0.5), "location_ref": "place_999"},
+        ]
+        ranked = rank_memories(memories, current_location=FakeLocation())
+        assert ranked[0]["content"] == "at_place"
+        assert ranked[0]["_location_score"] == 1.0
+        assert ranked[1]["_location_score"] == 0.3
+
+    def test_no_location_context_neutral(self):
+        memories = [
+            {**_make_memory("a", relevance_score=0.5), "location_ref": "place_001"},
+        ]
+        ranked = rank_memories(memories)
+        assert ranked[0]["_location_score"] == 0.5
+
+
+class TestEntityOverlapScoring:
+    """Tests for entity overlap ranking dimension."""
+
+    def test_entity_overlap_boosts_score(self):
+        memories = [
+            {**_make_memory("with_entity", relevance_score=0.5), "entity_refs": ["e001", "e002"]},
+            {**_make_memory("no_entity", relevance_score=0.5), "entity_refs": []},
+        ]
+        ranked = rank_memories(memories, visible_entity_ids=["e001"])
+        assert ranked[0]["content"] == "with_entity"
+        assert ranked[0]["_entity_score"] > ranked[1]["_entity_score"]
+
+    def test_full_overlap(self):
+        memories = [
+            {**_make_memory("full", relevance_score=0.5), "entity_refs": ["e001"]},
+        ]
+        ranked = rank_memories(memories, visible_entity_ids=["e001", "e002"])
+        assert ranked[0]["_entity_score"] == 1.0
+
+    def test_no_visible_entities_neutral(self):
+        memories = [
+            {**_make_memory("a"), "entity_refs": ["e001"]},
+        ]
+        ranked = rank_memories(memories)
+        assert ranked[0]["_entity_score"] == 0.5
 
 
 class TestScoreMemories:

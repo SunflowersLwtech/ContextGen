@@ -23,5 +23,8 @@ googlemaps==4.10.0
 # === 版本锁定 ===
 numpy>=1.24.0,<2.0                    # insightface 不兼容 numpy 2.x
 
+# === Plus Codes (离线位置编码，替代 What3Words) ===
+openlocationcode>=1.0.1               # Google Plus Codes encode/decode
+
 # === 编译依赖 ===
 cython>=3.0.0                         # insightface Cython 扩展编译需要

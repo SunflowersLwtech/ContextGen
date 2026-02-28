@@ -36,6 +36,10 @@ For each extracted memory, provide:
 - "category": One of [preference, experience, person, location, routine]
 - "importance": Float 0-1 (how important is this for future sessions?)
 - "confidence": Float 0-1 (how confident are you this is a real, extractable fact?)
+- "memory_layer": One of [episodic, semantic, procedural] — episodic for one-time events/experiences, \
+semantic for facts about people/places/things, procedural for habits/preferences/routines
+- "entity_names": Array of entity names (people, places, organizations) referenced in this memory. \
+Empty array if none.
 
 Return a JSON array of objects. If no meaningful memories can be extracted, return an empty array [].
 
@@ -47,6 +51,18 @@ Transcript:
 
 
 _VALID_CATEGORIES = {"preference", "experience", "person", "location", "routine", "general"}
+
+_VALID_LAYERS = {"episodic", "semantic", "procedural"}
+
+# Default layer mapping: category → memory_layer
+_CATEGORY_TO_LAYER: dict[str, str] = {
+    "preference": "procedural",
+    "experience": "episodic",
+    "person": "semantic",
+    "location": "semantic",
+    "routine": "procedural",
+    "general": "semantic",
+}
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -131,6 +147,11 @@ class MemoryExtractor:
             content = candidate["content"]
             category = candidate.get("category", "general")
             importance = float(candidate.get("importance", 0.5))
+            memory_layer = candidate.get("memory_layer", "semantic")
+            entity_names = candidate.get("entity_names", [])
+
+            # Resolve entity names to IDs if entity graph is available
+            entity_refs = self._resolve_entity_names(user_id, entity_names)
 
             # Conflict detection: check if a similar memory already exists
             duplicate = self._find_duplicate(content, existing_memories, existing_embeddings=existing_embeddings)
@@ -139,7 +160,11 @@ class MemoryExtractor:
                 memory_id = duplicate.get("memory_id")
                 if memory_id:
                     memory_bank.delete_memory(memory_id)
-                    new_id = memory_bank.store_memory(content, category, importance)
+                    new_id = memory_bank.store_memory(
+                        content, category, importance,
+                        memory_layer=memory_layer,
+                        entity_refs=entity_refs,
+                    )
                     if new_id:
                         logger.info(
                             "Updated memory %s -> %s for user %s (conflict resolved)",
@@ -147,7 +172,11 @@ class MemoryExtractor:
                         )
                         stored_count += 1
             else:
-                new_id = memory_bank.store_memory(content, category, importance)
+                new_id = memory_bank.store_memory(
+                    content, category, importance,
+                    memory_layer=memory_layer,
+                    entity_refs=entity_refs,
+                )
                 if new_id:
                     logger.info("Stored new memory %s for user %s", new_id, user_id)
                     stored_count += 1
@@ -214,7 +243,26 @@ class MemoryExtractor:
                 category = "general"
             importance = max(0.0, min(1.0, float(raw.get("importance", 0.5))))
             confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
-            return {"content": content, "category": category, "importance": importance, "confidence": confidence}
+
+            # Memory layer: use LLM output if valid, else infer from category
+            memory_layer = str(raw.get("memory_layer", "")).strip().lower()
+            if memory_layer not in _VALID_LAYERS:
+                memory_layer = _CATEGORY_TO_LAYER.get(category, "semantic")
+
+            # Entity names referenced in this memory
+            entity_names = raw.get("entity_names", [])
+            if not isinstance(entity_names, list):
+                entity_names = []
+            entity_names = [str(n).strip() for n in entity_names if str(n).strip()]
+
+            return {
+                "content": content,
+                "category": category,
+                "importance": importance,
+                "confidence": confidence,
+                "memory_layer": memory_layer,
+                "entity_names": entity_names,
+            }
         except (TypeError, ValueError) as e:
             logger.warning("Invalid candidate: %s", e)
             return None
@@ -284,6 +332,23 @@ class MemoryExtractor:
                 return mem
 
         return None
+
+    def _resolve_entity_names(self, user_id: str, entity_names: list[str]) -> list[str]:
+        """Resolve entity names to IDs via the entity graph. Best-effort."""
+        if not entity_names:
+            return []
+        try:
+            from context.entity_graph import EntityGraphService
+            graph = EntityGraphService(user_id)
+            refs = []
+            for name in entity_names:
+                entity = graph.find_entity_by_name(name)
+                if entity:
+                    refs.append(entity.entity_id)
+            return refs
+        except Exception:
+            logger.debug("Entity name resolution unavailable", exc_info=True)
+            return []
 
     def _text_similarity(self, a: str, b: str) -> float:
         """Jaccard word-overlap similarity between two strings."""

@@ -87,8 +87,21 @@ class MemoryBankService:
             .collection("memories")
         )
 
+    # Layer half-lives (days): episodic decays fast, procedural is near-permanent
+    _LAYER_HALF_LIVES: dict[str, float] = {
+        "episodic": 7,
+        "semantic": 90,
+        "procedural": 999,
+    }
+
     def store_memory(
-        self, content: str, category: str = "general", importance: float = 0.5
+        self,
+        content: str,
+        category: str = "general",
+        importance: float = 0.5,
+        memory_layer: str = "semantic",
+        entity_refs: list[str] | None = None,
+        location_ref: str | None = None,
     ) -> Optional[str]:
         """Store a memory with metadata and embedding.
 
@@ -96,10 +109,16 @@ class MemoryBankService:
             content: The memory text content.
             category: Classification (e.g. "general", "place", "person").
             importance: Importance score from 0 to 1.
+            memory_layer: One of "episodic", "semantic", "procedural".
+            entity_refs: List of entity IDs this memory references.
+            location_ref: Entity ID of a place this memory is associated with.
 
         Returns:
             The Firestore document ID, or None on failure.
         """
+        half_life = self._LAYER_HALF_LIVES.get(memory_layer, 90)
+        now = time.time()
+
         if not self._ensure_firestore():
             # Ephemeral fallback: store in cache only
             memory_id = uuid.uuid4().hex
@@ -108,7 +127,13 @@ class MemoryBankService:
                 "content": content,
                 "category": category,
                 "importance": importance,
-                "timestamp": time.time(),
+                "timestamp": now,
+                "memory_layer": memory_layer,
+                "entity_refs": entity_refs or [],
+                "location_ref": location_ref,
+                "half_life_days": half_life,
+                "access_count": 0,
+                "last_accessed": now,
             })
             return memory_id
 
@@ -116,13 +141,18 @@ class MemoryBankService:
             from google.cloud.firestore_v1.vector import Vector
 
             embedding = _compute_embedding(content)
-            now = time.time()
             doc_data = {
                 "content": content,
                 "category": category,
                 "importance": importance,
                 "timestamp": now,
                 "embedding": Vector(embedding),
+                "memory_layer": memory_layer,
+                "entity_refs": entity_refs or [],
+                "location_ref": location_ref,
+                "half_life_days": half_life,
+                "access_count": 0,
+                "last_accessed": now,
             }
 
             doc_ref = self._memories_collection().document()
@@ -133,19 +163,27 @@ class MemoryBankService:
             logger.error("Failed to store memory for user %s", self.user_id, exc_info=True)
             return None
 
-    def retrieve_memories(self, context: str, top_k: int = 3) -> list[dict]:
+    def retrieve_memories(
+        self,
+        context: str,
+        top_k: int = 3,
+        location_context=None,
+        visible_entity_ids: list[str] | None = None,
+    ) -> list[dict]:
         """Retrieve relevant memories using vector search with text fallback.
 
         First attempts Firestore vector nearest-neighbor search. If that
         fails (e.g. index not ready), falls back to fetching recent
         memories and doing client-side text matching.
 
-        Results are re-ranked using the three-dimensional scoring from
-        memory_ranking (relevance 0.5 + recency 0.3 + importance 0.2).
+        Results are re-ranked using multi-dimensional scoring from
+        memory_ranking.
 
         Args:
             context: Current conversation context or query string.
             top_k: Maximum number of memories to return.
+            location_context: Optional LocationContext for location-aware ranking.
+            visible_entity_ids: Entity IDs currently relevant (scene/conversation).
 
         Returns:
             List of memory dicts with content, category, importance,
@@ -153,20 +191,27 @@ class MemoryBankService:
         """
         from memory.memory_ranking import rank_memories
 
+        rank_kwargs = {
+            "query_context": context,
+            "max_results": top_k,
+            "current_location": location_context,
+            "visible_entity_ids": visible_entity_ids,
+        }
+
         if not self._ensure_firestore():
             results = self._retrieve_from_cache(context, top_k * 2)
-            return rank_memories(results, query_context=context, max_results=top_k)
+            return rank_memories(results, **rank_kwargs)
 
         # Try Firestore vector search first
         try:
             results = self._vector_search(context, top_k * 2)
-            return rank_memories(results, query_context=context, max_results=top_k)
+            return rank_memories(results, **rank_kwargs)
         except Exception:
             logger.debug("Vector search unavailable, falling back to text match", exc_info=True)
 
         # Fallback: fetch recent memories and rank by text overlap
         results = self._text_fallback(context, top_k * 2)
-        return rank_memories(results, query_context=context, max_results=top_k)
+        return rank_memories(results, **rank_kwargs)
 
     def _vector_search(self, context: str, top_k: int) -> list[dict]:
         """Firestore find_nearest vector search."""

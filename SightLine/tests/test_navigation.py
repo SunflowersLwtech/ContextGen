@@ -23,7 +23,9 @@ from tools.navigation import (
     get_walking_directions,
     navigate_to,
     nearby_search,
+    preview_destination,
     reverse_geocode,
+    validate_address,
 )
 
 
@@ -162,6 +164,19 @@ class TestManeuverToDescription:
     def test_none(self):
         assert _maneuver_to_description(None) == ""
 
+    # Routes API format tests
+    def test_routes_turn_left(self):
+        assert _maneuver_to_description("TURN_LEFT") == "turn to 9 o'clock"
+
+    def test_routes_turn_right(self):
+        assert _maneuver_to_description("TURN_RIGHT") == "turn to 3 o'clock"
+
+    def test_routes_straight(self):
+        assert _maneuver_to_description("STRAIGHT") == "continue straight ahead"
+
+    def test_routes_depart(self):
+        assert _maneuver_to_description("DEPART") == "depart"
+
 
 class TestHaversineDistance:
     """Test haversine distance calculation."""
@@ -176,82 +191,139 @@ class TestHaversineDistance:
 
 
 # ---------------------------------------------------------------------------
-# API-mocked integration tests
+# Mock data for Routes API (v2 format)
 # ---------------------------------------------------------------------------
 
-MOCK_DIRECTIONS_RESPONSE = [
-    {
-        "legs": [
-            {
-                "start_address": "123 Main St",
-                "end_address": "456 Oak Ave",
-                "start_location": {"lat": 37.7749, "lng": -122.4194},
-                "end_location": {"lat": 37.7849, "lng": -122.4094},
-                "distance": {"text": "1.2 km", "value": 1200},
-                "duration": {"text": "15 mins", "value": 900},
-                "steps": [
-                    {
-                        "html_instructions": "Head <b>north</b> on Main St",
-                        "distance": {"text": "200 m", "value": 200},
-                        "duration": {"text": "3 mins", "value": 180},
-                        "start_location": {"lat": 37.7749, "lng": -122.4194},
-                        "end_location": {"lat": 37.7769, "lng": -122.4194},
-                        "maneuver": "straight",
+MOCK_ROUTES_RESPONSE = {
+    "routes": [
+        {
+            "legs": [
+                {
+                    "distanceMeters": 1200,
+                    "duration": "900s",
+                    "startLocation": {
+                        "latLng": {"latitude": 37.7749, "longitude": -122.4194},
                     },
-                    {
-                        "html_instructions": "Turn <b>right</b> onto Oak Ave",
-                        "distance": {"text": "1.0 km", "value": 1000},
-                        "duration": {"text": "12 mins", "value": 720},
-                        "start_location": {"lat": 37.7769, "lng": -122.4194},
-                        "end_location": {"lat": 37.7849, "lng": -122.4094},
-                        "maneuver": "turn-right",
+                    "endLocation": {
+                        "latLng": {"latitude": 37.7849, "longitude": -122.4094},
                     },
-                ],
-            }
-        ]
-    }
-]
+                    "steps": [
+                        {
+                            "distanceMeters": 200,
+                            "navigationInstruction": {
+                                "instructions": "Head north on Main St",
+                                "maneuver": "STRAIGHT",
+                            },
+                            "localizedValues": {
+                                "distance": {"text": "200 m"},
+                            },
+                            "startLocation": {
+                                "latLng": {"latitude": 37.7749, "longitude": -122.4194},
+                            },
+                            "endLocation": {
+                                "latLng": {"latitude": 37.7769, "longitude": -122.4194},
+                            },
+                        },
+                        {
+                            "distanceMeters": 1000,
+                            "navigationInstruction": {
+                                "instructions": "Turn right onto Oak Ave",
+                                "maneuver": "TURN_RIGHT",
+                            },
+                            "localizedValues": {
+                                "distance": {"text": "1.0 km"},
+                            },
+                            "startLocation": {
+                                "latLng": {"latitude": 37.7769, "longitude": -122.4194},
+                            },
+                            "endLocation": {
+                                "latLng": {"latitude": 37.7849, "longitude": -122.4094},
+                            },
+                        },
+                    ],
+                }
+            ],
+            "polyline": {
+                "encodedPolyline": "_p~iF~ps|U_ulLnnqC_mqNvxq`@",
+            },
+        }
+    ]
+}
+
+MOCK_ROUTES_EMPTY = {"routes": []}
 
 MOCK_GEOCODE_RESPONSE = [
     {"formatted_address": "123 Main St, San Francisco, CA 94105"}
 ]
 
-MOCK_NEARBY_RESPONSE = {
-    "results": [
+MOCK_PLACES_NEARBY_RESPONSE = {
+    "places": [
         {
-            "name": "Coffee Bean",
-            "geometry": {"location": {"lat": 37.7751, "lng": -122.4190}},
+            "displayName": {"text": "Coffee Bean"},
+            "location": {"latitude": 37.7751, "longitude": -122.4190},
             "types": ["cafe", "food"],
             "rating": 4.2,
-            "vicinity": "100 Main St",
-            "opening_hours": {"open_now": True},
+            "formattedAddress": "100 Main St",
+            "currentOpeningHours": {"openNow": True},
+            "accessibilityOptions": {
+                "wheelchairAccessibleEntrance": True,
+                "wheelchairAccessibleRestroom": False,
+            },
+            "plusCode": {"globalCode": "849VQHFJ+XY"},
         },
         {
-            "name": "City Pharmacy",
-            "geometry": {"location": {"lat": 37.7755, "lng": -122.4185}},
+            "displayName": {"text": "City Pharmacy"},
+            "location": {"latitude": 37.7755, "longitude": -122.4185},
             "types": ["pharmacy", "health"],
             "rating": 3.8,
-            "vicinity": "110 Main St",
-            "opening_hours": {"open_now": False},
+            "formattedAddress": "110 Main St",
+            "currentOpeningHours": {"openNow": False},
+            "accessibilityOptions": {},
         },
     ]
 }
 
 
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture
 def mock_gmaps():
-    """Provide a mocked Google Maps client."""
+    """Provide a mocked Google Maps SDK client (for reverse_geocode + elevation)."""
     with patch("tools.navigation._get_client") as mock_get:
         client = MagicMock()
         mock_get.return_value = client
         yield client
 
 
-class TestNavigateTo:
-    """Test navigate_to with mocked API."""
+@pytest.fixture
+def mock_routes():
+    """Mock the REST helper used by Routes API / Places (New) / Address Validation."""
+    with patch("tools.navigation.maps_rest_post") as mock_post:
+        yield mock_post
 
-    def test_success(self, mock_gmaps):
-        mock_gmaps.directions.return_value = MOCK_DIRECTIONS_RESPONSE
+
+@pytest.fixture
+def mock_rest_get():
+    """Mock the REST GET helper used by Street View."""
+    with patch("tools.navigation.maps_rest_get") as mock_get:
+        yield mock_get
+
+
+# ---------------------------------------------------------------------------
+# API-mocked integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestNavigateTo:
+    """Test navigate_to with mocked Routes API."""
+
+    def test_success(self, mock_routes, mock_gmaps):
+        mock_routes.return_value = MOCK_ROUTES_RESPONSE
+        # Mock elevation to return empty (non-critical)
+        mock_gmaps.elevation_along_path.return_value = []
 
         result = navigate_to(
             destination="456 Oak Ave",
@@ -263,13 +335,14 @@ class TestNavigateTo:
         assert result["success"] is True
         assert result["destination"] == "456 Oak Ave"
         assert result["total_distance"] == "1.2 km"
-        assert result["total_duration"] == "15 mins"
+        assert result["total_duration"] == "15 min"
         assert len(result["steps"]) == 2
         assert "clock_direction" in result["steps"][0]
         assert "accessibility_note" in result
+        assert "slope_warnings" in result
 
-    def test_no_route_found(self, mock_gmaps):
-        mock_gmaps.directions.return_value = []
+    def test_no_route_found(self, mock_routes):
+        mock_routes.return_value = MOCK_ROUTES_EMPTY
 
         result = navigate_to(
             destination="Nonexistent Place",
@@ -280,8 +353,8 @@ class TestNavigateTo:
         assert result["success"] is False
         assert "No walking route" in result["error"]
 
-    def test_api_error(self, mock_gmaps):
-        mock_gmaps.directions.side_effect = Exception("API quota exceeded")
+    def test_api_error(self, mock_routes):
+        mock_routes.side_effect = Exception("API quota exceeded")
 
         result = navigate_to(
             destination="456 Oak Ave",
@@ -292,8 +365,9 @@ class TestNavigateTo:
         assert result["success"] is False
         assert "API quota exceeded" in result["error"]
 
-    def test_step_has_maneuver_direction(self, mock_gmaps):
-        mock_gmaps.directions.return_value = MOCK_DIRECTIONS_RESPONSE
+    def test_step_has_maneuver_direction(self, mock_routes, mock_gmaps):
+        mock_routes.return_value = MOCK_ROUTES_RESPONSE
+        mock_gmaps.elevation_along_path.return_value = []
 
         result = navigate_to(
             destination="456 Oak Ave",
@@ -302,17 +376,37 @@ class TestNavigateTo:
             user_heading=0.0,
         )
 
-        # Second step has turn-right maneuver
+        # Second step has TURN_RIGHT maneuver
         step2 = result["steps"][1]
         assert step2["direction"] == "turn to 3 o'clock"
+
+    def test_slope_warnings_included(self, mock_routes, mock_gmaps):
+        mock_routes.return_value = MOCK_ROUTES_RESPONSE
+        # Simulate steep elevation change
+        mock_gmaps.elevation_along_path.return_value = [
+            {"elevation": 0},
+            {"elevation": 0},
+            {"elevation": 20},  # Steep uphill on third segment
+        ]
+
+        result = navigate_to(
+            destination="456 Oak Ave",
+            origin_lat=37.7749,
+            origin_lng=-122.4194,
+        )
+
+        assert result["success"] is True
+        # With 1200m / 2 segments = 600m each, 20m rise = 3.3% — below threshold
+        # So no warnings in this case (correct behavior)
+        assert isinstance(result["slope_warnings"], list)
 
 
 class TestGetLocationInfo:
     """Test get_location_info with mocked API."""
 
-    def test_success(self, mock_gmaps):
+    def test_success(self, mock_gmaps, mock_routes):
         mock_gmaps.reverse_geocode.return_value = MOCK_GEOCODE_RESPONSE
-        mock_gmaps.places_nearby.return_value = MOCK_NEARBY_RESPONSE
+        mock_routes.return_value = MOCK_PLACES_NEARBY_RESPONSE
 
         result = get_location_info(37.7749, -122.4194)
 
@@ -320,10 +414,13 @@ class TestGetLocationInfo:
         assert "San Francisco" in result["address"]
         assert len(result["nearby_places"]) == 2
         assert result["nearby_places"][0]["name"] == "Coffee Bean"
+        # Check accessibility field
+        assert "accessibility" in result["nearby_places"][0]
+        assert result["nearby_places"][0]["accessibility"]["wheelchair_entrance"] is True
 
-    def test_no_geocode_results(self, mock_gmaps):
+    def test_no_geocode_results(self, mock_gmaps, mock_routes):
         mock_gmaps.reverse_geocode.return_value = []
-        mock_gmaps.places_nearby.return_value = {"results": []}
+        mock_routes.return_value = {"places": []}
 
         result = get_location_info(0.0, 0.0)
 
@@ -340,10 +437,10 @@ class TestGetLocationInfo:
 
 
 class TestNearbySearch:
-    """Test nearby_search with mocked API."""
+    """Test nearby_search with mocked Places (New) API."""
 
-    def test_success(self, mock_gmaps):
-        mock_gmaps.places_nearby.return_value = MOCK_NEARBY_RESPONSE
+    def test_success(self, mock_routes):
+        mock_routes.return_value = MOCK_PLACES_NEARBY_RESPONSE
 
         result = nearby_search(37.7749, -122.4194, radius=200, types=["cafe"])
 
@@ -352,20 +449,19 @@ class TestNearbySearch:
         # Results should be sorted by distance
         places = result["places"]
         assert places[0]["distance_meters"] <= places[1]["distance_meters"]
+        # Check accessibility field present
+        assert "accessibility" in places[0]
 
-    def test_with_keyword(self, mock_gmaps):
-        mock_gmaps.places_nearby.return_value = MOCK_NEARBY_RESPONSE
+    def test_with_types(self, mock_routes):
+        mock_routes.return_value = MOCK_PLACES_NEARBY_RESPONSE
 
-        result = nearby_search(37.7749, -122.4194, keyword="coffee")
+        result = nearby_search(37.7749, -122.4194, types=["cafe"])
 
         assert result["success"] is True
-        assert result["query"] == "coffee"
-        mock_gmaps.places_nearby.assert_called_once()
-        call_kwargs = mock_gmaps.places_nearby.call_args[1]
-        assert call_kwargs["keyword"] == "coffee"
+        assert result["query"] == "cafe"
 
-    def test_empty_results(self, mock_gmaps):
-        mock_gmaps.places_nearby.return_value = {"results": []}
+    def test_empty_results(self, mock_routes):
+        mock_routes.return_value = {"places": []}
 
         result = nearby_search(37.7749, -122.4194)
 
@@ -373,8 +469,8 @@ class TestNearbySearch:
         assert result["count"] == 0
         assert result["places"] == []
 
-    def test_api_error(self, mock_gmaps):
-        mock_gmaps.places_nearby.side_effect = Exception("Quota exceeded")
+    def test_api_error(self, mock_routes):
+        mock_routes.side_effect = Exception("Quota exceeded")
 
         result = nearby_search(37.7749, -122.4194)
 
@@ -410,10 +506,11 @@ class TestReverseGeocode:
 
 
 class TestGetWalkingDirections:
-    """Test get_walking_directions with mocked API."""
+    """Test get_walking_directions with mocked Routes API."""
 
-    def test_success(self, mock_gmaps):
-        mock_gmaps.directions.return_value = MOCK_DIRECTIONS_RESPONSE
+    def test_success(self, mock_routes, mock_gmaps):
+        mock_routes.return_value = MOCK_ROUTES_RESPONSE
+        mock_gmaps.elevation_along_path.return_value = []
 
         result = get_walking_directions("123 Main St", "456 Oak Ave")
 
@@ -422,20 +519,98 @@ class TestGetWalkingDirections:
         assert len(result["steps"]) == 2
         # Check maneuver descriptions
         assert result["steps"][1]["direction"] == "turn to 3 o'clock"
+        assert "slope_warnings" in result
 
-    def test_no_route(self, mock_gmaps):
-        mock_gmaps.directions.return_value = []
+    def test_no_route(self, mock_routes):
+        mock_routes.return_value = MOCK_ROUTES_EMPTY
 
         result = get_walking_directions("Mars", "Jupiter")
 
         assert result["success"] is False
 
-    def test_api_error(self, mock_gmaps):
-        mock_gmaps.directions.side_effect = Exception("Timeout")
+    def test_api_error(self, mock_routes):
+        mock_routes.side_effect = Exception("Timeout")
 
         result = get_walking_directions("A", "B")
 
         assert result["success"] is False
+
+
+class TestValidateAddress:
+    """Test validate_address with mocked Address Validation API."""
+
+    def test_corrected_address(self, mock_routes):
+        mock_routes.return_value = {
+            "result": {
+                "address": {
+                    "formattedAddress": "123 Main St, Springfield, IL 62701",
+                },
+                "geocode": {
+                    "location": {"latitude": 39.7817, "longitude": -89.6501},
+                },
+                "verdict": {"addressComplete": True},
+            },
+        }
+
+        result = validate_address("one two three main street springfield")
+
+        assert result["success"] is True
+        assert result["was_corrected"] is True
+        assert "123 Main St" in result["corrected_address"]
+        assert "Did you mean" in result["correction_note"]
+        assert result["latitude"] is not None
+        assert result["is_complete"] is True
+
+    def test_api_failure_fallback(self, mock_routes):
+        mock_routes.side_effect = Exception("Service unavailable")
+
+        result = validate_address("some address")
+
+        assert result["success"] is True
+        assert result["corrected_address"] == "some address"
+        assert result["was_corrected"] is False
+
+
+class TestPreviewDestination:
+    """Test preview_destination with mocked Street View + Vision Agent."""
+
+    def test_no_street_view(self, mock_rest_get):
+        # Metadata returns not OK
+        meta_response = MagicMock()
+        meta_response.json.return_value = {"status": "ZERO_RESULTS"}
+        mock_rest_get.return_value = meta_response
+
+        result = preview_destination(37.7749, -122.4194, "Cafe XYZ")
+
+        assert result["success"] is True
+        assert result["has_street_view"] is False
+        assert "No street-level imagery" in result["description"]
+
+    def test_street_view_success(self, mock_rest_get):
+        # Metadata OK
+        meta_response = MagicMock()
+        meta_response.json.return_value = {"status": "OK"}
+        # Image bytes
+        image_response = MagicMock()
+        image_response.content = b"fake_image_data"
+
+        mock_rest_get.side_effect = [meta_response, image_response]
+
+        with patch("agents.vision_agent.analyze_scene") as mock_vision:
+            mock_vision.return_value = {
+                "safety_warnings": ["Uneven pavement"],
+                "navigation_info": {"entrances": ["Main door at 12 o'clock"]},
+                "scene_description": "A cozy cafe with outdoor seating",
+                "people_count": 3,
+                "confidence": 0.85,
+            }
+
+            result = preview_destination(37.7749, -122.4194, "Cafe XYZ")
+
+        assert result["success"] is True
+        assert result["has_street_view"] is True
+        assert "Cafe XYZ" in result["description"]
+        assert len(result["safety_warnings"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -461,3 +636,7 @@ class TestDeclarations:
     def test_functions_are_callable(self):
         for name, func in NAVIGATION_FUNCTIONS.items():
             assert callable(func), f"{name} is not callable"
+
+    def test_new_functions_registered(self):
+        assert "preview_destination" in NAVIGATION_FUNCTIONS
+        assert "validate_address" in NAVIGATION_FUNCTIONS

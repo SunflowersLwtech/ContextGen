@@ -182,6 +182,17 @@ def _build_context_user_message(lod: int, session_context: dict) -> str:
     if motion:
         parts.append(f"Motion state: {motion}.")
 
+    # Depth data (from CoreML depth estimation)
+    depth_center = session_context.get("depth_center")
+    depth_min = session_context.get("depth_min")
+    depth_min_region = session_context.get("depth_min_region")
+    if depth_center is not None and depth_center > 0:
+        depth_info = f"Depth data: center distance {depth_center:.1f}m"
+        if depth_min is not None and depth_min > 0 and depth_min_region:
+            depth_info += f", closest object at {depth_min:.1f}m ({depth_min_region})"
+        depth_info += "."
+        parts.append(depth_info)
+
     return " ".join(parts)
 
 

@@ -22,6 +22,7 @@ class SensorManager: ObservableObject {
     let noiseMeter = NoiseMeter()
     let healthKitManager = HealthKitManager()
     let watchReceiver = WatchReceiver()
+    let weatherManager = WeatherManager()
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -39,13 +40,16 @@ class SensorManager: ObservableObject {
         // Activate WCSession for real-time watch heart rate (<1s latency)
         watchReceiver.activate()
 
+        // WeatherKit: start periodic refresh (every 10 min)
+        weatherManager.startMonitoring(locationManager: locationManager)
+
         // HealthKit needs async authorization (backup channel, 10-20 min delay)
         Task {
             await healthKitManager.requestAuthorization()
             healthKitManager.startMonitoring()
         }
 
-        Self.logger.info("All sensors started (watch receiver activated)")
+        Self.logger.info("All sensors started (watch receiver + weather activated)")
     }
 
     /// Stop all sensor collection.
@@ -55,6 +59,7 @@ class SensorManager: ObservableObject {
         motionManager.stopMonitoring()
         locationManager.stopMonitoring()
         healthKitManager.stopMonitoring()
+        weatherManager.stopMonitoring()
         noiseMeter.reset()
         Self.logger.info("All sensors stopped")
     }
@@ -96,9 +101,18 @@ class SensorManager: ObservableObject {
             : "phone_only"
 
         data.panic = false
+        data.weather = weatherManager.currentWeather
+        data.depth = latestDepth
 
         return data
     }
+
+    /// Update depth data from CameraManager's depth estimator callback.
+    func updateDepth(_ summary: DepthEstimator.DepthSummary) {
+        latestDepth = summary
+    }
+
+    private var latestDepth: DepthEstimator.DepthSummary?
 
     // MARK: - Private
 
@@ -120,6 +134,14 @@ class SensorManager: ObservableObject {
 
         // Group 2: Real-time watch heart rate (primary channel)
         watchReceiver.$heartRate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.currentTelemetry = self?.snapshot() ?? TelemetryData()
+            }
+            .store(in: &cancellables)
+
+        // Group 3: Weather updates (every ~10 min)
+        weatherManager.$currentWeather
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.currentTelemetry = self?.snapshot() ?? TelemetryData()

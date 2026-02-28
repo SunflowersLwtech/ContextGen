@@ -103,22 +103,36 @@ _lrq_mod.LiveRequestQueue = _FakeLRQ
 # Best approach: directly instantiate using the real module types after
 # setting up google.genai.types.
 
+# Save originals for any real modules that were already imported, so we can
+# restore them after this test module finishes and avoid cross-contamination.
+_saved_attrs: list[tuple] = []  # (module_name, attr_name, original_value | _MISSING)
+
+_MISSING = object()
+
+
+def _patch_attr(mod_name: str, attr_name: str, value):
+    """Set an attribute on a sys.modules entry, saving the original for later restore."""
+    mod = sys.modules[mod_name]
+    _saved_attrs.append((mod_name, attr_name, getattr(mod, attr_name, _MISSING)))
+    setattr(mod, attr_name, value)
+
+
 # Patch google.genai so `from google.genai import types` works in server
-sys.modules["google.genai"].types = _genai_types
-sys.modules["google.adk.runners"].Runner = MagicMock
+_patch_attr("google.genai", "types", _genai_types)
+_patch_attr("google.adk.runners", "Runner", MagicMock)
 
 # Provide stubs for server-level imports
-sys.modules["fastapi"].FastAPI = MagicMock
-sys.modules["fastapi"].Request = MagicMock
-sys.modules["fastapi"].WebSocket = MagicMock
-sys.modules["fastapi"].WebSocketDisconnect = Exception
-sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock
-sys.modules["fastapi.responses"].JSONResponse = MagicMock
-sys.modules["starlette.websockets"].WebSocketState = MagicMock
-sys.modules["dotenv"].load_dotenv = lambda *a, **kw: None
+_patch_attr("fastapi", "FastAPI", MagicMock)
+_patch_attr("fastapi", "Request", MagicMock)
+_patch_attr("fastapi", "WebSocket", MagicMock)
+_patch_attr("fastapi", "WebSocketDisconnect", Exception)
+_patch_attr("fastapi.middleware.cors", "CORSMiddleware", MagicMock)
+_patch_attr("fastapi.responses", "JSONResponse", MagicMock)
+_patch_attr("starlette.websockets", "WebSocketState", MagicMock)
+_patch_attr("dotenv", "load_dotenv", lambda *a, **kw: None)
 
 # Stub the local project imports
-sys.modules["agents.orchestrator"].create_orchestrator_agent = MagicMock
+_patch_attr("agents.orchestrator", "create_orchestrator_agent", MagicMock)
 for fn_name in [
     "SessionManager",
     "build_vad_runtime_update_message",
@@ -126,7 +140,7 @@ for fn_name in [
     "create_session_service",
     "supports_runtime_vad_reconfiguration",
 ]:
-    setattr(sys.modules["live_api.session_manager"], fn_name, MagicMock())
+    _patch_attr("live_api.session_manager", fn_name, MagicMock())
 for fn_name in [
     "PanicHandler",
     "build_full_dynamic_prompt",
@@ -134,12 +148,12 @@ for fn_name in [
     "decide_lod",
     "on_lod_change",
 ]:
-    setattr(sys.modules["lod"], fn_name, MagicMock())
-sys.modules["lod.lod_engine"].should_speak = MagicMock()
-sys.modules["lod.telemetry_aggregator"].TelemetryAggregator = MagicMock
-sys.modules["telemetry.telemetry_parser"].parse_telemetry = MagicMock()
-sys.modules["telemetry.telemetry_parser"].parse_telemetry_to_ephemeral = MagicMock()
-sys.modules["telemetry.session_meta_tracker"].SessionMetaTracker = MagicMock
+    _patch_attr("lod", fn_name, MagicMock())
+_patch_attr("lod.lod_engine", "should_speak", MagicMock())
+_patch_attr("lod.telemetry_aggregator", "TelemetryAggregator", MagicMock)
+_patch_attr("telemetry.telemetry_parser", "parse_telemetry", MagicMock())
+_patch_attr("telemetry.telemetry_parser", "parse_telemetry_to_ephemeral", MagicMock())
+_patch_attr("telemetry.session_meta_tracker", "SessionMetaTracker", MagicMock)
 
 # --- Finally, import the real class ----------------------------------------
 # We add the SightLine directory to sys.path so `import server` resolves.
@@ -159,6 +173,34 @@ from server import (
 # Alias the fake types for convenience in tests
 Content = _FakeContent
 Part = _FakePart
+
+
+def _restore_patched_attrs():
+    """Restore attributes that were patched on REAL (pre-existing) modules.
+
+    Stub modules created by _make_stub are left in place — removing them
+    would break Python's import cache in unpredictable ways.  We only
+    restore attributes that were overwritten on modules that existed before
+    our stubs were set up (e.g. telemetry.session_meta_tracker).
+    """
+    for mod_name, attr_name, original in reversed(_saved_attrs):
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        if original is _MISSING:
+            # Attribute didn't exist before — only delete if the module
+            # is a real package (not our stub), to avoid breaking stubs.
+            continue
+        else:
+            setattr(mod, attr_name, original)
+    _saved_attrs.clear()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _cleanup_module_patches():
+    """Restore patched sys.modules attributes after this module's tests complete."""
+    yield
+    _restore_patched_attrs()
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +384,9 @@ class TestMaxAge:
         # Manually backdate the enqueued_at
         for item in queue._queue.values():
             item.enqueued_at = time.monotonic() - QUEUE_MAX_AGE_SEC - 1
+        # check_max_age only fires when model is not speaking and iOS is drained
+        queue.set_model_speaking(False)
+        queue._ios_playback_drained = True
         assert queue.check_max_age() is True
         assert len(lrq.sent) == 1
 

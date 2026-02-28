@@ -1,6 +1,16 @@
 """Tests for SightLine telemetry parser."""
 
-from telemetry.telemetry_parser import parse_telemetry, parse_telemetry_to_ephemeral
+import telemetry.telemetry_parser as _tp_mod
+
+
+def parse_telemetry(*args, **kwargs):
+    """Late-bind to dodge import-time MagicMock pollution."""
+    return _tp_mod.parse_telemetry(*args, **kwargs)
+
+
+def parse_telemetry_to_ephemeral(*args, **kwargs):
+    """Late-bind to dodge import-time MagicMock pollution."""
+    return _tp_mod.parse_telemetry_to_ephemeral(*args, **kwargs)
 
 
 # =====================================================================

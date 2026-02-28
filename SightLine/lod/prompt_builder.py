@@ -150,12 +150,19 @@ def build_lod_update_message(
     profile: UserProfile,
     reason: str = "",
     memories: list[str] | None = None,
+    assembled_profile: str | None = None,
+    location_ctx=None,
 ) -> str:
     """Build the ``[LOD UPDATE]`` text injected into the Live session.
 
     This is sent via ``LiveRequestQueue.send_content()`` whenever the
     LOD level changes, so the Orchestrator model adjusts its output
     style in real time.
+
+    Args:
+        assembled_profile: Pre-assembled profile text from ProfileAssembler.
+            If provided, replaces the basic persona block.
+        location_ctx: Optional LocationContext for location-aware updates.
     """
     parts: list[str] = ["[LOD UPDATE]"]
 
@@ -163,8 +170,11 @@ def build_lod_update_message(
     parts.append(f"\n## Current Operating Level: LOD {lod}")
     parts.append(LOD_INSTRUCTIONS[lod])
 
-    # 2. Persona (always include — contributes ~9% accuracy per ContextAgent)
-    parts.append(f"\n{_build_persona_block(profile)}")
+    # 2. Persona / assembled profile
+    if assembled_profile:
+        parts.append(f"\n{assembled_profile}")
+    else:
+        parts.append(f"\n{_build_persona_block(profile)}")
 
     # 3. Session context
     parts.append("\n## Trip Context")
@@ -174,6 +184,17 @@ def build_lod_update_message(
         parts.append(f"- Last transition: {session.space_transitions[-1]}")
     if session.active_task:
         parts.append(f"- Active task: {session.active_task}")
+
+    # 3b. Location context (from LocationContextService)
+    if location_ctx:
+        place = getattr(location_ctx, "place_name", "")
+        if place:
+            parts.append(f"- Current place: {place}")
+            fam = getattr(location_ctx, "familiarity_score", 0)
+            if fam >= 0.8:
+                parts.append("- Location familiarity: well-known")
+            elif fam < 0.2:
+                parts.append("- Location familiarity: new/unfamiliar")
 
     # 4. Narrative snapshot (resume point after LOD upgrade)
     if session.narrative_snapshot and lod >= 2:
@@ -222,11 +243,16 @@ def build_full_dynamic_prompt(
     memories: list[str] | None = None,
     vision_result: str | None = None,
     face_result: str | None = None,
+    assembled_profile: str | None = None,
 ) -> str:
     """Build the complete dynamic system prompt for session initialisation.
 
     This is a superset of ``build_lod_update_message`` and includes
     the full base prompt.  Used at session start or after reconnection.
+
+    Args:
+        assembled_profile: Pre-assembled profile text from ProfileAssembler.
+            If provided, replaces the basic persona block.
     """
     parts: list[str] = [
         "You are SightLine, an AI companion that provides real-time semantic "
@@ -242,8 +268,11 @@ def build_full_dynamic_prompt(
         "",
     ]
 
-    # Persona
-    parts.append(_build_persona_block(profile))
+    # Persona / assembled profile
+    if assembled_profile:
+        parts.append(assembled_profile)
+    else:
+        parts.append(_build_persona_block(profile))
 
     # LOD instructions
     parts.append(f"\n## Current Operating Level: LOD {lod}")
@@ -316,6 +345,7 @@ def build_dynamic_prompt(
     memories: list[str] | None = None,
     vision_result: str | None = None,
     face_result: str | None = None,
+    assembled_profile: str | None = None,
 ) -> str:
     """Backward-compatible entrypoint required by Phase 2 gates.
 
@@ -329,4 +359,5 @@ def build_dynamic_prompt(
         memories=memories,
         vision_result=vision_result,
         face_result=face_result,
+        assembled_profile=assembled_profile,
     )

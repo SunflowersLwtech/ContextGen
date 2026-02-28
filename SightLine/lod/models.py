@@ -46,6 +46,12 @@ class EphemeralContext:
     user_gesture: Optional[str] = None  # lod_up | lod_down | tap | shake
     panic: bool = False
     device_type: str = "phone_only"  # phone_only | phone_and_watch
+    weather_condition: str = "unknown"  # clear | rain | snow | fog | cloudy etc.
+    weather_visibility: float = 10000.0  # meters
+    weather_precipitation: str = "none"  # none | rain | snow | sleet | hail | mixed
+    depth_center: Optional[float] = None  # center distance in meters (None = no depth data)
+    depth_min: Optional[float] = None  # closest object distance in meters
+    depth_min_region: Optional[str] = None  # region of closest object
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -81,6 +87,7 @@ class SessionContext:
     recent_space_transition: bool = False
     user_requested_detail: bool = False  # user said "tell me more"
     user_said_stop: bool = False  # user said "stop"
+    familiarity_score: float = 0.5  # 0.0 (never been) to 1.0 (daily visit)
     current_lod: int = 2  # tracks the active LOD level
     current_activity_state: str = "idle"  # idle | user_speaking
     last_activity_event: Optional[str] = None  # activity_start | activity_end

@@ -45,6 +45,11 @@ class SessionMetaTracker:
     space_transitions: list[str] = field(default_factory=list)
     _trip_purpose: str = ""
 
+    # Phase 6 ACE fields (populated at session end, best-effort)
+    locations_visited: list[str] = field(default_factory=list)
+    entities_seen: list[str] = field(default_factory=list)
+    lod_overrides: list[dict] = field(default_factory=list)
+
     def record_lod_time(self, new_lod: int) -> None:
         """Record elapsed time at the current LOD, then switch to new_lod.
 
@@ -81,13 +86,20 @@ class SessionMetaTracker:
         include ``start_time`` (that's written at session start).
         """
         self._flush_current_lod()
-        return {
+        doc = {
             "end_time": "SERVER_TIMESTAMP",  # replaced by caller
             "trip_purpose": self._trip_purpose,
             "lod_distribution": dict(self._lod_distribution),
             "space_transitions": [t for t in self.space_transitions if t != "unknown"],
             "total_interactions": self._total_interactions,
         }
+        if self.locations_visited:
+            doc["locations_visited"] = self.locations_visited[:20]
+        if self.entities_seen:
+            doc["entities_seen"] = self.entities_seen[:50]
+        if self.lod_overrides:
+            doc["lod_overrides"] = self.lod_overrides[:50]
+        return doc
 
     # -- Firestore I/O (async, non-blocking) --------------------------------
 
@@ -156,13 +168,21 @@ class SessionMetaTracker:
 
         self._flush_current_lod()
         doc_ref = self._get_doc_ref()
-        doc_ref.update({
+        update_data = {
             "end_time": firestore.SERVER_TIMESTAMP,
             "trip_purpose": self._trip_purpose,
             "lod_distribution": dict(self._lod_distribution),
             "space_transitions": [t for t in self.space_transitions if t != "unknown"],
             "total_interactions": self._total_interactions,
-        })
+        }
+        # Phase 6 ACE fields (only written when present)
+        if self.locations_visited:
+            update_data["locations_visited"] = self.locations_visited[:20]
+        if self.entities_seen:
+            update_data["entities_seen"] = self.entities_seen[:50]
+        if self.lod_overrides:
+            update_data["lod_overrides"] = self.lod_overrides[:50]
+        doc_ref.update(update_data)
         logger.info(
             "session_meta end written: user=%s session=%s interactions=%d",
             self.user_id, self.session_id, self._total_interactions,

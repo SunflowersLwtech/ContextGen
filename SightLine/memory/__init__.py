@@ -17,7 +17,13 @@ from memory.memory_budget import (
     limit_memory_writes,
     trim_memory_writes,
 )
-from memory.memory_tools import forget_recent_memory, forget_memory
+from memory.memory_tools import (
+    forget_recent_memory,
+    forget_memory,
+    remember_entity,
+    what_do_you_remember,
+    forget_entity,
+)
 from memory.memory_extractor import MemoryExtractor
 
 __all__ = [
@@ -35,4 +41,7 @@ __all__ = [
     "cap_memories_per_session",
     "forget_recent_memory",
     "forget_memory",
+    "remember_entity",
+    "what_do_you_remember",
+    "forget_entity",
 ]

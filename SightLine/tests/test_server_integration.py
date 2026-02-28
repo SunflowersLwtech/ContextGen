@@ -14,7 +14,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Fixture: FastAPI TestClient
@@ -24,6 +23,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     """Create a TestClient for the SightLine FastAPI app."""
+    from fastapi.testclient import TestClient
     from server import app
     return TestClient(app)
 
@@ -46,7 +46,7 @@ class TestHealthEndpoint:
     def test_health_reports_phase(self, client):
         response = client.get("/health")
         data = response.json()
-        assert data["phase"] == 4
+        assert data["phase"] == 6
 
 
 # ---------------------------------------------------------------------------

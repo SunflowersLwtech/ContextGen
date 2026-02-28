@@ -20,17 +20,33 @@ from tools import (
     google_search,
     navigate_to,
     nearby_search,
+    preview_destination,
     reverse_geocode,
+    resolve_plus_code,
+    convert_to_plus_code,
+    validate_address,
+    get_accessibility_info,
+    maps_query,
 )
 
-# Memory tools (custom Firestore Memory Bank)
-# identify_person, forget_recent_memory, forget_memory removed — unused/no-op (10→7 tools)
+# Memory tools (custom Firestore Memory Bank + Entity Graph)
 try:
-    from memory.memory_tools import preload_memory
+    from memory.memory_tools import (
+        preload_memory,
+        remember_entity,
+        what_do_you_remember,
+        forget_entity,
+    )
 except ImportError:
     def preload_memory(user_id: str, context: str = "") -> dict:
         """Fallback when memory module is not available."""
         return {"memories": [], "count": 0, "user_id": user_id}
+    def remember_entity(user_id: str, name: str, entity_type: str = "person", attributes: str = "") -> dict:
+        return {"name": name, "status": "unavailable"}
+    def what_do_you_remember(user_id: str, query: str = "") -> dict:
+        return {"summary": "Memory system not available.", "user_id": user_id}
+    def forget_entity(user_id: str, name: str) -> dict:
+        return {"name": name, "status": "unavailable"}
 
 SYSTEM_PROMPT = """\
 You are SightLine, a warm and patient AI companion for blind and low-vision users.
@@ -79,10 +95,16 @@ These contain real-time sensor data:
 - motion_state, step_cadence, ambient_noise_db
 - heart_rate (if Apple Watch connected)
 - GPS location, heading
+- Weather data (condition, precipitation, visibility, wind) when available
 Use them to understand context.  Do NOT read raw sensor values aloud.
 Treat telemetry updates as silent background context by default.
 Never answer a telemetry update directly unless there is a new immediate hazard
 or the user explicitly asks for status.
+Weather context: warn about slippery surfaces in rain/snow, low visibility alerts \
+in fog, suggest indoor routes in extreme weather, mention UV if high.
+Depth estimates may be included with vision data. Use them to give approximate \
+distances: "chair about 2 meters at your 1 o'clock". Use qualitative terms \
+("very close", "a few meters away") rather than exact numbers.
 
 ## PANIC Protocol
 If you see ``heart_rate > 120`` or a ``PANIC`` indicator:
@@ -116,11 +138,44 @@ OCR and vision results arrive automatically as context injections — no tool ca
 
 ### navigate_to / get_location_info / nearby_search / reverse_geocode
 Use when the user asks for directions or wants to know about their surroundings.
-Deliver results WHEN_IDLE — after you finish your current speech.
+Navigation results include slope warnings for steep grades (>8% — ADA threshold). \
+nearby_search returns accessibility info (wheelchair entrance/parking/restroom/seating) \
+for each place. Deliver results WHEN_IDLE — after you finish your current speech.
+
+### validate_address
+Validate and correct a spoken address before navigating. Fixes common speech-to-text \
+errors (e.g. "one two three main street" → "123 Main St"). If the address was corrected, \
+confirm with the user: "Did you mean '123 Main St, Springfield'?" before proceeding. \
+Deliver results WHEN_IDLE.
+
+### preview_destination
+Preview a destination using Street View imagery before arrival. Returns a scene \
+description with safety warnings and navigation cues. Use when the user asks \
+"what does it look like there?" or before navigating to an unfamiliar place. \
+Deliver results WHEN_IDLE.
 
 ### google_search
 Use for fact verification, business info, or when the user asks about something \
 you need current information for. Deliver results WHEN_IDLE.
+
+### resolve_plus_code / convert_to_plus_code
+Use when the user provides a Google Plus Code (alphanumeric code with a "+" symbol, \
+e.g. "849VQJQ5+JQ"). ``resolve_plus_code`` converts the code to GPS coordinates. \
+``convert_to_plus_code`` gives the user their current Plus Code for sharing their \
+precise location. Plus Codes work offline. Deliver results WHEN_IDLE.
+
+### get_accessibility_info
+Query nearby accessibility features from OpenStreetMap: tactile paving, \
+wheelchair ramps, audio traffic signals, pedestrian crossings, stairs, \
+handrails, and sidewalk surface quality. Use when navigating unfamiliar \
+areas or when the user asks about accessibility. Deliver results WHEN_IDLE.
+
+### maps_query
+Query Google Maps for detailed place information, reviews, ratings, business \
+hours, and geographic reasoning. Use for open-ended location questions like \
+"What's a good restaurant nearby?", "Is there an accessible pharmacy open?". \
+Provides richer, more conversational answers than nearby_search. Deliver results \
+WHEN_IDLE.
 
 ### identify_person
 Called automatically when faces are detected. Results arrive as \
@@ -128,17 +183,23 @@ Called automatically when faces are detected. Results arrive as \
 your descriptions without making it obvious the system is doing face matching.
 Example: Instead of "Face recognized: David", say "David is sitting across from you."
 
-### preload_memory / forget_recent_memory / forget_memory
-Memory tools for managing the user's long-term memory:
+### preload_memory / remember_entity / what_do_you_remember / forget_entity
+Memory and entity tools for managing the user's long-term memory:
 - **preload_memory(user_id, context)**: Retrieve relevant memories for the current context. \
 Called automatically at session start and LOD transitions. You may also call it proactively \
 when the conversation topic shifts significantly to ensure you have the right context.
-- **forget_recent_memory(user_id, minutes)**: When the user says "forget what I just told you" \
-or similar, use this to delete memories from the last N minutes (default 30).
-- **forget_memory(user_id, memory_id)**: Delete a specific memory by ID. Use when the user \
-asks to remove a particular remembered fact.
+- **remember_entity(user_id, name, entity_type, attributes)**: When the user asks to remember \
+a person, place, or thing. Example: "Remember that David works at the cafe downstairs" → \
+call with name="David", entity_type="person", attributes="role=coworker,workplace=cafe downstairs". \
+Confirm to the user: "I'll remember David."
+- **what_do_you_remember(user_id, query)**: When the user asks "What do you remember about me?" \
+or "What do you know about David?" Reads back a summary of stored memories and known entities. \
+Always respond naturally, not as a data dump.
+- **forget_entity(user_id, name)**: When the user asks to forget a person or place entirely. \
+Example: "Forget about David." Deletes the entity and related memories. Confirm: "I've forgotten \
+about David."
 Always respect the user's request to forget. Memory operations are SILENT — do not announce \
-them to the user unless confirming a forget request.
+them to the user unless confirming a remember/forget request.
 
 ## Context Injections (Read-Only)
 You will receive pre-computed analysis results as context injections.
@@ -172,7 +233,16 @@ def create_orchestrator_agent(model_name: str) -> Agent:
             nearby_search,
             reverse_geocode,
             get_walking_directions,
+            preview_destination,
+            validate_address,
             google_search,
+            resolve_plus_code,
+            convert_to_plus_code,
+            get_accessibility_info,
+            maps_query,
             preload_memory,
+            remember_entity,
+            what_do_you_remember,
+            forget_entity,
         ],
     )

@@ -9,6 +9,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from lod.models import EphemeralContext, GPSData, SessionContext, UserProfile
 
+# Pre-import real modules that test_context_injection_queue.py would otherwise
+# stub out.  By importing them here (conftest loads first), the real modules
+# are already in sys.modules, so _make_stub's `if mod_name not in sys.modules`
+# guard skips them.  The _patch_attr mechanism can then save and restore the
+# real attributes correctly.
+import telemetry.session_meta_tracker  # noqa: F401
+import telemetry.telemetry_parser  # noqa: F401
+import lod.lod_engine  # noqa: F401
+
+# Pre-import packages that are safe to load and commonly stubbed
+try:
+    import fastapi  # noqa: F401
+    import fastapi.testclient  # noqa: F401
+    import starlette.websockets  # noqa: F401
+except ImportError:
+    pass  # skip if not installed
+
 
 # ---------------------------------------------------------------------------
 # EphemeralContext fixtures

@@ -26,7 +26,9 @@ class CameraManager: NSObject, ObservableObject {
 
     var onFrameCaptured: ((Data) -> Void)?  // JPEG data callback
     var onCameraFailure: ((String) -> Void)?
+    var onDepthEstimated: ((DepthEstimator.DepthSummary) -> Void)?
     var frameSelector: FrameSelector?
+    var depthEstimator: DepthEstimator?
 
     func startCapture() {
         sessionQueue.async { [weak self] in
@@ -143,6 +145,12 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         // Check with frame selector for LOD-based throttling
         if let selector = frameSelector, !selector.shouldSendFrame() {
             return
+        }
+
+        // Run depth estimation on accepted frames (same cadence as vision)
+        if let estimator = depthEstimator, estimator.isAvailable,
+           let summary = estimator.estimateDepth(from: pixelBuffer) {
+            onDepthEstimated?(summary)
         }
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
